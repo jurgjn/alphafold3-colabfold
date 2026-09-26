@@ -622,6 +622,13 @@ class Model(hk.Module):
         conditioning_only=True,
     )
 
+    override = diffusion_head.SAMPLER_OVERRIDE
+    sampler = None if override is None or hk.running_init() else override(
+        self.global_config.model, sample_config)
+    if sampler is not None:
+      return sampler(hk.experimental.get_params(), batch, embeddings, pair_cond,
+                     atom_cond, hk.next_rng_key())
+
     denoising_step = functools.partial(
         self.diffusion_module,
         batch=batch,

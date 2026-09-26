@@ -609,6 +609,10 @@ def _kabsch(mob, ref, w):
   return ((mob - mc).reshape(-1, 3) @ rot).reshape(mob.shape) + rc
 
 
+# f(model, sample_config) -> None to decline, or g(params, batch, embeddings, pair_cond, atom_cond, key) -> sample()'s result
+SAMPLER_OVERRIDE = None
+
+
 def sample(
     denoising_step: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
     batch: feat_batch.Batch,
