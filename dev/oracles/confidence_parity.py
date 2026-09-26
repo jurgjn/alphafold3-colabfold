@@ -606,7 +606,7 @@ def native_opendde(model, batch, pos, rng, n, max_atoms):
   s = (rng.normal(size=(n, c_s)) * 0.5).astype(np.float32)
   z = (rng.normal(size=(n, n, c_z)) * 0.5).astype(np.float32)
 
-  # A SYNTHESISED layout, the one model.py builds for the structural set:
+  # A SYNTHESISED layout, the one model.py builds for the residue set:
   # atom_to_token repeats the token index, atom_to_tokatom tiles the slot index,
   # and the rep atom is slot 0 of each token.
   a2t = np.repeat(np.arange(n), max_atoms)

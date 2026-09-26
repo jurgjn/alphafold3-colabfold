@@ -5,7 +5,8 @@ initialises the pair rep from s_inputs (row+col), adds a distance embedding of t
 predicted structure (binned + raw), runs a 4-block pairformer, and reads out four
 heads -- PAE/PDE as linear projections of the pair rep, and pLDDT/resolved as a
 per-token-atom einsum against learned weight tensors [24, c_s, bins]. Runs on the
-structural-token set (same tokens as the diffusion). Gated by the opendde caller;
+residue trunk (OpenDDE's default pair_output_space='residue'), not the diffusion's
+structural tokens. Gated by the opendde caller;
 nothing here touches AF3/OF3/IF2, which keep confidence_head.ConfidenceHead.
 
 Ref: opendde/model/modules/confidence.py (forward + memory_efficient_forward).
@@ -31,7 +32,7 @@ def _dist_onehot(dist):
 
 
 class OpenDDEConfidenceHead(hk.Module):
-  """Structural-token confidence head. c_s/c_z=384, c_s_inputs=447 (our order),
+  """OpenDDE confidence head. c_s/c_z=384, c_s_inputs=447 (our order),
   24 atoms/token, PAE/PDE=64 bins, pLDDT=50, resolved=2."""
 
   def __init__(self, c_s, c_z, c_s_inputs, global_config, n_blocks=4,

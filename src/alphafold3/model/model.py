@@ -454,50 +454,28 @@ def _compute_chain_pair_iptm(
 
 
 
-def _structural_to_residue(samples, conf, book, seq_mask, asym_id,
-                           num_plddt_bins, num_pae_bins, num_pde_bins):
-  """Bring an OpenDDE fold back from structural tokens to residue tokens.
-
-  OpenDDE runs its diffusion and confidence on an EXPANDED token set -- several
-  structural subtokens per residue -- so everything downstream (the mmCIF
-  writer, the confidence JSON, pTM) would otherwise be handed arrays indexed the
-  wrong way. Two mappings do it, and they are of different kinds:
-
-    atoms   an exact reconstruction. residue_atom_gather names, for every
-            residue atom slot, the structural (token, slot) holding it, so
-            coordinates and per-atom pLDDT come back unchanged.
-    tokens  a CHOICE. A residue has several structural subtokens and PAE is a
-            token-PAIR quantity, so we read it at the residue's representative
-            subtoken (its first). Nothing reconstructs a per-residue PAE from
-            several subtoken rows; this at least picks the row belonging to the
-            residue's own backbone.
-
-  The PAE/PDE/pLDDT reductions run here rather than inside OpenDDE's head, so
-  that they -- and the pTM built on them -- see the residue token count the rest
-  of the pipeline reports rather than the expanded one.
-  """
+def _structural_atoms_to_residue(positions, book):
+  """OpenDDE's sampled atoms from structural back to residue tokens, exactly, plus the (n_res, max_atoms) atom mask."""
   gather = book['residue_atom_gather']            # (n_res, max_atoms), -1 = none
-  rep = book['residue_rep_token']                 # (n_res,)
   n_res, max_atoms = gather.shape
   valid = gather >= 0
-  flat_idx = jnp.where(valid, gather, 0).reshape(-1)
+  flat = positions.reshape((positions.shape[0], -1, positions.shape[-1]))
+  out = jnp.take(flat, jnp.where(valid, gather, 0).reshape(-1), axis=1)
+  out = out.reshape((positions.shape[0], n_res, max_atoms, positions.shape[-1]))
+  return jnp.where(valid[None, :, :, None], out, 0.0), valid
+
+
+def _opendde_confidence(conf, atom_valid, seq_mask, asym_id,
+                        num_plddt_bins, num_pae_bins, num_pde_bins):
+  """OpenDDE's residue-space confidence logits reduced to the outputs every other model reports."""
+  n_res, max_atoms = atom_valid.shape
 
   def by_atom(arr):
-    """(n_samples, n_struct * max_atoms, *rest) -> (n_samples, n_res, max_atoms, *rest)."""
+    """(n_samples, n_res * max_atoms, *rest) -> (n_samples, n_res, max_atoms, *rest)."""
     rest = arr.shape[2:]
-    out = jnp.take(arr, flat_idx, axis=1)
-    out = out.reshape((arr.shape[0], n_res, max_atoms) + rest)
-    keep = valid.reshape((1, n_res, max_atoms) + (1,) * len(rest))
+    out = arr.reshape((arr.shape[0], n_res, max_atoms) + rest)
+    keep = atom_valid.reshape((1, n_res, max_atoms) + (1,) * len(rest))
     return jnp.where(keep, out, 0.0)
-
-  def by_token_pair(arr):
-    """(n_samples, n_struct, n_struct, *rest) -> (n_samples, n_res, n_res, *rest)."""
-    return jnp.take(jnp.take(arr, rep, axis=1), rep, axis=2)
-
-  positions = samples['atom_positions']
-  out_samples = dict(samples)
-  out_samples['atom_positions'] = by_atom(
-      positions.reshape((positions.shape[0], -1, positions.shape[-1])))
 
   def centers(min_bin, max_bin, n_bins):
     width = (max_bin - min_bin) / n_bins
@@ -511,8 +489,8 @@ def _structural_to_residue(samples, conf, book, seq_mask, asym_id,
       -1) * 100.0
   resolved_logits = by_atom(conf['experimentally_resolved_logits'])
 
-  pae_logits = by_token_pair(conf['predicted_aligned_error_logits'])
-  pde_logits = by_token_pair(conf['predicted_distance_error_logits'])
+  pae_logits = conf['predicted_aligned_error_logits']
+  pde_logits = conf['predicted_distance_error_logits']
   pae_centers = centers(0.0, 32.0, num_pae_bins)
   pae_probs = jax.nn.softmax(pae_logits, -1)
   mask = seq_mask.astype(bool)
@@ -529,7 +507,7 @@ def _structural_to_residue(samples, conf, book, seq_mask, asym_id,
           asym_id=asym_id, seq_mask=seq_mask, pair_mask=pair_mask,
           bin_centers=pae_centers, pae_probs=probs))(pae_probs)
 
-  return out_samples, {
+  return {
       'predicted_lddt': predicted_lddt,
       'full_pae': full_pae,
       'full_pde': full_pde,
@@ -919,39 +897,33 @@ class Model(hk.Module):
     )
 
     if has_structural:
-      # OpenDDE's own confidence head, on the structural-token set. Rep-atom coords
-      # per token come from the pseudo-beta gather; the pLDDT/resolved einsum runs
-      # over the dense (token, atom-slot) layout, so atom_to_token repeats the token
-      # index and atom_to_tokatom tiles the slot index.
-      n_struct = diff_batch.token_features.mask.shape[0]
-      max_atoms = samples['atom_positions'].shape[-2]
-      a2t = jnp.repeat(jnp.arange(n_struct), max_atoms)
-      a2ta = jnp.tile(jnp.arange(max_atoms), n_struct)
-      c_s_inputs = diff_emb['target_feat'].shape[-1]
-      def _conf(dense_atom_positions):
-        rep = atom_layout.convert(
-            diff_batch.pseudo_beta_info.token_atoms_to_pseudo_beta,
-            dense_atom_positions, layout_axes=(-3, -2))         # (n_struct, 3)
-        return opendde_confidence.OpenDDEConfidenceHead(
-            self.config.evoformer.seq_channel, self.config.evoformer.pair_channel,
-            c_s_inputs, self.global_config)(
-                diff_emb['target_feat'], diff_emb['single'], diff_emb['pair'], rep,
-                a2t, a2ta, diff_batch.token_features.mask,
-                extra_pair_bias=diff_emb.get('structural_pair_attn_bias'))
-      confidence_output = mapping.sharded_map(_conf, in_axes=0)(samples['atom_positions'])
-      # Back to residue tokens, so every consumer below -- the mmCIF writer, the
-      # confidence JSON, pTM -- sees the same layout it does for every other
-      # model. Without this the structure writer is handed 160 structural tokens
-      # where its gather expects 128 residues, which is where it stops.
+      # the confidence head reads the residue trunk (OpenDDE's pair_output_space='residue'), not the structural one
       book = {k[len('structbook/'):]: v for k, v in _struct.items()
               if k.startswith('structbook/')}
-      samples, confidence_output = _structural_to_residue(
-          samples, confidence_output, book,
+      samples = dict(samples)
+      samples['atom_positions'], atom_valid = _structural_atoms_to_residue(
+          samples['atom_positions'], book)
+      n_res, max_atoms = atom_valid.shape
+      # the pLDDT/resolved einsum runs over the dense (token, atom-slot) layout
+      a2t = jnp.repeat(jnp.arange(n_res), max_atoms)
+      a2ta = jnp.tile(jnp.arange(max_atoms), n_res)
+      def _conf(dense_atom_positions):
+        rep = atom_layout.convert(
+            batch.pseudo_beta_info.token_atoms_to_pseudo_beta,
+            dense_atom_positions, layout_axes=(-3, -2))         # (n_res, 3)
+        return opendde_confidence.OpenDDEConfidenceHead(
+            self.config.evoformer.seq_channel, self.config.evoformer.pair_channel,
+            embeddings['target_feat'].shape[-1], self.global_config)(
+                embeddings['target_feat'], embeddings['single'], embeddings['pair'], rep,
+                a2t, a2ta, batch.token_features.mask)
+      logits = mapping.sharded_map(_conf, in_axes=0)(samples['atom_positions'])
+      confidence_output = _opendde_confidence(
+          logits, atom_valid,
           seq_mask=batch.token_features.mask,
           asym_id=batch.token_features.asym_id,
-          num_plddt_bins=confidence_output['predicted_lddt_logits'].shape[-1],
-          num_pae_bins=confidence_output['predicted_aligned_error_logits'].shape[-1],
-          num_pde_bins=confidence_output['predicted_distance_error_logits'].shape[-1])
+          num_plddt_bins=logits['predicted_lddt_logits'].shape[-1],
+          num_pae_bins=logits['predicted_aligned_error_logits'].shape[-1],
+          num_pde_bins=logits['predicted_distance_error_logits'].shape[-1])
     elif self.global_config.model in model_config.NO_CONFIDENCE_HEAD:
       # No head in the checkpoint, so none in the graph: this model predicts a
       # structure and nothing about it. The keys are simply absent, which is
