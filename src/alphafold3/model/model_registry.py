@@ -585,10 +585,13 @@ _FEATURISE = {
     # `false`. Reading the code got the right question and the wrong answer, and
     # the feature dump is what settled it -- which is the argument for
     # dev/oracles/featurisation_diff.py existing.
+    # dedupe_self_msa: a protenix fork, and its featuriser too emits a depth-1 self MSA; the duplicate query row
+    # moved a single-sequence protein+RNA trunk to another basin (u1a pair rel 0.35 -> 0.06 against native)
     'opendde': dict(opendde=True, padded_keys=True,
                     empty_template_gap=not os.environ.get(
                         'AF3_NO_DDE_TEMPLATE_GAP'),
-                    empty_template_gap_slots='first'),
+                    empty_template_gap_slots='first',
+                    dedupe_self_msa=not os.environ.get('AF3_NO_DDE_DEDUPE_MSA')),
     # PER FAMILY, not per model. One `protenix/model/modules/primitives.py`
     # serves every protenix release, so the padded key window is a property of
     # the implementation and not of a checkpoint. It was set for protenix2

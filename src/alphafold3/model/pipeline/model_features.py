@@ -509,6 +509,8 @@ def _dedupe_self_msa(batch):
   the opposite -- "a real alignment whose first row happens to be the query is
   left alone" -- while the code dropped it anyway.
   """
+  if 'msa' not in batch:
+    return batch                      # a partial batch, as the unit tests build
   msa = np.asarray(batch['msa'])
   mask = np.asarray(batch['msa_mask'])
   live = np.flatnonzero(mask.any(-1))
