@@ -436,6 +436,10 @@ class GridSelfAttention(hk.Module):
     return act
 
 
+# the f32 gated projection size above which the triangle multiplication runs by channel blocks
+TRIMUL_BLOCK_BYTES = 8 * 2 ** 30
+
+
 class TriangleMultiplication(hk.Module):
   """Triangle Multiplication."""
 
@@ -448,6 +452,8 @@ class TriangleMultiplication(hk.Module):
     # on a 64-channel template pair (the two projections are (128, 64) where AF3
     # would build (64, 64)). None keeps AF3's behaviour exactly.
     hidden_dim: int | None = None
+    # einsum channels per block above TRIMUL_BLOCK_BYTES; 0 never blocks
+    channel_block: int = 32
 
   def __init__(
       self, config: Config, global_config: model_config.GlobalConfig, *, name
@@ -482,6 +488,62 @@ class TriangleMultiplication(hk.Module):
     act = hm.LayerNorm(name='left_norm_input')(act)
     input_act = act
 
+    cb = self.config.channel_block
+    if cb and hidden_dim % cb == 0 and num_residues ** 2 * hidden_dim * 8 > TRIMUL_BLOCK_BYTES:
+      act = self._blocked_einsum(act, mask, hidden_dim, equation)
+    else:
+      act = self._einsum(act, mask, hidden_dim, equation)
+    # rf3 divides by the sequence length here, and it is NOT a no-op in front of
+    # a LayerNorm because of the norm's epsilon -- see
+    # model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH for the measurement.
+    if self.global_config.model in model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH:
+      act = act / jnp.asarray(num_residues, act.dtype)
+    act = hm.LayerNorm(name='center_norm', axis=0, param_axis=0)(act)
+
+    act = jnp.transpose(act, (1, 2, 0))
+    act = hm.Linear(
+        num_channels,
+        initializer=self.global_config.final_init,
+        name='output_projection',
+    )(act)
+
+    gate_out = hm.Linear(
+        num_channels,
+        name='gating_linear',
+        bias_init=1.0,
+        initializer=self.global_config.final_init,
+    )(input_act)
+    act *= jax.nn.sigmoid(gate_out)
+
+    return act
+
+  @hk.transparent
+  def _blocked_einsum(self, act, mask, hidden_dim, equation):
+    """The einsum one channel block at a time, so the [N, N, 2 * hidden] gated projection never exists whole."""
+    cb = self.config.channel_block
+    nb = hidden_dim // cb
+    n = act.shape[0]
+    weights_projection, _ = hm.haiku_linear_get_params(
+        act, num_output=hidden_dim * 2, name='projection')
+    weights_gate, _ = hm.haiku_linear_get_params(
+        act, num_output=hidden_dim * 2, initializer=self.global_config.final_init, name='gate')
+    # output channel 2c is a[c] and 2c + 1 is b[c]; regroup as [nb, K, cb] per operand
+    blocks = lambda w: w.reshape(w.shape[0], nb, cb).transpose(1, 0, 2)
+    wa, wb = blocks(weights_projection[:, 0::2]), blocks(weights_projection[:, 1::2])
+    ga, gb = blocks(weights_gate[:, 0::2]), blocks(weights_gate[:, 1::2])
+
+    def gated(w, g):
+      return (jnp.einsum('ijk,kc->cij', act, w.astype(act.dtype))
+              * jax.nn.sigmoid(jnp.einsum('ijk,kc->cij', act, g.astype(act.dtype))) * mask)
+
+    def body(i, out):
+      block = jnp.einsum(equation, gated(wa[i], ga[i]), gated(wb[i], gb[i]))
+      return jax.lax.dynamic_update_slice(out, block.astype(out.dtype), (i * cb, 0, 0))
+
+    return jax.lax.fori_loop(0, nb, body, jnp.zeros((hidden_dim, n, n), act.dtype))
+
+  @hk.transparent
+  def _einsum(self, act, mask, hidden_dim, equation):
     if self.config.use_glu_kernel:
       weights_projection, _ = hm.haiku_linear_get_params(
           act, num_output=hidden_dim * 2, name='projection'
@@ -516,30 +578,7 @@ class TriangleMultiplication(hk.Module):
     projection = projection.reshape(hidden_dim, 2, *projection.shape[1:])
     a, b = jnp.split(projection, 2, axis=1)
     a, b = jnp.squeeze(a, axis=1), jnp.squeeze(b, axis=1)
-    act = jnp.einsum(equation, a, b)
-    # rf3 divides by the sequence length here, and it is NOT a no-op in front of
-    # a LayerNorm because of the norm's epsilon -- see
-    # model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH for the measurement.
-    if self.global_config.model in model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH:
-      act = act / jnp.asarray(num_residues, act.dtype)
-    act = hm.LayerNorm(name='center_norm', axis=0, param_axis=0)(act)
-
-    act = jnp.transpose(act, (1, 2, 0))
-    act = hm.Linear(
-        num_channels,
-        initializer=self.global_config.final_init,
-        name='output_projection',
-    )(act)
-
-    gate_out = hm.Linear(
-        num_channels,
-        name='gating_linear',
-        bias_init=1.0,
-        initializer=self.global_config.final_init,
-    )(input_act)
-    act *= jax.nn.sigmoid(gate_out)
-
-    return act
+    return jnp.einsum(equation, a, b)
 
 
 class OuterProductMean(hk.Module):
