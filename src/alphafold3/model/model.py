@@ -466,7 +466,7 @@ def _structural_atoms_to_residue(positions, book):
 
 
 def _opendde_confidence(conf, atom_valid, seq_mask, asym_id,
-                        num_plddt_bins, num_pae_bins, num_pde_bins):
+                        num_plddt_bins, num_pae_bins, num_pde_bins, return_logits=False):
   """OpenDDE's residue-space confidence logits reduced to the outputs every other model reports."""
   n_res, max_atoms = atom_valid.shape
 
@@ -507,7 +507,7 @@ def _opendde_confidence(conf, atom_valid, seq_mask, asym_id,
           asym_id=asym_id, seq_mask=seq_mask, pair_mask=pair_mask,
           bin_centers=pae_centers, pae_probs=probs))(pae_probs)
 
-  return {
+  out = {
       'predicted_lddt': predicted_lddt,
       'full_pae': full_pae,
       'full_pde': full_pde,
@@ -516,11 +516,11 @@ def _opendde_confidence(conf, atom_valid, seq_mask, asym_id,
           resolved_logits, axis=-1)[..., 1],
       'tmscore_adjusted_pae_global': tm_global,
       'tmscore_adjusted_pae_interface': tm_interface,
-      'predicted_lddt_logits': plddt_logits,
-      'predicted_aligned_error_logits': pae_logits,
-      'predicted_distance_error_logits': pde_logits,
-      'experimentally_resolved_logits': resolved_logits,
   }
+  if return_logits:
+    out.update(predicted_lddt_logits=plddt_logits, predicted_aligned_error_logits=pae_logits,
+               predicted_distance_error_logits=pde_logits, experimentally_resolved_logits=resolved_logits)
+  return out
 
 
 def num_trunk_passes(num_recycles: int, model: str) -> int:
@@ -588,6 +588,8 @@ class Model(hk.Module):
     num_recycles: int = 10
     return_embeddings: bool = False
     return_distogram: bool = False
+    # the confidence heads' logits per sample (several GiB for the pair ones on a large fold)
+    return_confidence_logits: bool = False
 
   def __init__(self, config: Config, name: str = 'diffuser'):
     super().__init__(name=name)
@@ -921,7 +923,8 @@ class Model(hk.Module):
           asym_id=batch.token_features.asym_id,
           num_plddt_bins=logits['predicted_lddt_logits'].shape[-1],
           num_pae_bins=logits['predicted_aligned_error_logits'].shape[-1],
-          num_pde_bins=logits['predicted_distance_error_logits'].shape[-1])
+          num_pde_bins=logits['predicted_distance_error_logits'].shape[-1],
+          return_logits=self.config.return_confidence_logits)
     elif self.global_config.model in model_config.NO_CONFIDENCE_HEAD:
       # No head in the checkpoint, so none in the graph: this model predicts a
       # structure and nothing about it. The keys are simply absent, which is
@@ -950,6 +953,7 @@ class Model(hk.Module):
               # dense slot order; the names are how we recover the permutation.
               atom_name_chars=diff_batch.ref_structure.atom_name_chars,
               use_dropout=use_dropout,
+              return_logits=self.config.return_confidence_logits,
           ),
           in_axes=0,
       )(samples['atom_positions'])

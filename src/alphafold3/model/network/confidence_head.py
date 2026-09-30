@@ -325,6 +325,7 @@ class ConfidenceHead(hk.Module):
       bond_type_matrix: jnp.ndarray | None = None,
       atom_name_chars: jnp.ndarray | None = None,
       use_dropout=False,
+      return_logits=False,
   ) -> dict[str, jnp.ndarray]:
     """Builds ConfidenceHead module.
 
@@ -334,6 +335,7 @@ class ConfidenceHead(hk.Module):
       seq_mask: Sequence mask.
       token_atoms_to_pseudo_beta: Pseudo beta info for atom tokens.
       asym_id: Asym ID token features.
+      return_logits: Also return the pLDDT, PAE, PDE and resolved logits.
 
     Returns:
       Dictionary of results.
@@ -659,6 +661,11 @@ class ConfidenceHead(hk.Module):
     if predicted_experimentally_resolved is not None:
       out['predicted_experimentally_resolved'] = (
           predicted_experimentally_resolved)
+    if return_logits:
+      out.update(predicted_lddt_logits=plddt_logits, predicted_aligned_error_logits=pae_logits,
+                 predicted_distance_error_logits=distance_logits)
+      if experimentally_resolved_logits is not None:
+        out['experimentally_resolved_logits'] = experimentally_resolved_logits
     return out
 
   def _get_tmscore_adjusted_pae(
