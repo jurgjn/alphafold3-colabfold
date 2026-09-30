@@ -593,7 +593,9 @@ _FEATURISE = {
                     empty_template_gap_slots='first',
                     dedupe_self_msa=not os.environ.get('AF3_NO_DDE_DEDUPE_MSA'),
                     # its featuriser fills a ligand's MSA with UNK and a nucleic chain's all-gap rows with its query
-                    native_nonprotein_msa=not os.environ.get('AF3_NO_DDE_NONPROTEIN_MSA')),
+                    native_nonprotein_msa=not os.environ.get('AF3_NO_DDE_NONPROTEIN_MSA'),
+                    # after the centring its featuriser moves each reference conformer by U(-1, 1) per axis
+                    translate_conformers=True),
     # PER FAMILY, not per model. One `protenix/model/modules/primitives.py`
     # serves every protenix release, so the padded key window is a property of
     # the implementation and not of a checkpoint. It was set for protenix2
@@ -621,7 +623,8 @@ _FEATURISE = {
     **{m: dict(padded_keys=True,
                empty_template_gap=not os.environ.get('AF3_NO_PX_TEMPLATE_GAP'),
                dedupe_self_msa=not os.environ.get('AF3_NO_PX_DEDUPE_MSA'),
-               native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'))
+               native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'),
+               translate_conformers=True)
        for m in model_config.PROTENIX_FAMILY},
     # EXPERIMENT (see the if2 tail investigation): align the atom key window's
     # edge to the atom count rounded up to a whole query block, which is what

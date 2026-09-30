@@ -697,6 +697,23 @@ def _centre_conformers(batch):
   batch['ref_pos'] = flat.reshape(pos.shape)
 
 
+def _translate_conformers(batch, max_translation=1.0):
+  """Protenix's inference ref_pos augmentation after the centring: each conformer group moves by U(-1, 1) per axis."""
+  if 'ref_pos' not in batch:
+    return
+  pos = np.array(batch['ref_pos'], dtype=np.float32)
+  mask = np.asarray(batch['ref_mask']) > 0
+  uid = np.asarray(batch['ref_space_uid']).reshape(-1).astype(np.int64)
+  if not uid.size:
+    return
+  # seeded by the per-seed conformers, so every seed is reproducible; native draws from numpy's global state
+  import hashlib
+  rng = np.random.default_rng(np.frombuffer(hashlib.sha256(pos.tobytes()).digest()[:8], np.uint64)[0])
+  shift = rng.uniform(-max_translation, max_translation, size=(int(uid.max()) + 1, 3)).astype(np.float32)
+  flat = pos.reshape(-1, 3) + shift[uid] * mask.reshape(-1)[:, None]
+  batch['ref_pos'] = flat.reshape(pos.shape)
+
+
 def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
           has_msa=True, fold_input=None, cyclic=None, lm_pair=None):
   """Apply `spec`'s featurisation conventions to a featurised batch, in place.
@@ -728,6 +745,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if (knobs.get('centre_conformers')
       and not os.environ.get('AF3_NO_CENTRE_CONFORMERS')):
     _centre_conformers(batch)
+  if knobs.get('translate_conformers') and not os.environ.get('AF3_NO_TRANSLATE_CONFORMERS'):
+    _translate_conformers(batch)
   if not knobs:
     return batch
 
