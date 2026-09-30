@@ -531,6 +531,35 @@ def _dedupe_self_msa(batch):
   return batch
 
 
+def _native_nonprotein_msa(batch, unk=20, gap=21):
+  """OpenDDE's MSA on non-protein tokens: a ligand reads UNK in every row and profile, a nucleic chain's all-gap rows repeat its query."""
+  if 'msa' not in batch:
+    return
+  msa = np.asarray(batch['msa']).copy()
+  mask = np.asarray(batch['msa_mask']).copy()
+  live = np.flatnonzero(mask.any(-1))
+  lig = np.asarray(batch['is_ligand']).astype(bool)
+  nuc = (np.asarray(batch['is_rna']) | np.asarray(batch['is_dna'])).astype(bool)
+  real = np.asarray(batch['seq_mask']).astype(bool)
+  asym = np.asarray(batch['asym_id'])
+  cols = np.flatnonzero(lig & real)
+  msa[np.ix_(live, cols)] = unk
+  mask[np.ix_(live, cols)] = True
+  for a in np.unique(asym[nuc & real]):
+    c = np.flatnonzero((asym == a) & nuc & real)
+    rows = live[(msa[np.ix_(live, c)] == gap).all(-1)]
+    msa[np.ix_(rows, c)] = msa[live[0], c]
+    mask[np.ix_(rows, c)] = True
+  if 'profile' in batch:
+    profile = np.asarray(batch['profile']).copy()
+    profile[cols] = 0.0
+    profile[cols, unk] = 1.0
+    batch['profile'] = profile
+  batch['msa'] = msa.astype(np.asarray(batch['msa']).dtype)
+  batch['msa_mask'] = mask
+  return batch
+
+
 def _attach_esm(batch, esm):
   """Put ESM2 embeddings on the protein tokens, in order; everything else zero.
 
@@ -761,6 +790,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _zero_msa(batch)
   if knobs.get('dedupe_self_msa'):
     _dedupe_self_msa(batch)
+  if knobs.get('native_nonprotein_msa'):
+    _native_nonprotein_msa(batch)
   if knobs.get('empty_template_gap'):
     _empty_template_gap(batch, slots=knobs.get('empty_template_gap_slots',
                                                'first'))
