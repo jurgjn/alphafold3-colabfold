@@ -327,6 +327,8 @@ CHAI1_SETTINGS = (
     # confirms it: chai's step-0 noise_sigma is 1261.6. Starting at twice the
     # noise the denoiser was trained for is not a small error.
     ('heads.diffusion.eval.sigma_max', 80.0),
+    # chai runs every MSA row, up to its MAX_MSA_DEPTH, on every pass (recycle_msa_subsample=0 by default)
+    ('evoformer.num_msa', int(os.environ.get('AF3_CHAI_NUM_MSA', 16384))),
 )
 
 
@@ -703,7 +705,7 @@ _FEATURISE = {
     # (data/parsing/structure/residue.py get_restype), and its ESM2 sequence
     # reads X there too (_resolve_esm).
     'chai1': dict(circular_keys=True, drop_atoms=('OXT',),
-                  zero_msa_without_alignment=True, esm=True,
+                  zero_msa_without_alignment=True, esm=True, full_msa=True,
                   atomized_unknown_restype=True),
 }
 

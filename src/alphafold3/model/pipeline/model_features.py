@@ -870,7 +870,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _dedupe_self_msa(batch)
   if knobs.get('native_nonprotein_msa'):
     _native_nonprotein_msa(batch)
-  if knobs.get('native_rng'):
+  if knobs.get('full_msa') or knobs.get('native_rng'):
     _crop_msa_padding(batch)
   if knobs.get('native_rng') and seed is not None and fold_input is not None:
     _native_rng(batch, seed, knobs['native_rng'], fold_input)
