@@ -735,6 +735,8 @@ class Model(hk.Module):
       del batch[k]
     has_structural = opendde and any(
         k.startswith('structbook/') for k in _struct)
+    # protenix's native randomness replayed per seed (pipeline.protenix_rng); read by the evoformer
+    native_rng = {k[len('px_'):]: batch.pop(k) for k in list(batch) if k.startswith('px_')} or None
 
     batch = feat_batch.Batch.from_data_dict(batch)
 
@@ -745,6 +747,7 @@ class Model(hk.Module):
     # prediction. See featurization.blend_soft.
     embedding_module.soft_seq = soft_seq
     embedding_module.design_mask = design_mask
+    embedding_module.native_rng = native_rng
     target_feat = create_target_feat_embedding(
         batch=batch,  # pyrefly: ignore[bad-argument-type]
         config=embedding_module.config,
@@ -805,6 +808,8 @@ class Model(hk.Module):
       # loop). The evoformer cannot see the iteration index inside a fori_loop,
       # so flag the first pass in the carry and let it substitute z_init/s_init.
       embeddings['recycle_first'] = jnp.ones((), jnp.float32)
+    if native_rng is not None:
+      embeddings['px_pass'] = jnp.zeros((), jnp.int32)
     if hk.running_init():
       embeddings, _ = recycle_body(None, (embeddings, key))
     else:

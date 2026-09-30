@@ -714,8 +714,67 @@ def _translate_conformers(batch, max_translation=1.0):
   batch['ref_pos'] = flat.reshape(pos.shape)
 
 
+# threads per SM by compute capability, for torch's launch grid; the SM count comes from the device
+_THREADS_PER_SM = {(7, 0): 2048, (7, 5): 1024, (8, 0): 2048, (8, 6): 1536, (8, 7): 1536, (8, 9): 1536,
+                   (9, 0): 2048, (10, 0): 2048, (10, 3): 2048, (12, 0): 1536, (12, 1): 1536}
+NATIVE_RNG_PASSES = 64
+
+
+def _device_grid_params():
+  """(SM count, max threads per SM) of the device this process runs on, for torch's dropout/randperm grids"""
+  import jax
+  dev = jax.devices()[0]
+  sms = int(getattr(dev, 'core_count', 0) or 1)
+  cc = tuple(int(x) for x in str(getattr(dev, 'compute_capability', '8.0')).split('.')[:2])
+  return sms, _THREADS_PER_SM.get(cc, 2048)
+
+
+def _msa_depth(batch):
+  """rows of the MSA with any real position"""
+  n_tok = int(np.asarray(batch['seq_mask']).sum())
+  return int(np.asarray(batch['msa_mask']).astype(bool)[:, :n_tok].any(-1).sum())
+
+
+def _crop_msa_padding(batch):
+  """For a model that runs every MSA row it is given: crop the padding to a power-of-two bucket over the real rows"""
+  if 'msa' not in batch:
+    return
+  rows = np.asarray(batch['msa_mask']).shape[0]
+  depth = min(rows, max(1024, 1 << max(0, _msa_depth(batch) - 1).bit_length()))
+  for key in ('msa', 'msa_mask', 'deletion_matrix'):
+    batch[key] = batch[key][:depth]
+
+
+def _native_rng(batch, seed, pair_channel, fold_input):
+  """Protenix's MC dropout and per-pass MSA subsets as native draws them for this seed -- see protenix_rng."""
+  from alphafold3.common import folding_input
+  from alphafold3.constants import chemical_components
+  from alphafold3.model.pipeline import protenix_rng
+  polymers = (folding_input.ProteinChain, folding_input.RnaChain, folding_input.DnaChain)
+  # native builds each entity once, and copies of a chain are one entity
+  entities = list(dict.fromkeys((type(c), tuple(c.to_ccd_sequence())) for c in fold_input.chains
+                                if isinstance(c, polymers)))
+  draws = protenix_rng.leaving_group_draws([codes for _, codes in entities],
+                                           chemical_components.Ccd(user_ccd=fold_input.user_ccd))
+  n_tok = int(np.asarray(batch['seq_mask']).sum())
+  n_msa = _msa_depth(batch)
+  sms, tps = _device_grid_params()
+  mc, rows, offsets = protenix_rng.replay(
+      seed, leaving_draws=draws, n_msa=n_msa, n_tokens=n_tok, pair_channel=pair_channel,
+      passes=NATIVE_RNG_PASSES, sms=sms, threads_per_sm=tps)
+  keep = np.zeros((NATIVE_RNG_PASSES, np.asarray(batch['msa_mask']).shape[0]), bool)
+  for k, r in enumerate(rows):
+    keep[k, r] = True
+  batch['px_seed'] = np.asarray(seed, np.int32)
+  batch['px_mc_dropout'] = np.asarray(mc, np.int32)
+  batch['px_msa_rows'] = keep
+  batch['px_drop_offset'] = np.asarray(offsets, np.int32)
+  batch['px_n_tokens'] = np.asarray(n_tok, np.int32)
+  batch['px_grid'] = np.asarray(protenix_rng.grid_size(n_tok * n_tok * pair_channel, sms, tps), np.int32)
+
+
 def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
-          has_msa=True, fold_input=None, cyclic=None, lm_pair=None):
+          has_msa=True, fold_input=None, cyclic=None, lm_pair=None, seed=None):
   """Apply `spec`'s featurisation conventions to a featurised batch, in place.
 
   spec is a model_registry.ModelSpec; the work is driven by spec.featurise.
@@ -811,6 +870,10 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _dedupe_self_msa(batch)
   if knobs.get('native_nonprotein_msa'):
     _native_nonprotein_msa(batch)
+  if knobs.get('native_rng'):
+    _crop_msa_padding(batch)
+  if knobs.get('native_rng') and seed is not None and fold_input is not None:
+    _native_rng(batch, seed, knobs['native_rng'], fold_input)
   if knobs.get('empty_template_gap'):
     _empty_template_gap(batch, slots=knobs.get('empty_template_gap_slots',
                                                'first'))

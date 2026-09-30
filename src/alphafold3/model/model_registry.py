@@ -624,7 +624,10 @@ _FEATURISE = {
                empty_template_gap=not os.environ.get('AF3_NO_PX_TEMPLATE_GAP'),
                dedupe_self_msa=not os.environ.get('AF3_NO_PX_DEDUPE_MSA'),
                native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'),
-               translate_conformers=True)
+               translate_conformers=True,
+               # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width
+               **({} if os.environ.get('AF3_NO_PX_NATIVE_RNG')
+                  else {'native_rng': {'protenix1': 128, 'protenix2': 256}[m]}))
        for m in model_config.PROTENIX_FAMILY},
     # EXPERIMENT (see the if2 tail investigation): align the atom key window's
     # edge to the atom count rounded up to a whole query block, which is what

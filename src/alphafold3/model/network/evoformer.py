@@ -19,6 +19,7 @@
 
 """Evoformer network."""
 
+import dataclasses
 import functools
 
 from alphafold3.common import base_config
@@ -31,6 +32,7 @@ from . import atom_cross_attention
 from . import featurization
 from . import modules
 from . import template_modules
+from . import torch_philox
 import os
 
 import haiku as hk
@@ -277,6 +279,19 @@ def _esm_tap(name, value):
   if os.environ.get('AF3_ESM_TRUNK_TAPS'):
     ESM_TRUNK_TAPS.setdefault(name, []).append(value)
   return value
+
+
+def _native_mc_dropout(x, rng, k):
+  """protenix's MC dropout on the recycled pair, with native's own mask for this seed and pass"""
+  from alphafold3.model.pipeline import protenix_rng
+  keep_p = 1.0 - protenix_rng.MC_DROPOUT_RATE
+  k = jnp.minimum(k, rng['drop_offset'].shape[0] - 1)
+
+  def drop(x):
+    keep = torch_philox.dropout_keep(rng['seed'], rng['drop_offset'][k], rng['n_tokens'], x.shape,
+                                     keep=keep_p, grid=rng['grid'])
+    return jnp.where(keep, x.astype(jnp.float32) * jnp.float32(1.0 / keep_p), 0.0).astype(x.dtype)
+  return jax.lax.cond(rng['mc_dropout'] > 0, drop, lambda x: x, x)
 
 
 class Evoformer(hk.Module):
@@ -630,9 +645,13 @@ class Evoformer(hk.Module):
       is_ligand: jnp.ndarray | None = None,
       asym_id: jnp.ndarray | None = None,
       single_post_recycle: jnp.ndarray | None = None,
+      rows_keep: jnp.ndarray | None = None,
   ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Processes MSA and returns updated pair activations."""
     dtype = pair_activations.dtype
+    if rows_keep is not None:
+      msa_batch = dataclasses.replace(
+          msa_batch, mask=msa_batch.mask * rows_keep[:, None].astype(msa_batch.mask.dtype))
     chai1 = self.global_config.model == 'chai1'
     # chai does NOT shuffle: it takes the MSA in the order given and keeps the
     # query first. Shuffling here would also break the query-row handling below,
@@ -640,7 +659,9 @@ class Evoformer(hk.Module):
     # land somewhere random and some other sequence would be labelled as it.
     keep_query = (self.global_config.model in model_config.MSA_KEEP_QUERY_ROW
                   and not os.environ.get('AF3_NO_KEEP_QUERY'))
-    if keep_query:
+    if rows_keep is not None:
+      pass        # the replayed subset is native's whole sample (its test cutoff is 16384), so no shuffle or cut
+    elif keep_query:
       # One call, not shuffle-then-truncate: the query has to survive the
       # SUBSAMPLE, which is a property of the pair and not of either step.
       msa_batch, key = featurization.subsample_msa_keep_query(
@@ -755,6 +776,8 @@ class Evoformer(hk.Module):
   # Attributes rather than call arguments so the change stays at the two ends --
   # here and in Model -- instead of threading through every intermediate call.
   soft_seq = None
+  # protenix's native MC dropout and MSA subsets for this seed (pipeline.protenix_rng), or None
+  native_rng = None
   design_mask = None
 
   def __call__(
@@ -770,6 +793,8 @@ class Evoformer(hk.Module):
 
     num_residues = target_feat.shape[0]
     assert batch.token_features.aatype.shape == (num_residues,)
+    rng = self.native_rng
+    px_pass = prev.get('px_pass') if rng is not None else None
 
     dtype = utils.compute_dtype(self.global_config)
 
@@ -834,13 +859,16 @@ class Evoformer(hk.Module):
           )(
               hm.LayerNorm(name='prev_embedding_layer_norm')(act)
           )
-        return act + hm.Linear(
+        recycled = hm.Linear(
             act.shape[-1],
             name='prev_embedding',
             initializer=self.global_config.final_init,
         )(
             hm.LayerNorm(name='prev_embedding_layer_norm')(z_prev)
         )
+        if rng is not None:
+          recycled = _native_mc_dropout(recycled, rng, px_pass)
+        return act + recycled
 
       if pair_only:
         # ESMFold2 assembles the ENTIRE injection -- relative encoding, bonds AND
@@ -958,6 +986,8 @@ class Evoformer(hk.Module):
             # s_init. Feeding s_init put the block-0 outer product at corr 0.613;
             # this takes it to 0.999993.
             single_post_recycle=single_activations,
+            rows_keep=(None if rng is None else
+                       rng['msa_rows'][jnp.minimum(px_pass, rng['msa_rows'].shape[0] - 1)]),
         )
         _esm_tap('z_after_msa', pair_activations)
       del key  # Unused after this point.
@@ -1048,6 +1078,7 @@ class Evoformer(hk.Module):
           # consumed above; every pass after the first recycles for real
           **({'recycle_first': jnp.zeros((), jnp.float32)}
              if first is not None else {}),
+          **({'px_pass': px_pass + 1} if rng is not None else {}),
       }
 
     return output
