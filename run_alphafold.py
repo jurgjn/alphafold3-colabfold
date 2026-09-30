@@ -1089,6 +1089,7 @@ def predict_structure(
   spec = model_registry.get(model_runner.model_name)
   if featurise_off:
     spec = spec.without(featurise_off)
+  fold_input = model_features.prepare_input(fold_input, spec)
   featurise = functools.partial(
       featurisation.featurise_input,
       fold_input=fold_input,

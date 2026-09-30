@@ -773,6 +773,36 @@ def _native_rng(batch, seed, pair_channel, fold_input):
   batch['px_grid'] = np.asarray(protenix_rng.grid_size(n_tok * n_tok * pair_channel, sms, tps), np.int32)
 
 
+def prepare_input(fold_input, spec):
+  """The input-side conventions, applied before featurisation: a copy of `fold_input` as the model's featuriser sees it.
+
+  dedupe_unpaired_msa: the protenix featuriser deduplicates each protein chain's unpaired MSA, ignoring insertions,
+  where AF3 keeps a supplied MSA as given (msa_featurizer RawMsa, dedup=True); the paired MSA stays as given in both.
+  """
+  knobs = spec.featurise
+  if not knobs.get('dedupe_unpaired_msa'):
+    return fold_input
+  import dataclasses
+  import string
+  from alphafold3.common import folding_input
+  from alphafold3.data import parsers
+  strip = str.maketrans('', '', string.ascii_lowercase)
+  chains = []
+  for c in fold_input.chains:
+    if isinstance(c, folding_input.ProteinChain) and c.unpaired_msa:
+      seqs, descs = parsers.parse_fasta(c.unpaired_msa)
+      seen, lines = set(), []
+      for s, d in zip(seqs, descs):
+        if s.translate(strip) not in seen:
+          seen.add(s.translate(strip))
+          lines += [f'>{d}', s]
+      c = folding_input.ProteinChain(id=c.id, sequence=c.sequence, ptms=c.ptms, description=c.description,
+                                     unpaired_msa='\n'.join(lines) + '\n', paired_msa=c.paired_msa,
+                                     templates=c.templates)
+    chains.append(c)
+  return dataclasses.replace(fold_input, chains=chains)
+
+
 def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
           has_msa=True, fold_input=None, cyclic=None, lm_pair=None, seed=None):
   """Apply `spec`'s featurisation conventions to a featurised batch, in place.

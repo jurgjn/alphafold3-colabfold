@@ -596,6 +596,8 @@ _FEATURISE = {
                     dedupe_self_msa=not os.environ.get('AF3_NO_DDE_DEDUPE_MSA'),
                     # its featuriser fills a ligand's MSA with UNK and a nucleic chain's all-gap rows with its query
                     native_nonprotein_msa=not os.environ.get('AF3_NO_DDE_NONPROTEIN_MSA'),
+                    # and deduplicates a protein chain's unpaired MSA, which AF3 keeps as supplied
+                    dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
                     # after the centring its featuriser moves each reference conformer by U(-1, 1) per axis
                     translate_conformers=True),
     # PER FAMILY, not per model. One `protenix/model/modules/primitives.py`
@@ -626,6 +628,7 @@ _FEATURISE = {
                empty_template_gap=not os.environ.get('AF3_NO_PX_TEMPLATE_GAP'),
                dedupe_self_msa=not os.environ.get('AF3_NO_PX_DEDUPE_MSA'),
                native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'),
+               dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
                translate_conformers=True,
                # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width
                **({} if os.environ.get('AF3_NO_PX_NATIVE_RNG')
