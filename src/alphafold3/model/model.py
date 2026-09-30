@@ -524,20 +524,13 @@ def _opendde_confidence(conf, atom_valid, seq_mask, asym_id,
 
 
 def num_trunk_passes(num_recycles: int, model: str) -> int:
-  """How many times the trunk runs, from a `num_recycles` setting.
+  """Trunk passes for a `num_recycles` setting: AF's convention for every model, N recycles = N + 1 passes.
 
-  AF3 counts ADDITIONAL passes, so num_recycles=3 runs the trunk four times.
-  chai counts TOTAL passes: `for _ in range(num_trunk_recycles)` in chai1.py,
-  whose default 3 runs it three times. Getting this wrong is invisible -- the
-  recycle is nearly converged by then, so an extra pass only perturbs the
-  output -- which is why it is a named function with a test rather than a `+ 1`.
+  Each model's own default pass count lives in model_registry (default_num_recycles), so `model` no longer changes
+  the meaning; it stays in the signature for callers.
   """
-  if model == 'chai1':
-    # clamped at 1: chai's own `range(0)` really would run the trunk zero times,
-    # leaving the recycle carry at its seed, and callers that pass 0 mean "one
-    # trunk pass, no recycling" -- which is what an injection harness wants.
-    return max(1, num_recycles)
-  return num_recycles + 1
+  del model
+  return max(0, num_recycles) + 1
 
 
 class Chai1StructurePair(hk.Module):

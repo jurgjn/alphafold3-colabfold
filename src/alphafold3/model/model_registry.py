@@ -763,12 +763,29 @@ WEIGHTS_FOLDERS = {
 TOWER_FOLDER = 'lm'
 
 
+# Trunk passes each model's own inference path runs by default (its CLI, not its base config); unlisted = AF3's 11.
+_TRUNK_PASSES = {
+    'openfold3': 4,      # of3_all_atom model_config num_recycles 3; num_cycles = num_recycles + 1
+    'openbind0': 4,      # the same OpenFold3 config
+    'boltz2': 4,         # boltz main.py --recycling_steps 3; range(recycling_steps + 1)
+    'protenix1': 10,     # runner --cycle 10 (and use_default_params); range(N_cycle)
+    'protenix2': 10,
+    'opendde': 10,       # config/model_base.py N_cycle 10
+    'rosettafold3': 10,  # inference_engine/rf3.yaml n_recycles 10; range(n_recycles)
+    'chai1': 3,          # chai1.py num_trunk_recycles 3; range(num_trunk_recycles)
+    'esmfold2': 20,      # esmfold2/processor.py num_loops 20
+    'esmfold2_fast': 20,
+    'esmfold2_lm600m': 20,
+    'esmfold2_lm300m': 20,
+}
+
+
 class ModelSpec:
   """Everything `global_config.model = name` implies, in one place."""
 
   __slots__ = ('name', 'full_fat', 'trained_fourier', 'featurise',
                'weights_repo', 'weights_file', 'weights_prefix', 'weights_licence',
-               'weights_source')
+               'weights_source', 'default_num_recycles')
 
   # Which network this spec's weights run on. Everything in MODELS rides the
   # AF3 graph; AF2 does not (see AF2Spec). Read this rather than testing the
@@ -793,6 +810,8 @@ class ModelSpec:
                          or name == 'chai1')
     self.trained_fourier = trained_fourier
     self.featurise = dict(_FEATURISE.get(name, {}))
+    # AF's convention (N recycles = N + 1 passes) for the model's own default pass count
+    self.default_num_recycles = _TRUNK_PASSES.get(name, 11) - 1
     self.weights_repo = weights_repo
     self.weights_file = weights_file or f'{name}.bin.zst'
     # Where it lives IN the repo. A flat repo of forty-odd blobs is unreadable;

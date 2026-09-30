@@ -1464,7 +1464,31 @@ boltz2's cross-chain template visibility, applies to the diff itself: it needs a
 PTM case, a ligand case and a two-chain case before "our featurisation matches"
 means anything general. One of those three is now run.
 
-## WE RECYCLE 11 TIMES FOR EVERYONE; the vendors do not (2026-09-12, OPEN)
+## WE RECYCLE 11 TIMES FOR EVERYONE; the vendors do not (2026-09-12, RESOLVED 2026-09-30)
+
+**Resolved:** with `num_recycles` unset each model now runs its own default (`model_registry._TRUNK_PASSES`,
+read by ColabFold through `ModelSpec.default_num_recycles`), and an explicit N means N + 1 passes for every
+model -- AF's convention, which ColabFold's AF2 path already used. chai's total-pass special case in
+`num_trunk_passes` is gone with it, so `fold_check.py RECYCLES=3` on chai now runs 4 passes, not 3.
+
+Re-derived from each vendor's INFERENCE path (CLI / inference engine), which corrects two rows of the table
+below: protenix's base-config `N_cycle` 4 is overridden by its runner's `--cycle 10`, and rf3's inference
+engine sets `n_recycles: 10` (its training config is where 4-6 live).
+
+| model | default | trunk passes | source |
+|---|---|---|---|
+| openfold3, openbind0 | num_recycles 3 | 4 | of3_all_atom/config/model_config.py; num_cycles = num_recycles + 1 |
+| boltz2 | --recycling_steps 3 | 4 | boltz/main.py:853; range(recycling_steps + 1) |
+| protenix1, protenix2 | --cycle 10 | 10 | runner CLI and use_default_params; range(N_cycle) |
+| opendde | N_cycle 10 | 10 | config/model_base.py:129 |
+| rosettafold3 | n_recycles 10 | 10 | configs/inference_engine/rf3.yaml:12; range(n_recycles) |
+| chai1 | num_trunk_recycles 3 | 3 | chai1.py:496; range(num_trunk_recycles) |
+| esmfold2 family | num_loops 20 | 20 | esmfold2/processor.py:332 (the lm tiers inferred) |
+| intellifold2 | unverified here | 11 (unchanged) | no vendor source on hand |
+| alphafold3 | 10 | 11 | the reference |
+
+The original entry, kept for the reasoning:
+
 
 Found while asking what the sweep still misses. Our `num_recycles` is 10 for
 every model -- AF3's default, i.e. 11 trunk passes -- and almost nobody else runs
