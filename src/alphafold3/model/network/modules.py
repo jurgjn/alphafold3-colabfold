@@ -33,6 +33,14 @@ import jax
 import jax.numpy as jnp
 import tokamax
 
+# Fused pairformer kernels, installed by ColabFold under --use-fast-kernels; None keeps the stock graph.
+# PACKED_ATTENTION(dtype, head_dim) -> f(p, bias, kmask, gate_bias, *, sm_scale, column) or None
+PACKED_ATTENTION = None
+# TRIMUL_KERNELS(dtype, channels, hidden) -> (gated_dual_proj, epilogue) or None
+TRIMUL_KERNELS = None
+# GLU_TRANSITION(dtype, channels, hidden) -> f(x, ln_scale, ln_offset, wa, wb, wo[, keep], *, add_input) or None
+GLU_TRANSITION = None
+
 
 def _pair_dropout(act, use_dropout, rate=0.25, columnwise=False):
   """ColabDesign2: shared row/column-wise dropout on a pair tensor (i, j, c).
@@ -90,8 +98,8 @@ class TransitionBlock(hk.Module):
     self.config = config
     self.global_config = global_config
 
-  def __call__(self, act, broadcast_dim=0, mask=None):
-    """AF3's transition; `mask` is the OpenFold3 lineage's `_mask_trans`.
+  def __call__(self, act, broadcast_dim=0, mask=None, residual=None):
+    """AF3's transition; `mask` is the OpenFold3 lineage's `_mask_trans`; with `residual`, returns residual + the masked update.
 
     OpenFold3 multiplies every transition's OUTPUT by the mask of the axis it
     ran over (`layers/transition.py`: `x = self.linear_out(x) * mask`), and
@@ -107,6 +115,10 @@ class TransitionBlock(hk.Module):
     num_channels = act.shape[-1]
 
     num_intermediate = int(num_channels * self.config.num_intermediate_factor)
+
+    kernel = self.glu_kernel(self.config, act.dtype, num_channels)
+    if kernel is not None:
+      return self._fused(act, mask, residual, kernel, num_intermediate)
 
     act = hm.LayerNorm(name='input_layer_norm')(act)
 
@@ -135,7 +147,30 @@ class TransitionBlock(hk.Module):
     )(c)
     if mask is not None:
       out = out * mask[..., None].astype(out.dtype)
-    return out
+    return out if residual is None else residual + out
+
+  @staticmethod
+  def glu_kernel(config, dtype, num_channels):
+    """The fused kernel for this transition, or None."""
+    if GLU_TRANSITION is None or not config.use_glu_kernel:
+      return None
+    return GLU_TRANSITION(dtype, num_channels, int(num_channels * config.num_intermediate_factor))
+
+  @hk.transparent
+  def _fused(self, act, mask, residual, kernel, num_intermediate):
+    """LayerNorm, the GLU, transition2, the mask and the residual in one kernel; the same parameters under the same names."""
+    c = act.shape[-1]
+    with hk.name_scope('input_layer_norm'):
+      scale = hk.get_parameter('scale', (c,), jnp.float32, init=jnp.ones)
+      offset = hk.get_parameter('offset', (c,), jnp.float32, init=jnp.zeros)
+    w1, _ = hm.haiku_linear_get_params(act, num_output=num_intermediate * 2, initializer='relu', name='transition1')
+    w2, _ = hm.haiku_linear_get_params(jax.ShapeDtypeStruct((num_intermediate,), act.dtype), num_output=c,
+                                       initializer=self.global_config.final_init, name='transition2')
+    keep = [] if mask is None else [jnp.broadcast_to(mask, act.shape[:-1]).astype(act.dtype)]
+    x = act if residual is None else residual
+    assert residual is None or residual is act, 'the kernel adds the input it normalised'
+    return kernel(x, scale, offset, w1[:, :num_intermediate].astype(act.dtype), w1[:, num_intermediate:].astype(act.dtype),
+                  w2.astype(act.dtype), *keep, add_input=residual is not None)
 
 
 def _msa_pair_logits(pair_act, num_head):
@@ -320,6 +355,29 @@ class GridSelfAttention(hk.Module):
       )(weighted_avg)], axis=-1)
     return out
 
+  @hk.transparent
+  def _packed_attention(self, act, bias, kmask):
+    """_attention from one [X, Y, 4, H, D] projection that a fused kernel reads in place, along rows or columns."""
+    h = self.config.num_head
+    d = self.config.qkv_dim or max(act.shape[-1] // h, 16)
+    kernel = PACKED_ATTENTION(act.dtype, d)
+    if kernel is None:
+      return None
+    rf3 = self.global_config.model == 'rosettafold3'
+    get = lambda **kw: hm.haiku_linear_get_params(act, **kw)[0]
+    wq = get(num_output=(h, d), transpose_weights=True, name='q_projection')
+    wk = get(num_output=(h, d), transpose_weights=True, name='k_projection')
+    wv = get(num_output=(h, d), name='v_projection')
+    wg, bg = hm.haiku_linear_get_params(act, num_output=h * d, use_bias=rf3, bias_init=1.0, initializer='zeros',
+                                        transpose_weights=True, name='gating_query')
+    chd = lambda w: jnp.moveaxis(w.reshape(h, d, -1), -1, 0)  # (h, d, c) -> (c, h, d)
+    w = jnp.stack([chd(wq), chd(wk), wv, chd(wg)], axis=1).astype(act.dtype)
+    gb = jnp.zeros((h, d), act.dtype) if bg is None else bg.reshape(h, d).astype(act.dtype)
+    out = kernel(jnp.einsum('xyc,cghd->xyghd', act, w), bias.astype(act.dtype), kmask.astype(jnp.bool_), gb,
+                 sm_scale=d ** -0.5, column=self.transpose)
+    return hm.Linear(act.shape[-1], use_bias=rf3, initializer=self.global_config.final_init,
+                     name='output_projection')(out.reshape(out.shape[:-2] + (-1,)))
+
   def __call__(self, act, pair_mask):
     """Builds a module.
 
@@ -407,6 +465,13 @@ class GridSelfAttention(hk.Module):
         num_residues, self.global_config.pair_attention_chunk_size
     )
 
+    # chai1 keeps the ending node transposed and dual_output mixes both directions: stock path
+    if (PACKED_ATTENTION is not None and chunk_size is None and not self.config.dual_output
+        and self.global_config.model != 'chai1'):
+      out = self._packed_attention(act, nonbatched_bias, pair_mask)
+      if out is not None:
+        return out
+
     if self.transpose:
       act = jnp.swapaxes(act, -2, -3)
 
@@ -462,12 +527,13 @@ class TriangleMultiplication(hk.Module):
     self.config = config
     self.global_config = global_config
 
-  def __call__(self, act, mask):
+  def __call__(self, act, mask, residual=None):
     """Applies Module.
 
     Args:
       act: The activation.
       mask: The mask.
+      residual: added to the output when given.
 
     Returns:
       Outputs, should have same shape/type as output_act
@@ -487,10 +553,14 @@ class TriangleMultiplication(hk.Module):
 
     act = hm.LayerNorm(name='left_norm_input')(act)
     input_act = act
+    kernels = TRIMUL_KERNELS(act.dtype, num_channels, hidden_dim) if TRIMUL_KERNELS is not None else None
 
     cb = self.config.channel_block
     if cb and hidden_dim % cb == 0 and num_residues ** 2 * hidden_dim * 8 > TRIMUL_BLOCK_BYTES:
+      kernels = None
       act = self._blocked_einsum(act, mask, hidden_dim, equation)
+    elif kernels is not None:
+      act = self._fused_einsum(act, mask, hidden_dim, equation, kernels[0])
     else:
       act = self._einsum(act, mask, hidden_dim, equation)
     # rf3 divides by the sequence length here, and it is NOT a no-op in front of
@@ -498,6 +568,8 @@ class TriangleMultiplication(hk.Module):
     # model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH for the measurement.
     if self.global_config.model in model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH:
       act = act / jnp.asarray(num_residues, act.dtype)
+    if kernels is not None:
+      return self._fused_output(act, input_act, num_channels, kernels[1], residual)
     act = hm.LayerNorm(name='center_norm', axis=0, param_axis=0)(act)
 
     act = jnp.transpose(act, (1, 2, 0))
@@ -515,7 +587,38 @@ class TriangleMultiplication(hk.Module):
     )(input_act)
     act *= jax.nn.sigmoid(gate_out)
 
-    return act
+    return act if residual is None else residual + act
+
+  @hk.transparent
+  def _fused_einsum(self, act, mask, hidden_dim, equation, gated_dual_proj):
+    """_einsum with the gated projection, mask and a/b split in one kernel that writes channel-major."""
+    n, c = act.shape[0], act.shape[-1]
+    wp, _ = hm.haiku_linear_get_params(act, num_output=hidden_dim * 2, name='projection')
+    wg, _ = hm.haiku_linear_get_params(act, num_output=hidden_dim * 2, initializer=self.global_config.final_init,
+                                       name='gate')
+    # output channel 2c is a[c] and 2c + 1 is b[c]: regroup as [a | b], the kernel's split
+    ab = lambda w: jnp.concatenate([w[:, 0::2], w[:, 1::2]], axis=1).astype(act.dtype)
+    zero = jnp.zeros((hidden_dim * 2,), act.dtype)
+    a, b = gated_dual_proj(act.reshape(-1, c), ab(wp), zero, ab(wg), zero, mask.reshape(-1).astype(act.dtype),
+                           split=True, channel_major=True)
+    return jnp.einsum(equation, a.reshape(hidden_dim, n, n), b.reshape(hidden_dim, n, n))
+
+  @hk.transparent
+  def _fused_output(self, act, input_act, num_channels, epilogue, residual):
+    """center_norm, output_projection, the gate and the residual in one kernel, from channel-major act."""
+    hidden = act.shape[0]
+    with hk.name_scope('center_norm'):
+      scale = hk.get_parameter('scale', (hidden,), jnp.float32, init=jnp.ones)
+      offset = hk.get_parameter('offset', (hidden,), jnp.float32, init=jnp.zeros)
+    final = self.global_config.final_init
+    wo, _ = hm.haiku_linear_get_params(jax.ShapeDtypeStruct((hidden,), act.dtype), num_output=num_channels,
+                                       initializer=final, name='output_projection')
+    wg, _ = hm.haiku_linear_get_params(input_act, num_output=num_channels, initializer=final, name='gating_linear')
+    zero = jnp.zeros((num_channels,), act.dtype)
+    res = [] if residual is None else [residual.reshape(-1, num_channels)]
+    out = epilogue(act.reshape(hidden, -1), input_act.reshape(-1, input_act.shape[-1]), scale, offset,
+                   wo.astype(act.dtype), zero, wg.astype(act.dtype), zero, *res)
+    return out.reshape(input_act.shape[:-1] + (num_channels,))
 
   @hk.transparent
   def _blocked_einsum(self, act, mask, hidden_dim, equation):
@@ -875,17 +978,19 @@ class PairFormerIteration(hk.Module):
     # SI Algorithm 17: rowwise 0.25 on the two triangle multiplications and the
     # starting-node attention, columnwise 0.25 on the ending-node attention (the
     # transpose=True one). No dropout on the transition. off => bit-identical.
-    add_pair(_pair_dropout(TriangleMultiplication(
-        self.config.triangle_multiplication_outgoing,
-        self.global_config,
-        name='triangle_multiplication_outgoing',
-    )(pair_in, pair_mask), use_dropout))
-
-    add_pair(_pair_dropout(TriangleMultiplication(
-        self.config.triangle_multiplication_incoming,
-        self.global_config,
-        name='triangle_multiplication_incoming',
-    )(act if not parallel else pair_in, pair_mask), use_dropout))
+    for direction in ('outgoing', 'incoming'):
+      tri_mul = TriangleMultiplication(
+          getattr(self.config, f'triangle_multiplication_{direction}'),
+          self.global_config,
+          name=f'triangle_multiplication_{direction}',
+      )
+      if not parallel and use_dropout is False:
+        # dropout statically off is the identity, so a fused kernel can add the residual itself;
+        # its key is still drawn so later draws do not shift
+        hk.next_rng_key()
+        act = tri_mul(act, pair_mask, residual=act)
+      else:
+        add_pair(_pair_dropout(tri_mul(act if not parallel else pair_in, pair_mask), use_dropout))
 
     _attn = lambda nm, tr: GridSelfAttention(
         self.config.pair_attention,
@@ -921,7 +1026,7 @@ class PairFormerIteration(hk.Module):
       add_pair(_pair_dropout(
           _attn('pair_attention2', True), use_dropout, columnwise=True))
 
-    transition_block = TransitionBlock(
+    transition_block = unsharded = TransitionBlock(
         self.config.pair_transition, self.global_config, name='pair_transition'
     )
     if self.config.shard_transition_blocks:
@@ -937,10 +1042,14 @@ class PairFormerIteration(hk.Module):
     # arguments along axis 0, and handing it a (N, N) mask beside an (N, N, C)
     # activation is one more thing to get right for no gain -- masking the
     # output is pointwise, so the two are identical.
-    _trans = transition_block(act if not parallel else pair_in)
-    if _mt:
-      _trans = _trans * pair_mask[..., None].astype(_trans.dtype)
-    add_pair(_trans)
+    if not parallel and TransitionBlock.glu_kernel(self.config.pair_transition, act.dtype, act.shape[-1]):
+      # the residual add (and OpenFold3's mask) can then happen inside a fused kernel; no sharding, it never holds the hidden
+      act = unsharded(act, mask=pair_mask if _mt else None, residual=act)
+    else:
+      _trans = transition_block(act if not parallel else pair_in)
+      if _mt:
+        _trans = _trans * pair_mask[..., None].astype(_trans.dtype)
+      add_pair(_trans)
     if parallel:
       act = pair_in + pair_delta
 
