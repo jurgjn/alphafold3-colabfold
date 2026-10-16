@@ -15,11 +15,13 @@
       "single_attention": null,
       "single_transition": null,
       "triangle_multiplication_incoming": {
+        "channel_block": 32,
         "equation": "kjc,kic->ijc",
         "hidden_dim": null,
         "use_glu_kernel": true
       },
       "triangle_multiplication_outgoing": {
+        "channel_block": 32,
         "equation": "ikc,jkc->ijc",
         "hidden_dim": null,
         "use_glu_kernel": true
@@ -40,11 +42,13 @@
       "single_attention": null,
       "single_transition": null,
       "triangle_multiplication_incoming": {
+        "channel_block": 32,
         "equation": "kjc,kic->ijc",
         "hidden_dim": null,
         "use_glu_kernel": true
       },
       "triangle_multiplication_outgoing": {
+        "channel_block": 32,
         "equation": "ikc,jkc->ijc",
         "hidden_dim": null,
         "use_glu_kernel": true
@@ -78,11 +82,13 @@
       },
       "shard_transition_blocks": true,
       "triangle_multiplication_incoming": {
+        "channel_block": 32,
         "equation": "kjc,kic->ijc",
         "hidden_dim": null,
         "use_glu_kernel": true
       },
       "triangle_multiplication_outgoing": {
+        "channel_block": 32,
         "equation": "ikc,jkc->ijc",
         "hidden_dim": null,
         "use_glu_kernel": true
@@ -114,11 +120,13 @@
         "use_glu_kernel": true
       },
       "triangle_multiplication_incoming": {
+        "channel_block": 32,
         "equation": "kjc,kic->ijc",
         "hidden_dim": null,
         "use_glu_kernel": true
       },
       "triangle_multiplication_outgoing": {
+        "channel_block": 32,
         "equation": "ikc,jkc->ijc",
         "hidden_dim": null,
         "use_glu_kernel": true
@@ -161,11 +169,13 @@
         "single_attention": null,
         "single_transition": null,
         "triangle_multiplication_incoming": {
+          "channel_block": 32,
           "equation": "kjc,kic->ijc",
           "hidden_dim": null,
           "use_glu_kernel": true
         },
         "triangle_multiplication_outgoing": {
+          "channel_block": 32,
           "equation": "ikc,jkc->ijc",
           "hidden_dim": null,
           "use_glu_kernel": true
@@ -238,11 +248,13 @@
           "use_glu_kernel": true
         },
         "triangle_multiplication_incoming": {
+          "channel_block": 32,
           "equation": "kjc,kic->ijc",
           "hidden_dim": null,
           "use_glu_kernel": true
         },
         "triangle_multiplication_outgoing": {
+          "channel_block": 32,
           "equation": "ikc,jkc->ijc",
           "hidden_dim": null,
           "use_glu_kernel": true
@@ -302,6 +314,7 @@
     }
   },
   "num_recycles": 10,
+  "return_confidence_logits": false,
   "return_distogram": false,
   "return_embeddings": false
 }
