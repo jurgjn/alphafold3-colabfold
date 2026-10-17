@@ -472,6 +472,9 @@ def _empty_template_gap(batch, gap_index=21, slots='first'):
     'all'    opendde -- `make_dummy_feature` fills the WHOLE (4, N) block with
              31, commented "# gap" (data/utils.py), so every slot is a gap
              template.
+    'atoms'  openfold3/openbind0 -- `create_template_feature_precursor_of3` starts every (slot, token) as GAP and
+             writes only what a template covers, so an empty slot, and a chain without templates in a complex, read
+             GAP even when another chain or slot has a real template; AF3 pads those with 0.
 
   `gap_index` is in OUR vocabulary: `template_modules._AF3_TO_OF3` maps 21 -> 31,
   which is the class the converted `a_proj` column expects.
@@ -481,6 +484,10 @@ def _empty_template_gap(batch, gap_index=21, slots='first'):
   if aatype is None or mask is None:
     return
   aatype, mask = np.asarray(aatype), np.asarray(mask)
+  if slots == 'atoms':
+    if aatype.shape[0]:
+      batch['template_aatype'] = np.where(mask.any(-1), aatype, gap_index).astype(aatype.dtype)
+    return
   if not aatype.shape[0] or mask.any():
     return                                  # no slots, or a real template
   aatype = aatype.copy()
@@ -845,27 +852,41 @@ def prepare_input(fold_input, spec):
 
   dedupe_unpaired_msa: the protenix featuriser deduplicates each protein chain's unpaired MSA, ignoring insertions,
   where AF3 keeps a supplied MSA as given (msa_featurizer RawMsa, dedup=True); the paired MSA stays as given in both.
+  of3_main_msa: OpenFold3 reads the first N rows of a protein or RNA chain's main MSA (max_seq_counts colabfold_main) and
+  deduplicates them, ignoring insertions, before its profile and deletion mean; AF3 keeps every row and profiles them all.
+  ccd_unk: an unknown amino acid keeps the CCD UNK atoms (N CA C O CB CG) where AF3 builds it as GLY; process-wide, set on
+  every call so the next featurisation follows this model.
   """
   knobs = spec.featurise
-  if not knobs.get('dedupe_unpaired_msa'):
+  from alphafold3.structure import chemical_components as struc_chem_comps
+  struc_chem_comps.UNK_AS_GLY = not knobs.get('ccd_unk')
+  cap = knobs.get('of3_main_msa')
+  if not (knobs.get('dedupe_unpaired_msa') or cap):
     return fold_input
   import dataclasses
   import string
   from alphafold3.common import folding_input
   from alphafold3.data import parsers
   strip = str.maketrans('', '', string.ascii_lowercase)
+
+  def dedupe(a3m):
+    seqs, descs = parsers.parse_fasta(a3m)
+    seen, lines = set(), []
+    for s, d in list(zip(seqs, descs))[:cap]:
+      if s.translate(strip) not in seen:
+        seen.add(s.translate(strip))
+        lines += [f'>{d}', s]
+    return '\n'.join(lines) + '\n'
+
   chains = []
   for c in fold_input.chains:
     if isinstance(c, folding_input.ProteinChain) and c.unpaired_msa:
-      seqs, descs = parsers.parse_fasta(c.unpaired_msa)
-      seen, lines = set(), []
-      for s, d in zip(seqs, descs):
-        if s.translate(strip) not in seen:
-          seen.add(s.translate(strip))
-          lines += [f'>{d}', s]
       c = folding_input.ProteinChain(id=c.id, sequence=c.sequence, ptms=c.ptms, description=c.description,
-                                     unpaired_msa='\n'.join(lines) + '\n', paired_msa=c.paired_msa,
+                                     unpaired_msa=dedupe(c.unpaired_msa), paired_msa=c.paired_msa,
                                      templates=c.templates)
+    elif cap and isinstance(c, folding_input.RnaChain) and c.unpaired_msa:
+      c = folding_input.RnaChain(id=c.id, sequence=c.sequence, modifications=c.modifications,
+                                 description=c.description, unpaired_msa=dedupe(c.unpaired_msa))
     chains.append(c)
   return dataclasses.replace(fold_input, chains=chains)
 

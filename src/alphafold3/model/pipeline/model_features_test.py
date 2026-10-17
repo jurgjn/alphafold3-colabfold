@@ -217,5 +217,27 @@ class ModifiedResidueTest(absltest.TestCase):
     np.testing.assert_array_equal(out['is_modified'], [0, 1])
 
 
+class EmptyTemplateGapTest(absltest.TestCase):
+
+  def test_atoms_mode_gaps_every_slot_and_token_without_atoms(self):
+    # openfold3 starts every (slot, token) as GAP: a real template keeps what it covers, the rest reads 21
+    aatype = np.zeros((4, 5), np.int32)
+    aatype[0, :3] = [3, 7, 21]
+    mask = np.zeros((4, 5, 24), np.float32)
+    mask[0, :2, :4] = 1
+    batch = {'template_aatype': aatype, 'template_atom_mask': mask}
+    model_features._empty_template_gap(batch, slots='atoms')
+    want = np.full((4, 5), 21)
+    want[0, :2] = [3, 7]
+    np.testing.assert_array_equal(batch['template_aatype'], want)
+
+  def test_atoms_mode_matches_all_without_templates(self):
+    batches = [{'template_aatype': np.zeros((4, 3), np.int32), 'template_atom_mask': np.zeros((4, 3, 24))}
+               for _ in range(2)]
+    model_features._empty_template_gap(batches[0], slots='all')
+    model_features._empty_template_gap(batches[1], slots='atoms')
+    np.testing.assert_array_equal(batches[0]['template_aatype'], batches[1]['template_aatype'])
+
+
 if __name__ == '__main__':
   absltest.main()

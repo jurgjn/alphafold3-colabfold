@@ -753,6 +753,15 @@ for _m in model_config.CENTRE_REF_CONFORMERS:
 for _m in ('openfold3', 'openbind0'):
   if not os.environ.get('AF3_NO_TERMINAL_DROP'):
     _FEATURISE.setdefault(_m, {})['drop_atoms'] = ('OXT', 'OP3', 'O3P')
+  # of3 profiles the deduplicated first 16384 main-MSA rows; on msa_gappy that is 6530 of 21577, profile max|d| 0.18 without
+  if not os.environ.get('AF3_NO_OF3_MAIN_MSA'):
+    _FEATURISE.setdefault(_m, {})['of3_main_msa'] = 16384
+  # of3 builds an unknown amino acid from the CCD UNK, N CA C O CB CG (593 atoms on unk_residues to AF3's GLY-built 587)
+  if not os.environ.get('AF3_NO_CCD_UNK'):
+    _FEATURISE.setdefault(_m, {})['ccd_unk'] = True
+  # of3 pads to 4 empty templates that are all GAP (create_template_restype), where AF3's empty slots read restype 0
+  if not os.environ.get('AF3_NO_OF3_TEMPLATE_GAP'):
+    _FEATURISE.setdefault(_m, {}).update(empty_template_gap=True, empty_template_gap_slots='atoms')
 
 
 # Where a converted model's weights are published. The file name is what
