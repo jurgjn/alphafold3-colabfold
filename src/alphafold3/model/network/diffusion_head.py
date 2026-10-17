@@ -586,15 +586,59 @@ class DiffusionHead(hk.Module):
     ) * atom_mask[..., None]
 
 
+def _on_rocm():
+  """ROCm's jaxlib here carries no hipSOLVER handlers: an SVD, eigh, QR or inverse fails to launch."""
+  return 'rocm' in jax.devices()[0].client.platform_version
+
+
+def _horn_rotation(h, sweeps=16):
+  """The rotation `r` maximising tr(r^T h) for a 3x3 cross-covariance h, as Kabsch's SVD gives it, by Horn's
+  quaternion method: the top eigenvector of a symmetric 4x4 by cyclic Jacobi sweeps, elementwise in a loop. A quaternion
+  is always a proper rotation, so there is no reflection to correct."""
+  (sxx, sxy, sxz), (syx, syy, syz), (szx, szy, szz) = h[0], h[1], h[2]
+  n = jnp.stack([jnp.stack([sxx + syy + szz, syz - szy, szx - sxz, sxy - syx]),
+                 jnp.stack([syz - szy, sxx - syy - szz, sxy + syx, szx + sxz]),
+                 jnp.stack([szx - sxz, sxy + syx, -sxx + syy - szz, syz + szy]),
+                 jnp.stack([sxy - syx, szx + sxz, syz + szy, -sxx - syy + szz])])
+
+  def sweep(_, nv):
+    n, v = nv
+    for p in range(3):
+      for q in range(p + 1, 4):
+        apq = n[p, q]
+        theta = (n[q, q] - n[p, p]) / jnp.where(apq == 0, 1.0, 2 * apq)
+        t = jnp.where(apq == 0, 0.0, jnp.sign(theta) / (jnp.abs(theta) + jnp.sqrt(theta * theta + 1)))
+        c = 1 / jnp.sqrt(t * t + 1)
+        s = c * t
+        a, b = n[:, p], n[:, q]
+        n = n.at[:, p].set(c * a - s * b).at[:, q].set(s * a + c * b)
+        a, b = n[p], n[q]
+        n = n.at[p].set(c * a - s * b).at[q].set(s * a + c * b)
+        a, b = v[:, p], v[:, q]
+        v = v.at[:, p].set(c * a - s * b).at[:, q].set(s * a + c * b)
+    return n, v
+
+  n, v = jax.lax.fori_loop(0, sweeps, sweep, (n, jnp.eye(4, dtype=h.dtype)))
+  w, x, y, z = v[:, jnp.argmax(jnp.diag(n))]
+  # the quaternion's rotation acts on column vectors; rows of `mob` take its transpose
+  return jnp.stack([jnp.stack([w * w + x * x - y * y - z * z, 2 * (x * y + w * z), 2 * (x * z - w * y)]),
+                    jnp.stack([2 * (x * y - w * z), w * w - x * x + y * y - z * z, 2 * (y * z + w * x)]),
+                    jnp.stack([2 * (x * z + w * y), 2 * (y * z - w * x), w * w - x * x - y * y + z * z])])
+
+
 def _kabsch(mob, ref, w):
   """Weighted rigid align of `mob` onto `ref`, over the dense atom layout."""
   wm = w[..., None].astype(mob.dtype)
   mc = (mob * wm).sum((-3, -2), keepdims=True) / wm.sum((-3, -2), keepdims=True)
   rc = (ref * wm).sum((-3, -2), keepdims=True) / wm.sum((-3, -2), keepdims=True)
   a, b = (mob - mc).reshape(-1, 3), (ref - rc).reshape(-1, 3)
-  u, _, vt = jnp.linalg.svd((a * wm.reshape(-1, 1)).T @ b)
-  d = jnp.sign(jnp.linalg.det(u @ vt))
-  rot = u @ jnp.diag(jnp.array([1.0, 1.0, d], dtype=mob.dtype)) @ vt
+  h = (a * wm.reshape(-1, 1)).T @ b
+  if _on_rocm():
+    rot = _horn_rotation(h)
+  else:
+    u, _, vt = jnp.linalg.svd(h)
+    d = jnp.sign(jnp.linalg.det(u @ vt))
+    rot = u @ jnp.diag(jnp.array([1.0, 1.0, d], dtype=mob.dtype)) @ vt
   return ((mob - mc).reshape(-1, 3) @ rot).reshape(mob.shape) + rc
 
 

@@ -745,7 +745,11 @@ def _device_grid_params():
   import jax
   dev = jax.devices()[0]
   sms = int(getattr(dev, 'core_count', 0) or 1)
-  cc = tuple(int(x) for x in str(getattr(dev, 'compute_capability', '8.0')).split('.')[:2])
+  try:
+    cc = tuple(int(x) for x in str(getattr(dev, 'compute_capability', '8.0')).split('.')[:2])
+  except ValueError:
+    # a ROCm device reports its gfx name: no CUDA launch grid to mirror, protenix folded nowhere on AMD
+    cc = None
   return sms, _THREADS_PER_SM.get(cc, 2048)
 
 
