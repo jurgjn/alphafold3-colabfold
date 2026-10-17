@@ -205,8 +205,15 @@ def _drop_atoms_by_name(batch, names):
           for a in range(n_atoms_per_token)
           if ref_mask[t, a] and decode(chars[t, a]) in names
           and n_real[t] > 1 and not modified[t]}
+  return _mask_atoms(batch, drop)
+
+
+def _mask_atoms(batch, drop):
+  """Mask (token, atom slot) pairs out of every atom gather and compact the layouts; see _drop_atoms_by_name."""
   if not drop:
     return 0
+  ref_mask = np.array(batch['ref_mask'])
+  n_atoms_per_token = ref_mask.shape[1]
   flat = {t * n_atoms_per_token + a for t, a in drop}
   for t, a in drop:
     ref_mask[t, a] = False
@@ -1038,6 +1045,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     chiral_features.apply_restype_alignment_on_atomized(batch)
   if knobs.get('drop_atoms'):
     _drop_atoms_by_name(batch, knobs['drop_atoms'])
+  if knobs.get('ccd_leaving_atoms'):
+    _check_ccd_leaving(batch, fold_input)
   if knobs.get('std_conformers'):
     if model_dir is None:
       raise ValueError(f'{spec.name} needs model_dir to find its conformers')
@@ -1360,6 +1369,31 @@ def _declared_polymer_bonds(batch, fold_input, rule='all'):
     if ta is not None and tb is not None and ta != tb:
       pairs.append((ta, tb))
   return _add_token_bonds(batch, pairs, features.BOND_ORDER_COVALENT)
+
+
+def _check_ccd_leaving(batch, fold_input):
+  """Warn if a declared bond's CCD leaving atom is still in the layout: the featuriser has to drop it before
+  tokenising (featurise_input's ccd_leaving_atoms, which an older caller does not pass)."""
+  from absl import logging
+  from alphafold3.constants import chemical_components
+  from alphafold3.model.pipeline import structure_cleaning
+
+  pairs_in = getattr(fold_input, 'bonded_atom_pairs', None) if fold_input is not None else None
+  layout = batch.get('token_atoms_layout')
+  if not pairs_in or layout is None:
+    return
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+  present, res_name = set(), {}
+  for t, a in zip(*np.nonzero(ref_mask)):
+    key = (str(layout.chain_id[t, a]), int(layout.res_id[t, a]))
+    present.add(key + (str(layout.atom_name[t, a]),))
+    res_name[key] = str(layout.res_name[t, a])
+  ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None))
+  left = sorted(k + (n,) for k, names in structure_cleaning.declared_bond_leaving_atoms(pairs_in, res_name, ccd).items()
+                for n in names if k + (n,) in present)
+  if left:
+    logging.warning('declared-bond leaving atoms still present (featurised without ccd_leaving_atoms?): %s', left[:8])
 
 
 def _declared_bond_feature(batch, fold_input):

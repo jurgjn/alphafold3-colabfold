@@ -601,6 +601,9 @@ _FEATURISE = {
     'opendde': dict(opendde=True, padded_keys=True,
                     # a protenix fork: same include_discont_poly_poly_bonds=True rule for declared bonds
                     declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
+                    # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
+                    # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
+                    ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                     empty_template_gap=not os.environ.get(
                         'AF3_NO_DDE_TEMPLATE_GAP'),
                     empty_template_gap_slots='first',
@@ -643,6 +646,9 @@ _FEATURISE = {
                translate_conformers=True,
                # declared bonds: discontinuous polymer-polymer and modified-residue-to-ligand, as include_discont_poly_poly_bonds
                declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
+               # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
+               # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
+               ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width
                **({} if os.environ.get('AF3_NO_PX_NATIVE_RNG')
                   else {'native_rng': {'protenix1': 128, 'protenix2': 256}[m]}))
