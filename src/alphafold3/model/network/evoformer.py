@@ -400,7 +400,13 @@ class Evoformer(hk.Module):
       pair_activations += hm.Linear(
           self.config.pair_channel, use_bias=True, name='position_activations'
       )(rel_feat)
-      return pair_activations
+      # RelativeChain and RelativeEntity, which the bias holds only at their single-chain classes (2 and 1)
+      ce = hk.get_parameter('chai1_chain_entity', [9, self.config.pair_channel], jnp.float32, init=jnp.zeros)
+      ent, sym = tf.entity_id.astype(jnp.int32), tf.sym_id.astype(jnp.int32)
+      rel_e = ent[:, None] - ent[None, :]
+      rchain = jnp.where(rel_e != 0, 5, jnp.clip(sym[:, None] - sym[None, :] + 2, 0, 4))
+      rent = jnp.clip(rel_e + 1, 0, 2)
+      return pair_activations + (ce[rchain] + ce[6 + rent]).astype(pair_activations.dtype)
 
     # A GATHER, not a matmul against a one-hot. `position_activations` is a
     # (139, pair_channel) weight contracted with a concatenation of three
@@ -922,6 +928,10 @@ class Evoformer(hk.Module):
         _esm_tap('z_parcae', pair_activations)
       elif chai:
         pair_activations = self._relative_encoding(batch, pair_activations)
+        if batch.declared_bonds is not None:
+          # the trunk half of chai's bond projection, through token_pair_proj_in_trunk (converters.chai1)
+          pair_activations += hm.Linear(self.config.pair_channel, use_bias=False, name='chai1_bond_trunk')(
+              batch.declared_bonds[..., None].astype(pair_activations.dtype))
         pair_init = pair_activations
         pair_activations = _add_prev(pair_activations, pair_init)
       else:
@@ -930,13 +940,9 @@ class Evoformer(hk.Module):
         _esm_tap('z_after_prev', pair_activations)
         pair_activations = self._relative_encoding(batch, pair_activations)
 
-      # chai has NO bond feature: its 163-column token-pair stream is
-      # docking/chain/entity/separation/restraints only (converters.chai1
-      # PAIR_COLS). So bond_embedding has no source weight, and running it left
-      # a RANDOM-init Linear adding a term chai does not have. Harmless for a
-      # bare protein, where the contact matrix is all zero -- but a ligand has
-      # intra-ligand bonds (BTN contributes 34 nonzero entries), so this was
-      # live on exactly the inputs the port had just started supporting.
+      # chai has no AF3 bond_embedding: its only bond input is the DECLARED-bond feature above (chai1_bond_trunk), not
+      # a ligand's own bonds. Running bond_embedding left a RANDOM-init Linear adding a term chai does not have, live
+      # on every ligand (BTN contributes 34 nonzero entries).
       if self.global_config.model != 'chai1' and not pair_only:
         pair_activations = self._embed_bonds(
             batch=batch, pair_activations=pair_activations

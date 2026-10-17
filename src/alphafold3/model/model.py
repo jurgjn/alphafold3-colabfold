@@ -293,6 +293,10 @@ def create_target_feat_embedding(
       res_oh = featurization.blend_soft(res_oh, soft_seq, design_mask).astype(dtype)
       token_feats = hm.Linear(config.seq_channel, use_bias=True,
                               name='chai1_token_feature_embedding')(res_oh)
+      # our N is chai's RX; on a DNA token chai has DX (a modified nucleotide's atomised tokens, an unknown base)
+      dx = hk.get_parameter('chai1_token_dx', [config.seq_channel], jnp.float32, init=jnp.zeros)
+      dna_unk = (batch.token_features.is_dna & (batch.token_features.aatype == n_restype - 1)).astype(dtype)
+      token_feats += dna_unk[:, None] * dx.astype(dtype)
       # chai's TOKEN stream is dominated by ESM2: rebuilding the full 2638-wide
       # stream reproduces its s_init at corr 0.99999280, and zeroing ONLY the
       # ESM columns drops that to 0.327 (rms 0.183). Folding them into the bias
@@ -837,6 +841,12 @@ class Model(hk.Module):
       # chai's diffusion conditions on [z_trunk | its STRUCTURE token-pair features], not on the trunk's
       # z_init -- see Chai1StructurePair
       embeddings['pair_init'] = Chai1StructurePair(self.config.evoformer.pair_channel)(batch.token_features)
+      if batch.declared_bonds is not None:
+        # the structure half of chai's bond projection (bond_loss_input_proj rows 256:512)
+        from alphafold3.model.components import haiku_modules as hm
+        embeddings['pair_init'] += hm.Linear(self.config.evoformer.pair_channel, use_bias=False,
+                                             name='chai1_structure_bond')(
+            batch.declared_bonds[..., None].astype(embeddings['pair_init'].dtype))
 
     # ColabDesign2: the distogram head stays with the trunk. It reads embeddings
     # only, it is what every design objective is built on, and it is cheap.

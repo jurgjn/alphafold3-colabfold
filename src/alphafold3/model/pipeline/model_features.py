@@ -451,6 +451,85 @@ def _zero_msa(batch):
   return batch
 
 
+def _chai_tokenise(rows):
+  """a3m rows -> (tokens, deletions) as chai's a3m tokeniser makes them: capitals and '-' are columns in our protein
+  classes (other capitals X), lower case counts as a deletion capped at 255, anything else is skipped."""
+  from alphafold3.constants import residue_names
+  lut = np.full(256, 20, np.int64)
+  for c, i in residue_names.PROTEIN_TYPES_ONE_LETTER_WITH_UNKNOWN_AND_GAP_TO_INT.items():
+    lut[ord(c)] = i
+  width = sum(c.isupper() or c == '-' for c in rows[0])
+  tok = np.full((len(rows), width), 21, np.int64)
+  dele = np.zeros((len(rows), width), np.int64)
+  for i, row in enumerate(rows):
+    b = np.frombuffer(row.encode(), np.uint8)
+    col = ((b >= 65) & (b <= 90)) | (b == 45)
+    low = np.cumsum((b >= 97) & (b <= 122))
+    at = np.flatnonzero(col)[:width]
+    ins = low[at]
+    tok[i, :at.size] = lut[b[at]]
+    dele[i, :at.size] = np.minimum(np.diff(ins, prepend=0), 255)
+  return tok, dele
+
+
+def _chai_msa(batch, fold_input):
+  """chai-1's MSA inputs where AF3's differ, once any chain has an alignment.
+
+  A protein chain with an alignment: chai counts the classes of its MSA rows, deduplicated by their tokens, in the
+  MSA's uint8 dtype, so each count wraps at 256 before it is normalised by their sum (MSAProfileGenerator's
+  scatter_add); its deletion mean is over the same rows. AF3's profile is the true frequency over the undeduplicated
+  unpaired rows: on mono825's 10128-row MSA the two correlate 0.44, and native's in place of ours takes s_init from
+  corr 0.952 to 0.970 against native's.
+
+  Every other polymer chain is chai's single-sequence context: its sequence string (a modification written "(CCD)")
+  through the protein a3m tokeniser, so a DNA A/C/G/T reads ALA/CYS/GLY/THR, as the query row and as a one-hot profile,
+  and no other row (masked). AF3 gives it its own classes and real gap rows. Ligands keep create_msa_feat's handling.
+  Token-identical rows are then masked, as chai drops them.
+  """
+  from alphafold3.common import folding_input as fi
+  from alphafold3.data import parsers
+
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  resi = np.asarray(batch['residue_index']).reshape(-1)
+  profile = np.array(batch['profile'], np.float32)
+  del_mean = np.array(batch['deletion_mean'], np.float32)
+  msa, mask, dele = np.array(batch['msa']), np.array(batch['msa_mask']), np.array(batch['deletion_matrix'])
+  for index, chain in enumerate(fold_input.chains):
+    sel = np.flatnonzero(asym == index + 1)
+    if isinstance(chain, fi.Ligand) or not sel.size:
+      continue
+    col = resi[sel] - 1
+    rows = []
+    if isinstance(chain, fi.ProteinChain):
+      for a3m in (chain.paired_msa, chain.unpaired_msa):
+        rows += [r for r in parsers.parse_fasta(a3m or '')[0] if r]
+    if len(rows) > 1:
+      tok, dl = _chai_tokenise([chain.sequence] + rows)
+      _, keep = np.unique(tok, axis=0, return_index=True)
+      keep = np.sort(keep)
+      tok, dl = tok[keep], dl[keep]
+      counts = np.stack([(tok == c).sum(0) for c in range(profile.shape[-1])], -1) % 256
+      profile[sel] = (counts / np.maximum(counts.sum(-1, keepdims=True), 1))[col]
+      del_mean[sel] = dl.mean(0)[col]
+      continue
+    mods = dict((pos, ccd) for ccd, pos in
+                (chain.ptms if isinstance(chain, fi.ProteinChain) else chain.modifications))
+    text = ''.join(f'({mods[i + 1]})' if i + 1 in mods else c for i, c in enumerate(chain.sequence))
+    query = _chai_tokenise([text])[0][0]
+    q = query[np.minimum(col, query.size - 1)]
+    msa[0, sel], msa[1:, sel], mask[1:, sel], dele[:, sel] = q, 31, False, 0
+    profile[sel] = np.eye(profile.shape[-1], dtype=np.float32)[q]
+    del_mean[sel] = 0
+  batch['profile'] = profile.astype(np.asarray(batch['profile']).dtype)
+  batch['deletion_mean'] = del_mean.astype(np.asarray(batch['deletion_mean']).dtype)
+  # chai drops token-identical rows of the joined MSA (AF3 keeps the paired and the unpaired query, and duplicates)
+  live = np.flatnonzero(mask.any(-1))
+  _, first = np.unique(msa[live], axis=0, return_index=True)
+  mask[np.setdiff1d(live, live[first])] = False
+  batch['msa'], batch['msa_mask'], batch['deletion_matrix'] = msa, mask, dele
+  return batch
+
+
 def _empty_template_gap(batch, gap_index=21, slots='first'):
   """A vendor's "no template" slot is a GAP template, not a zero template.
 
@@ -943,10 +1022,14 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _atomized_backbone_bonds(batch)
   if knobs.get('declared_polymer_bonds'):
     _declared_polymer_bonds(batch, fold_input, rule=knobs['declared_polymer_bonds'])
+  if knobs.get('declared_bond_feature'):
+    _declared_bond_feature(batch, fold_input)
   if knobs.get('atomized_unknown_restype'):
     from alphafold3.model.pipeline import chiral_features
     # before restype_alignment, which reads `aatype` to rewrite profile and msa.
-    chiral_features.apply_unknown_restype_on_atomized(batch, nucleic=knobs['atomized_unknown_restype'] == 'nucleic')
+    mode = knobs['atomized_unknown_restype']
+    chiral_features.apply_unknown_restype_on_atomized(
+        batch, nucleic=mode == 'nucleic', nucleic_unknown=30 if mode == 'chai' else None)
   if knobs.get('atomized_element_names'):
     from alphafold3.model.pipeline import chiral_features
     chiral_features.apply_atomized_element_names(batch)
@@ -991,6 +1074,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     chiral_features.attach_chiral_features(batch)
   if knobs.get('zero_msa_without_alignment') and not has_msa:
     _zero_msa(batch)
+  if knobs.get('chai_msa') and has_msa and fold_input is not None:
+    _chai_msa(batch, fold_input)
   if knobs.get('dedupe_self_msa'):
     _dedupe_self_msa(batch, query_once=knobs['dedupe_self_msa'] == 'query_once')
   if knobs.get('native_nonprotein_msa'):
@@ -1275,6 +1360,29 @@ def _declared_polymer_bonds(batch, fold_input, rule='all'):
     if ta is not None and tb is not None and ta != tb:
       pairs.append((ta, tb))
   return _add_token_bonds(batch, pairs, features.BOND_ORDER_COVALENT)
+
+
+def _declared_bond_feature(batch, fold_input):
+  """chai-1's TokenBondRestraint: a (tokens, tokens) 0/1 matrix with [left, right] = 1 for each declared bond, every
+  kind (polymer-polymer, residue-ligand, ligand-ligand), in its declared direction only; nothing else, not even a
+  ligand's own bonds. chai-lab fills it from its covalent restraints and glycan strings (chai1.py,
+  get_atom_covalent_bond_pairs_from_constraints) and projects it into both its trunk and its structure pair inputs."""
+  num = np.asarray(batch['ref_mask']).shape[0]
+  out = np.zeros((num, num), np.float32)
+  pairs_in = getattr(fold_input, 'bonded_atom_pairs', None) if fold_input is not None else None
+  layout = batch.get('token_atoms_layout')
+  if pairs_in and layout is not None:
+    layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+    ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+    token_of = {}
+    for t, s in zip(*np.nonzero(ref_mask)):
+      token_of.setdefault((str(layout.chain_id[t, s]), int(layout.res_id[t, s]), str(layout.atom_name[t, s])), int(t))
+    for a, b in pairs_in:
+      ta, tb = token_of.get(tuple(a)), token_of.get(tuple(b))
+      if ta is not None and tb is not None:
+        out[ta, tb] = 1.0
+  batch['declared_bonds'] = out
+  return batch
 
 
 def _standard_residue_names():

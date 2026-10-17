@@ -723,9 +723,13 @@ _FEATURISE = {
     # parent; atomised, a phosphoserine's ten tokens are UNKNOWN to chai
     # (data/parsing/structure/residue.py get_restype), and its ESM2 sequence
     # reads X there too (_resolve_esm).
-    'chai1': dict(circular_keys=True, drop_atoms=('OXT',),
+    # atomized_unknown_restype='chai': a modified nucleotide's atomised tokens are chai's DX/RX (our N), not the parent
+    # chai_msa: its uint8 profile and single-sequence context for chains without an alignment (model_features._chai_msa)
+    'chai1': dict(circular_keys=True, drop_atoms=('OXT', 'OP3'),
                   zero_msa_without_alignment=True, esm=True, full_msa=True,
-                  atomized_unknown_restype=True),
+                  atomized_unknown_restype='chai', chai_msa=True,
+                  # its TokenBondRestraint: every declared bond, directed, into both pair inputs
+                  declared_bond_feature=not os.environ.get('AF3_NO_DECLARED_BONDS')),
 }
 
 # Conformer centering rides in as a featurise KNOB as well as a

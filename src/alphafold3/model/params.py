@@ -24,6 +24,7 @@ import collections
 from collections.abc import Iterator, Sequence
 import contextlib
 import io
+import logging
 import os
 import re
 import struct
@@ -321,6 +322,24 @@ def get_model_haiku_params(model_dir: epath.PathLike) -> hk.Params:
     raise ValueError(
         f'{model_dir}: these chai1 weights predate chai-lab\'s structure token-pair weights, which its '
         'diffusion conditions on. Delete the blob there and run again to fetch the current one.')
+  if ('diffuser/chai1_structure_token_pair' in params
+      and 'chai1_chain_entity' not in params.get('diffuser/evoformer', {})):
+    # a chai1 blob from before its relative chain/entity rows: a complex keeps the monomer's classes, as it always did
+    logging.warning('%s: chai1 weights without chai1_chain_entity; complexes read single-chain relative chain and '
+                    'entity features. Delete the blob to fetch the current one once it is published.', model_dir)
+    params.setdefault('diffuser/evoformer', {})['chai1_chain_entity'] = jnp.zeros(
+        (9, params['diffuser/chai1_structure_token_pair']['weights'].shape[1]), jnp.float32)
+  if ('diffuser/chai1_structure_token_pair' in params
+      and 'diffuser/evoformer/chai1_bond_trunk' not in params):
+    # and its declared-bond trunk row: a declared bond reaches the diffusion's pair input but not the trunk's
+    logging.warning('%s: chai1 weights without chai1_bond_trunk; declared bonds reach only the diffusion\'s pair '
+                    'input, not the trunk. Delete the blob to fetch the current one once it is published.', model_dir)
+    params['diffuser/evoformer/chai1_bond_trunk'] = {'weights': jnp.zeros(
+        (1, params['diffuser/chai1_structure_token_pair']['weights'].shape[1]), jnp.float32)}
+  if 'diffuser/chai1_token_feature_embedding' in params and 'chai1_token_dx' not in params.get('diffuser', {}):
+    # likewise its DNA-unknown row: a DNA N or modified nucleotide reads chai's RX rather than its DX
+    params.setdefault('diffuser', {})['chai1_token_dx'] = jnp.zeros(
+        params['diffuser/chai1_token_feature_embedding']['bias'].shape, jnp.float32)
   return params
 
 
