@@ -925,6 +925,17 @@ def _native_rng(batch, seed, pair_channel, fold_input):
   batch['px_grid'] = np.asarray(protenix_rng.grid_size(n_tok * n_tok * pair_channel, sms, tps), np.int32)
 
 
+def _ligand_bonded_residues(fold_input):
+  """(chain_id, res_id) of every polymer residue a declared bond ties to a ligand."""
+  polymers = {c.id for c in fold_input.chains if type(c).__name__ in ('ProteinChain', 'RnaChain', 'DnaChain')}
+  out = set()
+  for a, b in getattr(fold_input, 'bonded_atom_pairs', None) or ():
+    if (a[0] in polymers) != (b[0] in polymers):
+      poly = a if a[0] in polymers else b
+      out.add((str(poly[0]), int(poly[1])))
+  return frozenset(out)
+
+
 def prepare_input(fold_input, spec):
   """The input-side conventions, applied before featurisation: a copy of `fold_input` as the model's featuriser sees it.
 
@@ -934,10 +945,19 @@ def prepare_input(fold_input, spec):
   deduplicates them, ignoring insertions, before its profile and deletion mean; AF3 keeps every row and profiles them all.
   ccd_unk: an unknown amino acid keeps the CCD UNK atoms (N CA C O CB CG) where AF3 builds it as GLY; process-wide, set on
   every call so the next featurisation follows this model.
+  atomize_ligand_bonded: a polymer residue a declared bond ties to a ligand is one token per atom (atomworks'
+  covalent_modifications); process-wide like ccd_unk.
+  drop_inner_terminal_atoms: OXT only at a chain's last residue and OP3 only at its first, also on modified residues
+  (atomworks); process-wide like ccd_unk, applied by the pipeline before tokenising.
   """
   knobs = spec.featurise
+  from alphafold3.model import features as af3_features
   from alphafold3.structure import chemical_components as struc_chem_comps
   struc_chem_comps.UNK_AS_GLY = not knobs.get('ccd_unk')
+  af3_features.ATOMIZED_RESIDUES = (_ligand_bonded_residues(fold_input) if knobs.get('atomize_ligand_bonded')
+                                    else frozenset())
+  from alphafold3.model.pipeline import pipeline as af3_pipeline
+  af3_pipeline.INNER_TERMINAL_ATOMS = bool(knobs.get('drop_inner_terminal_atoms'))
   cap = knobs.get('of3_main_msa')
   if not (knobs.get('dedupe_unpaired_msa') or cap):
     return fold_input
@@ -1017,8 +1037,10 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     # boltz2 reads on it.
     _mark_modified_residues(batch, fold_input, unknown_restype=True)
 
+  if knobs.get('atomize_ligand_bonded'):
+    _ligand_bonded_units(batch, fold_input)
   if knobs.get('atomized_backbone_bonds'):
-    _atomized_backbone_bonds(batch)
+    _atomized_backbone_bonds(batch, fold_input)
   if knobs.get('declared_polymer_bonds'):
     _declared_polymer_bonds(batch, fold_input, rule=knobs['declared_polymer_bonds'])
   if knobs.get('declared_bond_feature'):
@@ -1241,7 +1263,7 @@ def cyclic_period(batch, chains=True, fold_input=None):
 _LINK_ATOMS = (('C', 'N'), ("O3'", 'P'))
 
 
-def _atomized_backbone_bonds(batch):
+def _atomized_backbone_bonds(batch, fold_input=None):
   """Restore the peptide bonds AlphaFold 3 drops at every atomised residue.
 
   AF3 extracts inter-residue bonds only where one side is a LIGAND chain
@@ -1284,20 +1306,76 @@ def _atomized_backbone_bonds(batch):
       entry = residues.setdefault(rkey, [str(layout.res_name[t, s]), {}])
       entry[1].setdefault(name, t)
 
+  from alphafold3.model import features as af3_features
+  atomized = af3_features.ATOMIZED_RESIDUES
+  # a declared bond between two consecutive residues is their link (isoAsp joins through CG, not C)
+  linked = {frozenset(((str(a[0]), int(a[1])), (str(b[0]), int(b[1]))))
+            for a, b in (getattr(fold_input, 'bonded_atom_pairs', None) or ())}
   wanted = []
   keys = list(residues)
   for first, second in zip(keys, keys[1:]):
     if first[0] != second[0] or second[1] != first[1] + 1:
       continue                              # different chain, or a numbering gap
     (name_a, atoms_a), (name_b, atoms_b) = residues[first], residues[second]
-    if name_a in standard and name_b in standard:
+    if name_a in standard and name_b in standard and first not in atomized and second not in atomized:
       continue                              # AF3 does not drop this one
+    if frozenset((first, second)) in linked:
+      continue
     for tail, head in _LINK_ATOMS:
       if tail in atoms_a and head in atoms_b:
         wanted.append((atoms_a[tail], atoms_b[head]))
         break
   # a backbone link is a single bond
-  return _add_token_bonds(batch, wanted, 1)
+  _add_token_bonds(batch, wanted, 1)
+  if not atomized:
+    return batch
+  # a standard residue atomised for its ligand bond (features.ATOMIZED_RESIDUES) has no bonds of its own in AF3's table:
+  # its CCD bonds, by order
+  from alphafold3.constants import chemical_components
+  ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None))
+  order_code = {'SING': 1, 'DOUB': 2, 'TRIP': 3, 'AROM': 4}
+  by_order = {}
+  for rkey in atomized:
+    if rkey not in residues:
+      continue
+    name, atoms = residues[rkey]
+    entry = ccd.get(name) or {}
+    for x, y, o in zip(entry.get('_chem_comp_bond.atom_id_1', ()), entry.get('_chem_comp_bond.atom_id_2', ()),
+                       entry.get('_chem_comp_bond.value_order', ())):
+      if x in atoms and y in atoms and atoms[x] != atoms[y]:
+        by_order.setdefault(order_code.get(str(o).upper(), 1), []).append((atoms[x], atoms[y]))
+  for code, pairs in by_order.items():
+    _add_token_bonds(batch, pairs, code)
+  return batch
+
+
+def _ligand_bonded_units(batch, fold_input):
+  """atomworks moves a residue it atomises for a ligand bond into the ligand's pn_unit: its tokens take the ligand's
+  asym_id, keep their entity, and are the entity's next copy (sym_id)."""
+  from alphafold3.model import features as af3_features
+  atomized = af3_features.ATOMIZED_RESIDUES
+  layout = batch.get('token_atoms_layout')
+  if not atomized or layout is None:
+    return batch
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  chain = layout.chain_id[:, 0].astype(str)
+  res = layout.res_id[:, 0].astype(int)
+  asym, entity, sym = (np.array(batch[k]) for k in ('asym_id', 'entity_id', 'sym_id'))
+  asym_of = {c: int(asym[np.flatnonzero(chain == c)[0]]) for c in set(chain) if c}
+  new_sym = {}
+  for a, b in getattr(fold_input, 'bonded_atom_pairs', None) or ():
+    poly, lig = (a, b) if (str(a[0]), int(a[1])) in atomized else (b, a)
+    if (str(poly[0]), int(poly[1])) not in atomized or str(lig[0]) not in asym_of:
+      continue
+    toks = np.flatnonzero((chain == str(poly[0])) & (res == int(poly[1])))
+    if not len(toks):
+      continue
+    e, unit = int(entity[toks[0]]), asym_of[str(lig[0])]
+    if (e, unit) not in new_sym:
+      new_sym[(e, unit)] = int(sym[entity == e].max()) + 1
+    asym[toks], sym[toks] = unit, new_sym[(e, unit)]
+  batch['asym_id'], batch['sym_id'] = asym, sym
+  return batch
 
 
 def _add_token_bonds(batch, pairs, order_code):
@@ -1354,7 +1432,7 @@ def _declared_polymer_bonds(batch, fold_input, rule='all'):
                      bond only between residues more than one apart or in different chains (head-to-tail ring closures,
                      staples, lactones), and every bond of a non-standard residue to a ligand.
     'ligand'         rf3: atomworks drops every bond between two non-atomised tokens, but keeps a modified (atomised)
-                     residue's bond to a ligand.
+                     residue's bonds, to a ligand or to another residue (BF6's backbone links).
   """
   from alphafold3.model import features
 
@@ -1377,8 +1455,8 @@ def _declared_polymer_bonds(batch, fold_input, rule='all'):
     a, b = tuple(a), tuple(b)
     poly_a, poly_b = a[0] in polymers, b[0] in polymers
     if poly_a and poly_b:
-      if rule == 'ligand':
-        continue
+      if rule == 'ligand' and all(res_name.get((str(p[0]), int(p[1]))) in standard for p in (a, b)):
+        continue                            # rf3: kept only from an atomised (non-standard) residue
       if rule == 'discontinuous' and a[0] == b[0] and abs(int(a[1]) - int(b[1])) <= 1:
         continue                            # adjacent residues: protenix leaves the link to the chain
     elif poly_a or poly_b:

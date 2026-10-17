@@ -40,6 +40,10 @@ import numpy as np
 
 _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 
+# OXT and OP3 only at a polymer chain's ends, modified residues too (rf3/atomworks); process-wide, set per model by
+# model_features.prepare_input
+INNER_TERMINAL_ATOMS = False
+
 
 def calculate_bucket_size(
     num_tokens: int, buckets: Sequence[int] | None
@@ -479,6 +483,16 @@ class WholePdbPipeline:
           leaving = {n for n, f, e in zip(names, flags, elements) if f == 'Y' and e not in ('H', 'D')}
           if leaving:
             ccd_leaving.setdefault((str(chain.id), int(position)), set()).update(leaving)
+    if INNER_TERMINAL_ATOMS:
+      # a polymer residue keeps OXT only at its chain's end and OP3 only at its start, modified ones too
+      ccd_leaving = dict(ccd_leaving or {})
+      polymer = ~np.isin(struct.chain_type, list(mmcif_names.NON_POLYMER_CHAIN_TYPES))
+      chains, res_ids = struct.chain_id[polymer], struct.res_id[polymer]
+      for chain in set(chains.tolist()):
+        ids = sorted(set(res_ids[chains == chain].tolist()))
+        for r in ids:
+          names = ({'OXT'} if r != ids[-1] else set()) | ({'OP3'} if r != ids[0] else set())
+          ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | names
     unpaired_msa_by_chain_id = {}
     paired_msa_by_chain_id = {}
     templates_by_chain_id = {}

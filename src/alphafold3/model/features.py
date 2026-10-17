@@ -173,6 +173,11 @@ def _compute_asym_entity_and_sym_id(
   )
 
 
+# (chain_id, res_id) of standard polymer residues tokenised one token per atom anyway; process-wide, set per model by
+# model_features.prepare_input (rf3: atomworks atomises a residue covalently bound to a ligand)
+ATOMIZED_RESIDUES = frozenset()
+
+
 def tokenizer(
     flat_output_layout: atom_layout.AtomLayout,
     ccd: chemical_components.Ccd,
@@ -226,7 +231,8 @@ def tokenizer(
   ):
 
     # Get chain type and chain id of this residue
-    chain_type, chain_id, _ = key
+    chain_type, chain_id, res_id = key
+    atomize = (str(chain_id), int(res_id)) in ATOMIZED_RESIDUES
 
     # Get names and global idxs for all atoms of this residue
     _, _, _, res_names, atom_names, idxs = zip(*group_iter)
@@ -238,7 +244,7 @@ def tokenizer(
     )
     if chain_type in mmcif_names.PEPTIDE_CHAIN_TYPES:
       res_name = res_names[0]
-      if (
+      if atomize or (
           flatten_non_standard_residues
           and res_name not in residue_names.PROTEIN_TYPES_WITH_UNKNOWN
           and res_name != residue_names.MSE
@@ -259,7 +265,7 @@ def tokenizer(
       current_standard_token_id += 1
     elif is_nucleic_backbone:
       res_name = res_names[0]
-      if (
+      if atomize or (
           flatten_non_standard_residues
           and res_name not in residue_names.NUCLEIC_TYPES_WITH_2_UNKS
       ):
@@ -1207,6 +1213,10 @@ class PolymerLigandBondInfo:
       atom_names = bond_layout.atom_name.copy()
       atom_names[np.isin(bond_layout.chain_type, peptide_types)] = 'CA'  # pyrefly: ignore[bad-argument-type]
       atom_names[np.isin(bond_layout.chain_type, nucleic_types)] = "C1'"  # pyrefly: ignore[bad-argument-type]
+      # an atomised residue's token is the bonded atom itself
+      atomized = np.vectorize(lambda c, r: (str(c), int(r)) in ATOMIZED_RESIDUES, otypes=[bool])(
+          bond_layout.chain_id, bond_layout.res_id) if ATOMIZED_RESIDUES else False
+      atom_names = np.where(atomized, bond_layout.atom_name, atom_names)
       adjusted_bond_layout = atom_layout.AtomLayout(
           atom_name=atom_names,
           res_id=bond_layout.res_id,

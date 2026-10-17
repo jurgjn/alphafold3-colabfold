@@ -701,12 +701,18 @@ _FEATURISE = {
     'rosettafold3': dict(**({} if os.environ.get('AF3_NO_TERMINAL_DROP')
                             else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
                          chirals=True, atomized_element_names=True,
+                         # atomworks keeps OXT/OP3 of an atomised residue only at the chain end
+                         drop_inner_terminal_atoms=True,
                          restype_alignment=True,
                          # native gives a modified nucleotide's atomised tokens the protein UNK too (5CM: 20)
                          atomized_unknown_restype='nucleic',
                          atomized_backbone_bonds=True,
                          # atomworks keeps a modified (atomised) residue's bond to a ligand, drops polymer-polymer ones
                          declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'ligand',
+                         # atomworks atomises a residue covalently bound to a ligand (covalent_modifications.py)
+                         atomize_ligand_bonded=not os.environ.get('AF3_NO_RF3_ATOMIZE_BONDED'),
+                         # atomworks drops a declared bond's CCD leaving atoms too (bR: retinal O1 at the Schiff base)
+                         ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                          padded_keys=True,
                          dedupe_self_msa=not os.environ.get(
                              'AF3_NO_RF3_DEDUPE_MSA')),

@@ -309,7 +309,9 @@ def apply_atomized_element_names(batch):
     return batch
   layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
 
+  from alphafold3.model import features as af3_features
   standard = _standard_residues()
+  atomized = af3_features.ATOMIZED_RESIDUES
   mask = np.asarray(batch['ref_mask']).astype(bool)
   element = np.asarray(batch['ref_element'])
   chars = np.array(batch['ref_atom_name_chars'], copy=True)
@@ -318,7 +320,8 @@ def apply_atomized_element_names(batch):
   num_token, num_dense = mask.shape[-2], mask.shape[-1]
   for t in range(num_token):
     for s in range(num_dense):
-      if not mask[t, s] or str(layout.res_name[t, s]) in standard:
+      if not mask[t, s] or (str(layout.res_name[t, s]) in standard
+                            and (str(layout.chain_id[t, s]), int(layout.res_id[t, s])) not in atomized):
         continue
       name = symbol.get(int(element[t, s]), '')
       if not name:
