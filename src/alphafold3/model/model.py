@@ -23,6 +23,7 @@ from collections.abc import Iterable, Mapping
 import concurrent
 import dataclasses
 import functools
+import os
 from typing import Any, TypeAlias
 
 from absl import logging
@@ -754,6 +755,16 @@ class Model(hk.Module):
     native_rng = {k[len('px_'):]: batch.pop(k) for k in list(batch) if k.startswith('px_')} or None
 
     batch = feat_batch.Batch.from_data_dict(batch)
+    # opt-in: masked, ours folded bacteriorhodopsin's trimer on 1 of 10 seeds where native did on 4 (unmasked, ours 7 of
+    # 10); the mask itself matches native's stack, the cause is open
+    rate = model_config.MSA_COLUMN_MASK_RATE.get(self.global_config.model, 0.0) if os.environ.get(
+        'AF3_ESM_COLUMN_MASK') else 0.0
+    if rate:
+      # drawn from the fold's key, so a seed reproduces it; every recycle sees the same columns
+      col_keep = jax.random.uniform(jax.random.fold_in(key, 0xC0), batch.msa.mask.shape[1:]) >= rate
+      keep = (jnp.arange(batch.msa.mask.shape[0]) == 0)[:, None] | col_keep[None, :]
+      batch = dataclasses.replace(batch, msa=dataclasses.replace(
+          batch.msa, mask=batch.msa.mask * keep.astype(batch.msa.mask.dtype)))
 
     embedding_module = evoformer_network.Evoformer(
         self.config.evoformer, self.global_config

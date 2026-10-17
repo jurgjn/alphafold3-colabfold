@@ -678,8 +678,13 @@ PAIR_ONLY_TRUNK = ESMFOLD2_FAMILY
 # line has no lm_encoder at all: it calls the shim once with
 # `lm_dropout=config.lm_dropout`, which its config sets to 0.0. Applying 25%
 # there drops a quarter of a signal the model was never trained to lose.
-LM_PAIR_DROPOUT = {m: (0.25 if m in ESMFOLD2_SSM_RECYCLE else 0.0)
+# esm's fold() raises it to 0.3 (`lm_dropout`, the paper's folding-eval value) over the checkpoint's 0.25.
+LM_PAIR_DROPOUT = {m: (0.3 if m in ESMFOLD2_SSM_RECYCLE else 0.0)
                    for m in ESMFOLD2_FAMILY}
+
+# esm's fold() masks this fraction of MSA columns in every row but the query, once per fold and shared by every
+# recycle (`msa_column_mask_rate`, maybe_apply_msa_column_masking); a no-op without an MSA.
+MSA_COLUMN_MASK_RATE = {m: 0.1 for m in ESMFOLD2_SSM_RECYCLE}
 
 
 # Models whose sampler rigid-aligns the noisy coordinates onto the denoised

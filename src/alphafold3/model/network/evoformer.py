@@ -606,8 +606,8 @@ class Evoformer(hk.Module):
     four PAIR-ONLY blocks, the same PairFormerIteration-with-zeroed-attention
     identity the trunk and the coda already ride.
 
-    The dropout is the part that cannot move outside. ESMFold2 keeps 25% dropout
-    on this tensor at INFERENCE and resamples it every recycle pass, so it has
+    The dropout is the part that cannot move outside. ESMFold2 keeps dropout (fold()'s
+    0.3) on this tensor at INFERENCE and resamples it every recycle pass, so it has
     to sit inside the loop -- precomputing one masked copy per pass would mean
     carrying n_pass pair tensors instead of one.
     """
@@ -713,7 +713,8 @@ class Evoformer(hk.Module):
       # row still arrives one-hot on class 0 and picks up a real embedding. It
       # is masked out of the outer product, so it cost nothing measurable here,
       # but it only stays harmless as long as every consumer honours the mask.
-      msa_feat *= msa_batch.mask.astype(dtype)[..., None]
+      # Only the one-hot: a column-masked cell keeps has_deletion / deletion_value (msa_oh * msa_attn, hd and dv as is)
+      msa_feat = jnp.concatenate([msa_feat[..., :-2] * msa_batch.mask.astype(dtype)[..., None], msa_feat[..., -2:]], -1)
 
     # chai's MSA feature embedding is feature_embedding's input_projs.MSA,
     # which unlike ours carries a bias.
