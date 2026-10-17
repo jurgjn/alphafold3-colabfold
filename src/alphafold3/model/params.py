@@ -313,6 +313,7 @@ def get_model_haiku_params(model_dir: epath.PathLike) -> hk.Params:
   if not params:
     raise FileNotFoundError(f'Model missing from "{model_dir}"')
   _check_blob_convention(model_dir, params)
+  _upgrade_esmfold2_class_rows(model_dir, params)
   # chai1's blobs carry chai-lab's structure token-pair weights from 28141c7 on (model.Chai1StructurePair);
   # one fetched before has the model and not its diffusion's pair input
   if (any(scope.endswith('diffusion_embed_atom_pair_feat') for scope in params)      # (chai's alone)
@@ -321,6 +322,34 @@ def get_model_haiku_params(model_dir: epath.PathLike) -> hk.Params:
         f'{model_dir}: these chai1 weights predate chai-lab\'s structure token-pair weights, which its '
         'diffusion conditions on. Delete the blob there and run again to fetch the current one.')
   return params
+
+
+# ESMFold2's DNA and N rows of each 31-class block, and the rows a blob before convention 2 holds them in
+_ESMFOLD2_CLASS_ROWS, _ESMFOLD2_OLD_ROWS = [26, 27, 28, 29, 30], [27, 28, 29, 30, 26]
+
+
+def _upgrade_esmfold2_class_rows(model_dir, params) -> None:
+  """An ESMFold2 blob converted before blob convention 2 holds its DNA and N rows in the old shift order: rotate them
+  into ESMFold2's class order (converters/esmfold2.esm_class_of_af3), as a fresh conversion writes them."""
+  from alphafold3.model import model_config
+
+  name = os.path.basename(os.path.normpath(os.path.expanduser(str(model_dir)))).split('-')[0]
+  rec = params.get('__meta__', {}).get('__convention__')
+  if name not in model_config.ESMFOLD2_FAMILY or (rec is not None and int(np.asarray(rec).reshape(-1)[0]) >= 2):
+    return
+  evo = 'diffuser/evoformer'
+  for scope, blocks in ((f'{evo}/extra_msa_target_feat', 2), (f'{evo}/left_single', 2), (f'{evo}/right_single', 2),
+                        (f'{evo}/msa_activations', 1)):
+    w = params.get(scope, {}).get('weights')
+    if w is None:
+      continue
+    new = [r + 31 * b for b in range(blocks) for r in _ESMFOLD2_CLASS_ROWS]
+    old = [r + 31 * b for b in range(blocks) for r in _ESMFOLD2_OLD_ROWS]
+    # numpy: a jnp scatter would compile once per shape
+    w = np.array(w)
+    w[new] = w[old]
+    params[scope]['weights'] = jnp.asarray(w)
+  logging.info('%s: ESMFold2 weights before blob convention 2, DNA and N rows rotated into its class order', model_dir)
 
 
 def _check_blob_convention(model_dir, params) -> None:

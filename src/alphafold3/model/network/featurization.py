@@ -29,6 +29,18 @@ import jax
 import jax.numpy as jnp
 
 
+def widen_to_esm_classes(block):
+  """An AF3 31-class restype or profile block [..., 31] in ESMFold2's 33 classes, for a layer that keeps their width.
+
+  ESM: 0 unused, 1 the gap, 2..22 the residues and UNK, 23..26 A G C U, 27 N, 28..31 DA DG DC DT, 32 DN. AF3 puts the
+  gap at 21 and N last, after the DNA (converters.esmfold2.esm_class_of_af3 is the same table for weight rows);
+  DN is not in AF3's 31 classes.
+  """
+  zero = jnp.zeros_like(block[..., :1])
+  return jnp.concatenate([zero, block[..., 21:22], block[..., :21], block[..., 22:26], block[..., 30:31],
+                          block[..., 26:30], zero], axis=-1)
+
+
 def _grid_keys(key, shape):
   """Generate a grid of rng keys that is consistent with different padding.
 

@@ -340,20 +340,9 @@ class DiffusionHead(hk.Module):
       # class down one -- which no single-sequence protein fold can see, since
       # both the gap column and the nucleic columns are then identically zero.
       n = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP
-      esm_n = n + 2
-      zero = jnp.zeros_like(features_1d[..., :1])
-
-      def _widen(block):
-        # ESM slot 0 is unused, slot 1 is the gap, 2..22 the residues and UNK,
-        # 23..31 the nucleic acids; slot 32 is DN, which AF3's 31-class block
-        # does not carry.
-        cols = [zero, block[..., 21:22], block[..., :21], block[..., 22:n], zero]
-        out = jnp.concatenate(cols, axis=-1)
-        assert out.shape[-1] == esm_n, (out.shape[-1], esm_n)
-        return out
-
+      widen = featurization.widen_to_esm_classes
       features_1d = jnp.concatenate(
-          [_widen(features_1d[..., :n]), _widen(features_1d[..., n:2 * n]),
+          [widen(features_1d[..., :n]), widen(features_1d[..., n:2 * n]),
            features_1d[..., 2 * n:]], axis=-1)
     single_cond = hm.LayerNorm(
         use_fast_variance=False,

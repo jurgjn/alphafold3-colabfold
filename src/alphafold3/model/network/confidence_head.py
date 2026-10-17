@@ -196,18 +196,10 @@ class ConfidenceHead(hk.Module):
     # 447 and its weights are converted at that width.
     if self.global_config.model in model_config.PAIR_ONLY_TRUNK:
       n_af3 = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP
-      zero = jnp.zeros_like(target_feat[..., :1])
-
-      def _widen(block):
-        out = jnp.concatenate(
-            [zero, block[..., 21:22], block[..., :21], block[..., 22:n_af3],
-             zero], axis=-1)
-        assert out.shape[-1] == n_af3 + 2, (out.shape[-1], n_af3 + 2)
-        return out
-
+      widen = featurization.widen_to_esm_classes
       target_feat = jnp.concatenate(
-          [_widen(target_feat[..., :n_af3]),
-           _widen(target_feat[..., n_af3:2 * n_af3]),
+          [widen(target_feat[..., :n_af3]),
+           widen(target_feat[..., n_af3:2 * n_af3]),
            target_feat[..., 2 * n_af3:]], axis=-1)
     s_inputs = hm.LayerNorm(name='s_inputs_norm')(target_feat)
     single_act = hm.LayerNorm(name='s_norm')(single_act)

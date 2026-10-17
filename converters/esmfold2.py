@@ -1105,10 +1105,13 @@ ESM_MSA_GAP_CLASS = 1           # protein_utils.MSA_GAP_TOKEN_ID
 def esm_class_of_af3(n_af3):
   """[AF3 restype/profile column -> ESMFold2 res_type class], length n_af3.
 
-  The two alphabets agree on the RESIDUES and disagree on where the GAP sits:
+  The two alphabets agree on the RESIDUES and disagree on where the GAP and the unknown nucleotides sit:
 
-      AF3   0..19 residues | 20 UNK | 21 '-' | 22.. nucleic
-      ESM   0 unused | 1 '-' | 2..21 residues | 22 UNK | 23.. nucleic
+      AF3   0..19 residues | 20 UNK | 21 '-' | 22..25 A G C U | 26..29 DA DG DC DT | 30 N | 31 DN (msa only)
+      ESM   0 unused | 1 '-' | 2..21 residues | 22 UNK | 23..26 A G C U | 27 N | 28..31 DA DG DC DT | 32 DN
+
+  RNA's unknown sits between U and the DNA in ESMFold2 and last in AF3, so a shift put every DNA class one slot low
+  (DA read as N) and N on DT: DNA folded at pLDDT 20-35 where native reaches 83-91, while RNA and protein passed.
 
   so it is a PERMUTATION, not the shift-by-two this used to be. Read as a slice
   it put AF3's gap column on ESMFold2's FIRST NUCLEIC class and shifted every
@@ -1118,7 +1121,7 @@ def esm_class_of_af3(n_af3):
   nucleic ones. It takes a real MSA (`msa.profile` is 24% gap on 1STP) or a
   nucleic chain to show up at all.
   """
-  return [c + 2 if c < 21 else 1 if c == 21 else c + 1 for c in range(n_af3)]
+  return ([c + 2 for c in range(21)] + [1, 23, 24, 25, 26, 28, 29, 30, 31, 27, 32])[:n_af3]
 
 
 def _remap_restype_block(w, n_af3):
