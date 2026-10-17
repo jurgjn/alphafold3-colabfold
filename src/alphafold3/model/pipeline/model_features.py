@@ -491,7 +491,7 @@ def _empty_template_gap(batch, gap_index=21, slots='first'):
   batch['template_aatype'] = aatype
 
 
-def _dedupe_self_msa(batch):
+def _dedupe_self_msa(batch, query_once=False):
   """ESMFold2's self-MSA is the query ONCE, not the query twice.
 
   AF3 concatenates a paired and an unpaired MSA, and each one begins with the
@@ -531,7 +531,8 @@ def _dedupe_self_msa(batch):
   a, b = live[0], live[1]
   if not np.array_equal(msa[a], msa[b]):
     return batch
-  if not all(np.array_equal(msa[a], msa[i]) for i in live[1:]):
+  # query_once: ESMFold2 builds its MSA from the a3m alone, so beside a real alignment too the query appears once
+  if not query_once and not all(np.array_equal(msa[a], msa[i]) for i in live[1:]):
     return batch                      # a real alignment: not a self-MSA
   m = mask.copy()
   m[b] = False
@@ -540,6 +541,36 @@ def _dedupe_self_msa(batch):
     batch['num_alignments'] = np.asarray(
         np.asarray(batch['num_alignments']) - 1, dtype=np.asarray(
             batch['num_alignments']).dtype)
+  return batch
+
+
+def _esm_deletion_mean(batch):
+  """ESMFold2's deletion_mean is the mean over MSA rows of its deletion VALUE, (pi / 2) * arctan(d / 3), not of the counts."""
+  if 'deletion_matrix' not in batch or 'deletion_mean' not in batch:
+    return batch
+  live = np.asarray(batch['msa_mask']).any(-1)
+  if not live.any():
+    return batch
+  value = (np.pi / 2) * np.arctan(np.asarray(batch['deletion_matrix'], np.float32)[live] / 3.0)
+  batch['deletion_mean'] = value.mean(0).astype(np.asarray(batch['deletion_mean']).dtype)
+  return batch
+
+
+def _complex_msa_profile(batch, unk=20):
+  """ESMFold2's profile is a mean over the whole complex MSA, where a chain without an MSA has its query (UNK on a ligand) in row 0 and gaps below."""
+  if 'msa' not in batch:
+    return batch
+  from alphafold3.cpp import msa_profile
+  msa = np.asarray(batch['msa']).copy()
+  live = np.flatnonzero(np.asarray(batch['msa_mask']).any(-1))
+  if live.size == 0:
+    return batch
+  lig = np.flatnonzero(np.asarray(batch['is_ligand']).astype(bool) & np.asarray(batch['seq_mask']).astype(bool))
+  msa[live[0], lig] = unk
+  batch['msa'] = msa.astype(np.asarray(batch['msa']).dtype)
+  if 'profile' in batch:
+    n = np.asarray(batch['profile']).shape[-1]
+    batch['profile'] = msa_profile.compute_msa_profile(msa=np.minimum(msa[live], n - 1), num_residue_types=n).astype(np.float32)
   return batch
 
 
@@ -938,9 +969,13 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('zero_msa_without_alignment') and not has_msa:
     _zero_msa(batch)
   if knobs.get('dedupe_self_msa'):
-    _dedupe_self_msa(batch)
+    _dedupe_self_msa(batch, query_once=knobs['dedupe_self_msa'] == 'query_once')
   if knobs.get('native_nonprotein_msa'):
     _native_nonprotein_msa(batch)
+  if knobs.get('complex_msa_profile'):
+    _complex_msa_profile(batch)
+  if knobs.get('esm_deletion_mean'):
+    _esm_deletion_mean(batch)
   if knobs.get('full_msa') or knobs.get('native_rng'):
     _crop_msa_padding(batch)
   if knobs.get('native_rng') and seed is not None and fold_input is not None:

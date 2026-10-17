@@ -229,7 +229,7 @@ PROFILE_MODE = 'soft'
 
 def create_msa_feat(msa: features.MSA, soft_seq=None,
                     design_mask=None, chai1=False, is_ligand=None,
-                    asym_id=None) -> jax.Array:
+                    asym_id=None, deletion_scale=2.0 / jnp.pi) -> jax.Array:
   """Create and concatenate MSA features."""
   rows = msa.rows
   if chai1 and is_ligand is not None:
@@ -251,7 +251,7 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
   msa_1hot = blend_soft(msa_1hot, soft_seq, design_mask)
   deletion_matrix = msa.deletion_matrix
   has_deletion = jnp.clip(deletion_matrix, 0.0, 1.0)[..., None]
-  deletion_value = (jnp.arctan(deletion_matrix / 3.0) * (2.0 / jnp.pi))[
+  deletion_value = (jnp.arctan(deletion_matrix / 3.0) * deletion_scale)[
       ..., None
   ]
 

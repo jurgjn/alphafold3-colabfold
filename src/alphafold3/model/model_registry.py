@@ -522,7 +522,12 @@ _FEATURISE = {
     # the measurement -- it moves the trunk's MSA injection by 4.3%.
     # AF3_NO_ESM_DEDUPE_MSA=1 keeps AF3's two rows, for the A/B.
     **{m: dict(atom_keys_subset_size=192, lm_pair=True,
-               dedupe_self_msa=not os.environ.get('AF3_NO_ESM_DEDUPE_MSA'),
+               # 'query_once': native's MSA is the a3m, query once, with or without homologs (6648 rows to our 6649)
+               dedupe_self_msa=not os.environ.get('AF3_NO_ESM_DEDUPE_MSA') and 'query_once',
+               # profile over the complex MSA: a nucleic chain beside a protein MSA reads ~all gap, not its own one-hot
+               complex_msa_profile=not os.environ.get('AF3_NO_ESM_COMPLEX_PROFILE'),
+               # deletion_mean over rows of (pi / 2) * arctan(d / 3), as esm prepare_input; AF3 takes the raw count mean
+               esm_deletion_mean=not os.environ.get('AF3_NO_ESM_DELETION'),
                esmfold2_ref_pos=not os.environ.get('AF3_NO_ESM_REF_POS'),
                # An atomised residue is UNKNOWN to ESMFold2, not its parent.
                # Its featuriser (esm 3.4.1 prepare_esmfold2_input) puts

@@ -673,7 +673,10 @@ class Evoformer(hk.Module):
                                                    self.config.num_msa)
     msa_feat = featurization.create_msa_feat(
         msa_batch, self.soft_seq, self.design_mask, chai1=chai1,
-        is_ligand=is_ligand, asym_id=asym_id).astype(dtype)
+        is_ligand=is_ligand, asym_id=asym_id,
+        # esm prepare_input: deletion_value = (pi / 2) * arctan(d / 3), where AF3 scales by 2 / pi
+        deletion_scale=(jnp.pi / 2.0 if self.global_config.model in model_config.ESMFOLD2_FAMILY
+                        else 2.0 / jnp.pi)).astype(dtype)
 
     # Boltz-2 appends an is_paired MSA feature (Boltz msa features = [onehot(33), has_deletion,
     # deletion_value, is_paired]; ours are [onehot(32), has_deletion, deletion_value]). For a
