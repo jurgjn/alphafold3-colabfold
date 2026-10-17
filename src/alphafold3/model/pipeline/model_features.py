@@ -623,13 +623,8 @@ def _attach_lm_pair(batch, lm_pair):
   states. It has to be in the SAME token order the featuriser laid out, which is
   why it is keyed to the batch rather than to the input JSON.
 
-  ESM-C is a PROTEIN language model, so a pair rep covering only the protein
-  tokens is scattered into the full token grid with zeros elsewhere -- the same
-  thing `_attach_esm` does for chai-1's ESM2, and the only sensible reading of
-  "no language-model information about this token". Note that native ESMFold2
-  has no non-protein path at all (its featuriser takes sequences), so a ligand
-  or nucleic-acid chain is out of distribution for the model however this term
-  is filled.
+  A pair rep covering only the protein tokens is scattered into the full token grid with zeros elsewhere. Native
+  ESMFold2 instead runs its shim over every token, zero hidden states off protein; `_attach_lm_hidden` does that.
   """
   lm = np.asarray(lm_pair, np.float32)
   n = np.asarray(batch['token_index']).shape[-1]
@@ -661,6 +656,31 @@ def _attach_lm_pair(batch, lm_pair):
     full[np.ix_(idxs, idxs)] = lm[np.ix_(rows, rows)]
     lm = full
   batch['lm_pair'] = lm
+  return batch
+
+
+def _attach_lm_hidden(batch, rows, shim_params):
+  """ESMFold2's language-model pair as native builds it: ESM-C's states (residues, layers, width) on every token,
+  zeros where a token is not protein (and with no protein chain at all), then the shim over the whole token grid.
+  A protein token takes its residue's row, which covers an atomised modified residue.
+  """
+  from alphafold3.model import esm
+
+  n = np.asarray(batch['token_index']).shape[-1]
+  layers, width = np.shape(shim_params['combine'])[0], np.shape(shim_params['lm_norm/scale'])[0]
+  hidden = np.zeros((n, layers, width), np.float32)
+  idxs = np.flatnonzero(np.asarray(batch['is_protein']).astype(bool))
+  if rows is not None and len(idxs):
+    asym = np.asarray(batch['asym_id']).reshape(-1)[idxs]
+    resi = np.asarray(batch['residue_index']).reshape(-1)[idxs]
+    rank, order = {}, []
+    for key in zip(asym.tolist(), resi.tolist()):
+      order.append(rank.setdefault(key, len(rank)))
+    if len(rows) != len(rank):
+      raise ValueError(f'ESM-C has {len(rows)} rows but the batch has {len(idxs)} protein tokens spanning '
+                       f'{len(rank)} residues')
+    hidden[idxs] = np.asarray(rows, np.float32)[np.asarray(order, np.int64)]
+  batch['lm_pair'] = np.asarray(esm.shim(hidden, shim_params), np.float32)
   return batch
 
 
@@ -804,7 +824,7 @@ def prepare_input(fold_input, spec):
 
 
 def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
-          has_msa=True, fold_input=None, cyclic=None, lm_pair=None, seed=None):
+          has_msa=True, fold_input=None, cyclic=None, lm_pair=None, seed=None, lm_hidden=None):
   """Apply `spec`'s featurisation conventions to a featurised batch, in place.
 
   spec is a model_registry.ModelSpec; the work is driven by spec.featurise.
@@ -821,6 +841,9 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   cyclic is not a per-model convention at all -- it wraps the shared relative
   position encoding, so every family here honours it. It is applied whether or
   not the model declares anything.
+
+  lm_hidden (ESM-C rows or None, shim params) builds ESMFold2's language-model pair over every token, as native
+  does; lm_pair is a finished one.
   """
   knobs = spec.featurise
   if cyclic:
@@ -907,7 +930,9 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('empty_template_gap'):
     _empty_template_gap(batch, slots=knobs.get('empty_template_gap_slots',
                                                'first'))
-  if knobs.get('lm_pair') and lm_pair is not None:
+  if knobs.get('lm_pair') and lm_hidden is not None:
+    _attach_lm_hidden(batch, *lm_hidden)
+  elif knobs.get('lm_pair') and lm_pair is not None:
     _attach_lm_pair(batch, lm_pair)
   if knobs.get('esm') and esm is not None:
     _attach_esm(batch, esm)

@@ -595,10 +595,13 @@ def _dims_from(p, family):
 def embed(sequences, model_dir=None, family='esmc', tower=None):
   """-> the array the consumer wants, BOS/EOS stripped.
 
-  ESM-C: (L, n_layers + 1, d_model), every state, for ESMFold2's layer mix.
+  ESM-C: (sum(len(s)), n_layers + 1, d_model), every state, for ESMFold2's layer mix.
   ESM2:  (sum(len(s)), d_model), the last state only, chains concatenated in
          order -- the rows land on the batch's protein tokens in order, so they
          have to be concatenated the way the featuriser lays those tokens out.
+
+  Native ESMFold2 runs a complex as one input, [BOS] a [EOS BOS] b [EOS], with attention kept within each chain;
+  rotary positions are relative and nothing else mixes tokens, so that is each chain's forward on its own.
   """
   _require_jax()
   if isinstance(sequences, str):
@@ -615,11 +618,6 @@ def embed(sequences, model_dir=None, family='esmc', tower=None):
       if out.shape[0] != len(seq):
         raise ValueError(f'{out.shape[0]} rows for a {len(seq)}-residue chain')
       rows.append(out)
-  if family == 'esmc':
-    if len(rows) > 1:
-      raise ValueError('ESM-C multi-chain wrapping is [EOS, BOS] separated; '
-                       'pass one chain')
-    return rows[0]
   return np.concatenate(rows, axis=0).astype(np.float32)
 
 
