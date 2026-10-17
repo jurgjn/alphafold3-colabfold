@@ -436,14 +436,6 @@ def _raw_last_conformer(batch):
   return _override_ref_conformers(batch, boltz2_conformers.as_conformers(), tokens=tokens)
 
 
-def load_chai_conformers(path):
-  """Read the standard-residue conformers exported from chai's apkl cache."""
-  z = np.load(path, allow_pickle=True)
-  codes = sorted({k.split('/')[0] for k in z.files})
-  return {c: ([str(x) for x in z[f'{c}/names']], np.asarray(z[f'{c}/pos']))
-          for c in codes}
-
-
 def _zero_msa(batch):
   """chai-1's single-sequence path: an all-gap MSA, profile and deletion zero.
 
@@ -1048,13 +1040,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('ccd_leaving_atoms'):
     _check_ccd_leaving(batch, fold_input)
   if knobs.get('std_conformers'):
-    if model_dir is None:
-      raise ValueError(f'{spec.name} needs model_dir to find its conformers')
-    import os
-    _override_ref_conformers(
-        batch, load_chai_conformers(
-            os.path.join(os.path.expanduser(str(model_dir)),
-                         knobs['std_conformers'])))
+    from alphafold3.constants import chai1_conformers
+    _override_ref_conformers(batch, chai1_conformers.as_conformers())
   if knobs.get('raw_last_conformer'):
     _raw_last_conformer(batch)
   if knobs.get('esmfold2_ref_pos'):

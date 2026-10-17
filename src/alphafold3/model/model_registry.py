@@ -718,12 +718,7 @@ _FEATURISE = {
     # depth-1 self-MSA. It also takes ESM2 embeddings, which are optional but not
     # minor -- without them a natural protein folds to 5.70 A where chai reaches
     # 0.642.
-    # std_conformers is deliberately absent: see converters/publish.py. chai's
-    # own standard-residue conformers are worth 0.08 A on 6MRR (1.698 vs 1.776)
-    # and we do not have the licence to redistribute them, so the CCD ideal
-    # values every other model uses are the default. Pass
-    # std_conformers='std_conformers.npz' here, with the file beside the blob,
-    # to restore them.
+    # std_conformers: chai's own standard-residue conformers (constants/chai1_conformers.py) in place of CCD ideal ones
     # atomized_unknown_restype: chai-lab's restype is gemmi's fasta_code(), X for
     # every modified residue (SEP, TPO, MSE ...), where AlphaFold 3 keeps the
     # parent; atomised, a phosphoserine's ten tokens are UNKNOWN to chai
@@ -735,7 +730,8 @@ _FEATURISE = {
                   zero_msa_without_alignment=True, esm=True, full_msa=True,
                   atomized_unknown_restype='chai', chai_msa=True,
                   # its TokenBondRestraint: every declared bond, directed, into both pair inputs
-                  declared_bond_feature=not os.environ.get('AF3_NO_DECLARED_BONDS')),
+                  declared_bond_feature=not os.environ.get('AF3_NO_DECLARED_BONDS'),
+                  std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS')),
 }
 
 # Conformer centering rides in as a featurise KNOB as well as a
