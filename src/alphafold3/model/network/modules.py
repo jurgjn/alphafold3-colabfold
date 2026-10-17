@@ -1154,10 +1154,16 @@ class EvoformerIteration(hk.Module):
     def _msa_update(m):
       # MSAPairWeightedAveraging: DropoutRowwise 0.15 over the MSA tensor (s,r,c),
       # sharing the mask across sequences (axis 0) -- AF3 SI Alg 8, OF3 msa_dropout.
-      m = m + _pair_dropout(MSAAttention(
+      pwa = _pair_dropout(MSAAttention(
           self.config.msa_attention, self.global_config, name='msa_attention1'
       )(m, msa_mask, pair_act=pair_act, pair_mask=pair_mask),
-                            use_dropout, rate=0.15)
+                          use_dropout, rate=0.15)
+      if self.global_config.model == 'chai1':
+        # chai's transition reads the same MSA as its weighted averaging, in parallel (msa_repr + transition(msa_repr)
+        # + cat(pwa chunks) in the trunk trace); in sequence its trunk read corr 0.994 against chai-lab's at pass 0
+        return m + pwa + TransitionBlock(
+            self.config.msa_transition, self.global_config, name='msa_transition')(m)
+      m = m + pwa
       m = m + TransitionBlock(
           self.config.msa_transition, self.global_config, name='msa_transition'
       )(m, mask=msa_mask if _mask_trans else None)
