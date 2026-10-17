@@ -941,6 +941,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
 
   if knobs.get('atomized_backbone_bonds'):
     _atomized_backbone_bonds(batch)
+  if knobs.get('declared_polymer_bonds'):
+    _declared_polymer_bonds(batch, fold_input, rule=knobs['declared_polymer_bonds'])
   if knobs.get('atomized_unknown_restype'):
     from alphafold3.model.pipeline import chiral_features
     # before restype_alignment, which reads `aatype` to rewrite profile and msa.
@@ -1149,10 +1151,6 @@ def _atomized_backbone_bonds(batch):
     return batch
   layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
 
-  key = 'tokens_to_ligand_ligand_bonds'
-  idxs = np.array(batch[f'{key}:gather_idxs'])
-  mask = np.array(batch[f'{key}:gather_mask'])
-  order = batch.get('ligand_ligand_bond_order')
   ref_mask = np.asarray(batch['ref_mask']).astype(bool)
   num_token, num_dense = ref_mask.shape[-2], ref_mask.shape[-1]
 
@@ -1182,11 +1180,21 @@ def _atomized_backbone_bonds(batch):
       if tail in atoms_a and head in atoms_b:
         wanted.append((atoms_a[tail], atoms_b[head]))
         break
+  # a backbone link is a single bond
+  return _add_token_bonds(batch, wanted, 1)
 
+
+def _add_token_bonds(batch, pairs, order_code):
+  """Token pairs, both directions, into the free (masked-off) rows of the ligand-ligand bond gather, so the batch keeps
+  its shapes; grown if it has too few. order_code is the pairs' bond order."""
+  key = 'tokens_to_ligand_ligand_bonds'
+  idxs = np.array(batch[f'{key}:gather_idxs'])
+  mask = np.array(batch[f'{key}:gather_mask'])
+  order = batch.get('ligand_ligand_bond_order')
   present = {(int(a), int(b))
              for (a, b), ok in zip(idxs, mask.all(axis=1)) if ok}
   new = []
-  for a, b in wanted:
+  for a, b in pairs:
     for pair in ((a, b), (b, a)):
       if pair not in present:
         present.add(pair)
@@ -1213,9 +1221,60 @@ def _atomized_backbone_bonds(batch):
   batch[f'{key}:gather_mask'] = mask
   if order is not None:
     order = np.array(order)
-    order[rows] = 1                          # a backbone link is a single bond
+    order[rows] = order_code
     batch['ligand_ligand_bond_order'] = order
   return batch
+
+
+def _declared_polymer_bonds(batch, fold_input, rule='all'):
+  """bondedAtomPairs that AF3 does not featurise, as token bonds, by the vendor's own rule.
+
+  AF3 keeps a declared bond only between a STANDARD residue or a ligand and a ligand; a bond between two polymer
+  residues, or from a modified (atomised) residue to a ligand, never reaches its token bonds.
+
+    'all'            boltz-2: its tokeniser makes every bond between two tokens a token bond (type + 1). A disulfide to
+                     a D-Cys folded 21.7 A apart without it, against native's 2.4.
+    'discontinuous'  protenix and opendde: `include_discont_poly_poly_bonds=True` at inference keeps a polymer-polymer
+                     bond only between residues more than one apart or in different chains (head-to-tail ring closures,
+                     staples, lactones), and every bond of a non-standard residue to a ligand.
+    'ligand'         rf3: atomworks drops every bond between two non-atomised tokens, but keeps a modified (atomised)
+                     residue's bond to a ligand.
+  """
+  from alphafold3.model import features
+
+  pairs_in = getattr(fold_input, 'bonded_atom_pairs', None) if fold_input is not None else None
+  layout = batch.get('token_atoms_layout')
+  if not pairs_in or layout is None:
+    return batch
+  rule = 'all' if rule is True else rule
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  polymers = {c.id for c in fold_input.chains if type(c).__name__ in ('ProteinChain', 'RnaChain', 'DnaChain')}
+  standard = _standard_residue_names()
+  ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+  token_of, res_name = {}, {}
+  for t, s in zip(*np.nonzero(ref_mask)):
+    key = (str(layout.chain_id[t, s]), int(layout.res_id[t, s]), str(layout.atom_name[t, s]))
+    token_of.setdefault(key, int(t))
+    res_name[key[:2]] = str(layout.res_name[t, s])
+  pairs = []
+  for a, b in pairs_in:
+    a, b = tuple(a), tuple(b)
+    poly_a, poly_b = a[0] in polymers, b[0] in polymers
+    if poly_a and poly_b:
+      if rule == 'ligand':
+        continue
+      if rule == 'discontinuous' and a[0] == b[0] and abs(int(a[1]) - int(b[1])) <= 1:
+        continue                            # adjacent residues: protenix leaves the link to the chain
+    elif poly_a or poly_b:
+      poly = a if poly_a else b
+      if res_name.get((str(poly[0]), int(poly[1]))) in standard:
+        continue                            # AF3 featurises a standard residue's bond to a ligand itself
+    else:
+      continue                              # ligand-ligand: AF3's own
+    ta, tb = token_of.get(a), token_of.get(b)
+    if ta is not None and tb is not None and ta != tb:
+      pairs.append((ta, tb))
+  return _add_token_bonds(batch, pairs, features.BOND_ORDER_COVALENT)
 
 
 def _standard_residue_names():

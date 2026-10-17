@@ -570,7 +570,8 @@ _FEATURISE = {
     # in training, occupying a slot in the atom windows and shifting the flat
     # atom axis of every chain after the first. Same knob esmfold2 and chai-1
     # already use.
-    'boltz2': dict(modified_as_one_token=True, padded_keys=True,
+    # declared_polymer_bonds: boltz's `bond` constraint between two tokens is a token bond, polymer-polymer included
+    'boltz2': dict(modified_as_one_token=True, padded_keys=True, declared_polymer_bonds=True,
                    **({} if os.environ.get('AF3_NO_BOLTZ2_DROP_OXT')
                       else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
                    dedupe_self_msa=not os.environ.get('AF3_NO_BOLTZ2_DEDUPE_MSA'),
@@ -598,6 +599,8 @@ _FEATURISE = {
     # dedupe_self_msa: a protenix fork, and its featuriser too emits a depth-1 self MSA; the duplicate query row
     # moved a single-sequence protein+RNA trunk to another basin (u1a pair rel 0.35 -> 0.06 against native)
     'opendde': dict(opendde=True, padded_keys=True,
+                    # a protenix fork: same include_discont_poly_poly_bonds=True rule for declared bonds
+                    declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
                     empty_template_gap=not os.environ.get(
                         'AF3_NO_DDE_TEMPLATE_GAP'),
                     empty_template_gap_slots='first',
@@ -638,6 +641,8 @@ _FEATURISE = {
                native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'),
                dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
                translate_conformers=True,
+               # declared bonds: discontinuous polymer-polymer and modified-residue-to-ligand, as include_discont_poly_poly_bonds
+               declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
                # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width
                **({} if os.environ.get('AF3_NO_PX_NATIVE_RNG')
                   else {'native_rng': {'protenix1': 128, 'protenix2': 256}[m]}))
@@ -694,6 +699,8 @@ _FEATURISE = {
                          # native gives a modified nucleotide's atomised tokens the protein UNK too (5CM: 20)
                          atomized_unknown_restype='nucleic',
                          atomized_backbone_bonds=True,
+                         # atomworks keeps a modified (atomised) residue's bond to a ligand, drops polymer-polymer ones
+                         declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'ligand',
                          padded_keys=True,
                          dedupe_self_msa=not os.environ.get(
                              'AF3_NO_RF3_DEDUPE_MSA')),
