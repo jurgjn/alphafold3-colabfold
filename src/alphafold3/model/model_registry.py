@@ -528,9 +528,10 @@ _FEATURISE = {
                # Its featuriser (esm 3.4.1 prepare_esmfold2_input) puts
                # PROTEIN_UNK_RES_TYPE = 22 on all ten tokens of a
                # phospho-serine where we put SER -- the same convention
-               # rosettafold3 already needs, and for the same reason.
+               # rosettafold3 already needs, and for the same reason -- and on
+               # a modified nucleotide's tokens too.
                atomized_unknown_restype=not os.environ.get(
-                   'AF3_NO_ESM_ATOMIZED_UNK'),
+                   'AF3_NO_ESM_ATOMIZED_UNK') and 'nucleic',
                **({} if os.environ.get('AF3_NO_ESM_DROP_OXT')
                   else dict(drop_atoms=('OXT',))))
        for m in model_config.ESMFOLD2_FAMILY},
@@ -685,7 +686,8 @@ _FEATURISE = {
                             else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
                          chirals=True, atomized_element_names=True,
                          restype_alignment=True,
-                         atomized_unknown_restype=True,
+                         # native gives a modified nucleotide's atomised tokens the protein UNK too (5CM: 20)
+                         atomized_unknown_restype='nucleic',
                          atomized_backbone_bonds=True,
                          padded_keys=True,
                          dedupe_self_msa=not os.environ.get(

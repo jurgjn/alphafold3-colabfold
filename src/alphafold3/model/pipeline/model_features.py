@@ -892,7 +892,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('atomized_unknown_restype'):
     from alphafold3.model.pipeline import chiral_features
     # before restype_alignment, which reads `aatype` to rewrite profile and msa.
-    chiral_features.apply_unknown_restype_on_atomized(batch)
+    chiral_features.apply_unknown_restype_on_atomized(batch, nucleic=knobs['atomized_unknown_restype'] == 'nucleic')
   if knobs.get('atomized_element_names'):
     from alphafold3.model.pipeline import chiral_features
     chiral_features.apply_atomized_element_names(batch)
