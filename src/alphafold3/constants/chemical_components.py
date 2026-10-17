@@ -38,34 +38,47 @@ _CCD_PICKLE_FILE = resources.filename(
 )
 
 
-# An index beside the pickle, `<pickle>.index` + `<pickle>.blobs`: each component
-# stored as zlib-compressed marshal, read on first use. A fold touches a few dozen
-# of the ~50k components, which the whole pickle takes seconds and gigabytes to load.
-_INDEX_VERSION = (1, sys.version_info[:2])
+# An index beside the pickle, `<pickle>.index`: each component stored as zlib-compressed marshal, then the marshalled
+# offsets and their position in the last 8 bytes, read on first use. A fold touches a few dozen of the ~50k components,
+# which the whole pickle takes seconds and gigabytes to load.
+_INDEX_VERSION = (2, sys.version_info[:2])
+
+
+def write_atomic(path: os.PathLike[str], write) -> None:
+  """Calls write(f) on a file of this process's own, then renames it to path: concurrent writers never interleave."""
+  tmp = f'{path}.{os.getpid()}.tmp'
+  try:
+    with open(tmp, 'wb') as f:
+      write(f)
+    os.replace(tmp, path)
+  finally:
+    if os.path.exists(tmp):
+      os.remove(tmp)
 
 
 def write_ccd_index(ccd: Mapping[str, Mapping[str, Sequence[str]]],
                     pickle_path: os.PathLike[str]) -> None:
   """Writes the index next to `pickle_path` for `ccd`, as that pickle holds it."""
-  offsets, offset = {}, 0
-  with open(f'{pickle_path}.blobs.tmp', 'wb') as f:
+
+  def write(f):
+    offsets, offset = {}, 0
     for code, entry in ccd.items():
       blob = zlib.compress(marshal.dumps({k: list(v) for k, v in entry.items()}), 6)
       f.write(blob)
       offsets[code] = (offset, len(blob))
       offset += len(blob)
-  with open(f'{pickle_path}.index.tmp', 'wb') as f:
-    marshal.dump((_INDEX_VERSION, offsets), f)
-  os.replace(f'{pickle_path}.blobs.tmp', f'{pickle_path}.blobs')
-  os.replace(f'{pickle_path}.index.tmp', f'{pickle_path}.index')
+    f.write(marshal.dumps((_INDEX_VERSION, offsets)))
+    f.write(offset.to_bytes(8, 'little'))
+
+  write_atomic(f'{pickle_path}.index', write)
 
 
 class _IndexedCcd(Mapping[str, Mapping[str, Sequence[str]]]):
   """The CCD pickle's contents, each component read from the index when asked for."""
 
-  def __init__(self, offsets, blobs_path):
+  def __init__(self, offsets, index_path):
     self._offsets = offsets
-    self._fd = os.open(blobs_path, os.O_RDONLY)
+    self._fd = os.open(index_path, os.O_RDONLY)
     self._cache = {}
 
   def __getitem__(self, key):
@@ -88,15 +101,21 @@ class _IndexedCcd(Mapping[str, Mapping[str, Sequence[str]]]):
 
 def _read_index(path):
   """The index for the pickle at `path`, or None when it is absent, stale or foreign."""
-  index, blobs = f'{path}.index', f'{path}.blobs'
+  index = f'{path}.index'
   try:
     if os.path.exists(path) and os.path.getmtime(index) < os.path.getmtime(path):
       return None
     with open(index, 'rb') as f:
-      version, offsets = marshal.load(f)
-    if version != _INDEX_VERSION or not os.path.exists(blobs):
+      f.seek(-8, os.SEEK_END)
+      end = f.tell()
+      start = int.from_bytes(f.read(8), 'little')
+      if not 0 <= start < end:
+        return None
+      f.seek(start)
+      version, offsets = marshal.loads(f.read(end - start))
+    if version != _INDEX_VERSION:
       return None
-    return _IndexedCcd(offsets, blobs)
+    return _IndexedCcd(offsets, index)
   except (OSError, EOFError, ValueError, TypeError):
     return None
 
@@ -110,7 +129,12 @@ def _load_ccd_pickle_cached(
   if indexed is not None:
     return indexed
   with open(path, 'rb') as f:
-    return safe_pickle.load(f)
+    ccd = safe_pickle.load(f)
+  try:  # an index from an older layout, or none: build it once for the next process
+    write_ccd_index(ccd, path)
+  except OSError:
+    pass
+  return ccd
 
 
 class Ccd(Mapping[str, Mapping[str, Sequence[str]]]):

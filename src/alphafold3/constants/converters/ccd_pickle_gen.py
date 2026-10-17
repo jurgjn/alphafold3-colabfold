@@ -52,8 +52,8 @@ def main(argv: Sequence[str]) -> None:
   assert len(result) == whole_file.count(b'data_')
 
   print(f'Writing {output_file}', flush=True)
-  with open(output_file, 'wb') as f:
-    pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
+  chemical_components.write_atomic(
+      output_file, lambda f: pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL))
   chemical_components.write_ccd_index(result, output_file)
   print('Done', flush=True)
 
