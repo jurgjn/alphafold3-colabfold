@@ -943,7 +943,8 @@ def prepare_input(fold_input, spec):
   where AF3 keeps a supplied MSA as given (msa_featurizer RawMsa, dedup=True); the paired MSA stays as given in both.
   of3_main_msa: OpenFold3 reads the first N rows of a protein or RNA chain's main MSA (max_seq_counts colabfold_main) and
   deduplicates them, ignoring insertions, before its profile and deletion mean; AF3 keeps every row and profiles them all.
-  ccd_unk: an unknown amino acid keeps the CCD UNK atoms (N CA C O CB CG) where AF3 builds it as GLY; process-wide, set on
+  ccd_unk: an unknown amino acid keeps the CCD UNK atoms (N CA C O CB CG) where AF3 builds it as GLY ('cb': N CA C O CB,
+  boltz); process-wide, set on
   every call so the next featurisation follows this model.
   atomize_ligand_bonded: a polymer residue a declared bond ties to a ligand is one token per atom (atomworks'
   covalent_modifications); process-wide like ccd_unk.
@@ -956,7 +957,7 @@ def prepare_input(fold_input, spec):
   knobs = spec.featurise
   from alphafold3.model import features as af3_features
   from alphafold3.structure import chemical_components as struc_chem_comps
-  struc_chem_comps.UNK_AS_GLY = not knobs.get('ccd_unk')
+  struc_chem_comps.UNK_AS_GLY = 'ALA' if knobs.get('ccd_unk') == 'cb' else not knobs.get('ccd_unk')
   af3_features.ATOMIZED_RESIDUES = (_ligand_bonded_residues(fold_input) if knobs.get('atomize_ligand_bonded')
                                     else frozenset())
   from alphafold3.model.pipeline import pipeline as af3_pipeline

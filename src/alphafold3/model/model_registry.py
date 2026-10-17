@@ -794,6 +794,12 @@ for _m in ('openfold3', 'openbind0'):
   # of3 pads to 4 empty templates that are all GAP (create_template_restype), where AF3's empty slots read restype 0
   if not os.environ.get('AF3_NO_OF3_TEMPLATE_GAP'):
     _FEATURISE.setdefault(_m, {}).update(empty_template_gap=True, empty_template_gap_slots='atoms')
+# chai-1 too builds an unknown amino acid from the CCD UNK (6 atoms per X on unk_residues, ours 4), as do protenix,
+# opendde and rf3 (their natives' UNK carry CB and CG); boltz's const.ref_atoms["UNK"] is N CA C O CB
+if not os.environ.get('AF3_NO_CCD_UNK'):
+  for _m in ('chai1', 'protenix1', 'protenix2', 'opendde', 'rosettafold3'):
+    _FEATURISE.setdefault(_m, {})['ccd_unk'] = True
+  _FEATURISE.setdefault('boltz2', {})['ccd_unk'] = 'cb'
 
 
 # Where a converted model's weights are published. The file name is what
