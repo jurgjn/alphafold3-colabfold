@@ -912,8 +912,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('raw_last_conformer'):
     _raw_last_conformer(batch)
   if knobs.get('esmfold2_ref_pos'):
-    # ESMFold2's atom encoder was trained on its OWN idealised geometry
-    # (`protein_utils.PROTEIN_REF_POS`), not on the CCD ideal values AF3 uses.
+    # ESMFold2's atom encoder reads its ccd.pkl conformers (see
+    # constants/esmfold2_ref_pos.py), not the CCD ideal values AF3 uses.
     # Substituted by atom NAME through the same helper chai1's conformers use,
     # so an atom the table does not carry -- AF3's terminal OXT -- keeps the
     # coordinate it already had rather than being zeroed.

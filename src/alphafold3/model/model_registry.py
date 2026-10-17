@@ -502,8 +502,8 @@ _FEATURISE = {
     # context around a query block; AF3's default 128 is too narrow, so widen the
     # key subset and let the exact window ride in as a mask.
     # ...and its atom encoder was trained on ESMFold2's OWN idealised residue
-    # geometry (`constants/esmfold2_ref_pos.py`, from
-    # `protein_utils.PROTEIN_REF_POS`), which its featuriser writes into
+    # geometry (`constants/esmfold2_ref_pos.py`, its ccd.pkl conformers for
+    # residues and nucleotides), which its featuriser writes into
     # `ref_pos` with no centering and no augmentation -- not the CCD ideal
     # values AF3 uses. Read off an env override so the two can be A/B'd:
     # substituting it is what takes the family's L2.atom_encoder from
