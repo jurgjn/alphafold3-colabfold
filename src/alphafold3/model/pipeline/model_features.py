@@ -343,7 +343,7 @@ def _remove_dropped_atoms_from_layouts(batch, drop):
 
 
 
-def _override_ref_conformers(batch, conformers):
+def _override_ref_conformers(batch, conformers, tokens=None):
   """Replace ref_pos with another model's reference conformers, by atom name.
 
   AF3 (and so featurise_spec) takes reference coordinates from the CCD ideal
@@ -397,7 +397,7 @@ def _override_ref_conformers(batch, conformers):
                                                   resi_all.tolist())])
 
   n_replaced = 0
-  for t in range(pos.shape[0]):
+  for t in range(pos.shape[0]) if tokens is None else tokens:
     if atomised[t]:
       continue
     code = names_3[int(aatype[t])] if int(aatype[t]) < len(names_3) else None
@@ -415,6 +415,18 @@ def _override_ref_conformers(batch, conformers):
         n_replaced += 1
   batch['ref_pos'] = pos.astype(np.asarray(batch['ref_pos']).dtype)
   return n_replaced
+
+
+def _raw_last_conformer(batch):
+  """boltz2 never centres or rotates its last conformer group: give it boltz's stored conformer, raw."""
+  from alphafold3.constants import boltz2_conformers
+  uid = np.asarray(batch['ref_space_uid'])
+  mask = np.asarray(batch['ref_mask']) > 0
+  if not mask.any():
+    return 0
+  last = int(uid[mask].max())
+  tokens = np.nonzero(((uid == last) & mask).any(-1))[0].tolist()
+  return _override_ref_conformers(batch, boltz2_conformers.as_conformers(), tokens=tokens)
 
 
 def load_chai_conformers(path):
@@ -897,6 +909,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
         batch, load_chai_conformers(
             os.path.join(os.path.expanduser(str(model_dir)),
                          knobs['std_conformers'])))
+  if knobs.get('raw_last_conformer'):
+    _raw_last_conformer(batch)
   if knobs.get('esmfold2_ref_pos'):
     # ESMFold2's atom encoder was trained on its OWN idealised geometry
     # (`protein_utils.PROTEIN_REF_POS`), not on the CCD ideal values AF3 uses.

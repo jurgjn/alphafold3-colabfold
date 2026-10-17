@@ -567,7 +567,9 @@ _FEATURISE = {
     'boltz2': dict(modified_as_one_token=True, padded_keys=True,
                    **({} if os.environ.get('AF3_NO_BOLTZ2_DROP_OXT')
                       else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
-                   dedupe_self_msa=not os.environ.get('AF3_NO_BOLTZ2_DEDUPE_MSA')),
+                   dedupe_self_msa=not os.environ.get('AF3_NO_BOLTZ2_DEDUPE_MSA'),
+                   # raw_last_conformer: its last conformer group keeps the stored frame (constants/boltz2_conformers.py)
+                   raw_last_conformer=not os.environ.get('AF3_NO_BOLTZ2_RAW_LAST')),
     # opendde runs its diffusion on an expanded structural-token set, and pads
     # the atom key window rather than sliding it in bounds.
     # struct_num_tokens is deliberately absent: the structural-token count
