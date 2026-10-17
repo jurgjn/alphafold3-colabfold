@@ -4,7 +4,7 @@
     {
       "rna": {
         "id": "A",
-        "sequence": "GGCCCGAUAGCUCAGUCGGUAGAGC",
+        "sequence": "GGCGCGAUAGCUUAGUCCGUAGAGC",
         "modifications": [
           {"modificationType": "PSU", "basePosition": 13},
           {"modificationType": "5MC", "basePosition": 18},
