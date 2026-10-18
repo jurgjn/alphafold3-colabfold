@@ -995,6 +995,22 @@ def _ligand_bonded_residues(fold_input):
   return frozenset(out)
 
 
+def _largest_modified_residue(fold_input):
+  """Slots for the biggest modified polymer residue (CCD heavy atoms), so a model that keeps one on a single token, as
+  boltz does whatever its size, never truncates or splits it; None when 24 suffice."""
+  from alphafold3.common import folding_input as fi
+  from alphafold3.constants import chemical_components
+  ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None))
+  most = 0
+  for chain in fold_input.chains:
+    mods = (chain.ptms if isinstance(chain, fi.ProteinChain) else
+            chain.modifications if isinstance(chain, (fi.RnaChain, fi.DnaChain)) else ())
+    for name, _ in mods:
+      entry = ccd.get(name) or {}
+      most = max(most, sum(e not in ('H', 'D') for e in entry.get('_chem_comp_atom.type_symbol', ())))
+  return -(-most // 8) * 8 if most > 24 else None
+
+
 def prepare_input(fold_input, spec):
   """The input-side conventions, applied before featurisation: a copy of `fold_input` as the model's featuriser sees it.
 
@@ -1021,6 +1037,8 @@ def prepare_input(fold_input, spec):
                                     else frozenset())
   from alphafold3.model.pipeline import pipeline as af3_pipeline
   af3_pipeline.INNER_TERMINAL_ATOMS = knobs.get('drop_inner_terminal_atoms') or False
+  af3_pipeline.MAX_ATOMS_PER_TOKEN = (_largest_modified_residue(fold_input) if knobs.get('modified_as_one_token')
+                                      else None)
   cap = knobs.get('of3_main_msa')
   if not (knobs.get('dedupe_unpaired_msa') or cap or knobs.get('pair_as_unpair')):
     return fold_input

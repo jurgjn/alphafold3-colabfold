@@ -49,6 +49,10 @@ _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 #              ends too (json_parser._remove_non_std_ccd_leaving_atoms: no polymer link, OXT kept only for protein)
 INNER_TERMINAL_ATOMS = False
 
+# Atom slots per token when a model keeps a whole modified residue on one token (boltz2) and one has more than 24 heavy
+# atoms; process-wide, set per input by model_features.prepare_input. None: the config's max_atoms_per_token.
+MAX_ATOMS_PER_TOKEN = None
+
 
 def calculate_bucket_size(
     num_tokens: int, buckets: Sequence[int] | None
@@ -253,7 +257,7 @@ class WholePdbPipeline:
         features.tokenizer(
             flat_output_layout,
             ccd=ccd,
-            max_atoms_per_token=self._config.max_atoms_per_token,
+            max_atoms_per_token=MAX_ATOMS_PER_TOKEN or self._config.max_atoms_per_token,
             flatten_non_standard_residues=self._config.flatten_non_standard_residues,
             logging_name=logging_name,
         )

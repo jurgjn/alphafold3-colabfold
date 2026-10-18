@@ -582,6 +582,10 @@ class ConfidenceHead(hk.Module):
     # boltz2 converter TILES its weight and this needs no branch. Its prediction
     # is still token-level -- every atom of a token reports the same number.
     _n_atom = dense_atom_positions.shape[-2]
+    # boltz2's tiled weights are stored at AF3's 24 slots; a wider layout (one token per large modified residue)
+    # builds them there and broadcasts slot 0, which every slot equals
+    _n_w = 24 if self.global_config.model == 'boltz2' else _n_atom
+    _widen = lambda x: x if _n_w == _n_atom else jnp.broadcast_to(x[:, :1], (x.shape[0], _n_atom) + x.shape[2:])
     if self.global_config.model == 'chai1' and atom_name_chars is not None:
       # chai predicts pLDDT over 37 slots and gathers per atom by the atom's index
       # in ITS table -- not by our dense slot (CB is slot 3 there and dense slot 4;
@@ -611,11 +615,11 @@ class ConfidenceHead(hk.Module):
       plddt_logits = jnp.take_along_axis(
           plddt_logits, idx[..., None], axis=1)
     else:
-      plddt_logits = hm.Linear(
-          (_n_atom, self.config.num_plddt_bins),
+      plddt_logits = _widen(hm.Linear(
+          (_n_w, self.config.num_plddt_bins),
           initializer=self.global_config.final_init,
           name='plddt_logits',
-      )(self._head_norm('plddt_logits_ln', single_act))
+      )(self._head_norm('plddt_logits_ln', single_act)))
 
     bin_width = 1.0 / self.config.num_plddt_bins
     bin_centers = jnp.arange(0.5 * bin_width, 1.0, bin_width)
@@ -635,11 +639,11 @@ class ConfidenceHead(hk.Module):
     if self.global_config.model in model_config.NO_RESOLVED_HEAD:
       pass          # no such head here; nothing to build
     else:
-      experimentally_resolved_logits = hm.Linear(
-          (_n_atom, 2),
+      experimentally_resolved_logits = _widen(hm.Linear(
+          (_n_w, 2),
           initializer=self.global_config.final_init,
           name='experimentally_resolved_logits',
-      )(self._head_norm('experimentally_resolved_ln', single_act))
+      )(self._head_norm('experimentally_resolved_ln', single_act)))
 
     # gate on the LOGITS, which every branch either assigns or leaves None --
     # gating on the derived value read an unassigned local for every non-chai
