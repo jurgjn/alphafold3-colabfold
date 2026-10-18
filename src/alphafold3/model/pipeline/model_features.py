@@ -1406,7 +1406,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     # before restype_alignment, which reads `aatype` to rewrite profile and msa.
     mode = knobs['atomized_unknown_restype']
     chiral_features.apply_unknown_restype_on_atomized(
-        batch, nucleic=mode in ('nucleic', 'esm'), nucleic_unknown=30 if mode == 'chai' else None,
+        batch, nucleic=mode in ('nucleic', 'esm', 'aatype'), nucleic_unknown=30 if mode == 'chai' else None,
         channels=('aatype',) if mode == 'aatype' else ('aatype', 'profile', 'msa'), msa_nucleic_only=mode == 'esm')
   if knobs.get('query_letter_msa'):
     from alphafold3.model.pipeline import chiral_features
