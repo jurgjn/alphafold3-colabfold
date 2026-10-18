@@ -373,8 +373,9 @@ def apply_restype_alignment_on_atomized(batch):
   msa = batch.get('msa')
 
   if msa is not None:
-    # a token with no alignment of its own: gap in EVERY row, including the query
-    unaligned = (np.asarray(msa) == gap_idx).all(axis=0) & (aatype != gap_idx)
+    # a token with no alignment of its own: gap in every LIVE row, including the query (padding rows read 0, not gap)
+    live = np.asarray(batch['msa_mask']).astype(bool).any(-1) if batch.get('msa_mask') is not None else slice(None)
+    unaligned = (np.asarray(msa)[live] == gap_idx).all(axis=0) & (aatype != gap_idx)
   else:
     # no MSA to consult -- fall back to the old restype test, which is exact when
     # the alignment is the query alone (the only case reachable without `msa`)
@@ -414,7 +415,8 @@ def _element_symbols(periodic_table):
   return {v: k.upper() for k, v in periodic_table.ATOMIC_NUMBER.items()}
 
 
-def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None, channels=('aatype', 'profile', 'msa')):
+def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None, channels=('aatype', 'profile', 'msa'),
+                                     msa_nucleic_only=False):
   '''an atomised polymer token is UNKNOWN to RF3, not its parent residue type.
 
   AlphaFold 3 atomises a modified residue but keeps the PARENT restype on every one
@@ -446,6 +448,8 @@ def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None
   which the forward tells DNA from RNA.
 
   channels: of3 sets UNK on restype alone and keeps the sequence letter in its msa and profile.
+  msa_nucleic_only: esm reads a protein MSA from the a3m, whose query keeps the parent letter; only a nucleotide's row 0
+  is its (UNK) restype (prepare_input.compute_msa_features).
 
   RF3 and ESMFold2 only: every other ported family trains on AlphaFold 3's parent-restype
   convention. Boltz-2 wants the unknown restype too, but on a residue it keeps as ONE
@@ -489,6 +493,8 @@ def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None
   if 'profile' not in channels:
     return batch
 
+  if msa_nucleic_only:
+    atomized = atomized & is_nucleic
   profile = np.array(batch['profile'], copy=True)
   profile[atomized] = 0.0
   profile[atomized, cls[atomized]] = 1.0

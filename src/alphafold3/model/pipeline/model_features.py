@@ -1081,7 +1081,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('atomize_ligand_bonded'):
     _ligand_bonded_units(batch, fold_input)
   if knobs.get('atomized_backbone_bonds'):
-    _atomized_backbone_bonds(batch, fold_input)
+    _atomized_backbone_bonds(batch, fold_input, mode=knobs['atomized_backbone_bonds'])
   if knobs.get('declared_polymer_bonds'):
     _declared_polymer_bonds(batch, fold_input, rule=knobs['declared_polymer_bonds'])
   if knobs.get('declared_bond_feature'):
@@ -1091,8 +1091,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     # before restype_alignment, which reads `aatype` to rewrite profile and msa.
     mode = knobs['atomized_unknown_restype']
     chiral_features.apply_unknown_restype_on_atomized(
-        batch, nucleic=mode == 'nucleic', nucleic_unknown=30 if mode == 'chai' else None,
-        channels=('aatype',) if mode == 'aatype' else ('aatype', 'profile', 'msa'))
+        batch, nucleic=mode in ('nucleic', 'esm'), nucleic_unknown=30 if mode == 'chai' else None,
+        channels=('aatype',) if mode == 'aatype' else ('aatype', 'profile', 'msa'), msa_nucleic_only=mode == 'esm')
   if knobs.get('query_letter_msa'):
     from alphafold3.model.pipeline import chiral_features
     chiral_features.apply_query_letter_on_atomized(batch, fold_input)
@@ -1311,7 +1311,7 @@ def cyclic_period(batch, chains=True, fold_input=None):
 _LINK_ATOMS = (('C', 'N'), ("O3'", 'P'))
 
 
-def _atomized_backbone_bonds(batch, fold_input=None):
+def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
   """Restore the peptide bonds AlphaFold 3 drops at every atomised residue.
 
   AF3 extracts inter-residue bonds only where one side is a LIGAND chain
@@ -1331,7 +1331,11 @@ def _atomized_backbone_bonds(batch, fold_input=None):
   Not applied to the head-to-tail bond of a cyclic chain -- see cyclic_period, which
   is how every model in this package is told about that, and which is shared rather
   than RF3-specific.
+
+  mode 'esm': esm's compute_token_bonds -- protein links only (prev C - N, C - next N) at an atomised residue, and a
+  residue without that atom (PXZ, ACE, NH2) links through its first atomised token; no nucleic links, no CCD extras.
   """
+
   layout = batch.get('token_atoms_layout')
   if layout is None:
     return batch
@@ -1369,13 +1373,20 @@ def _atomized_backbone_bonds(batch, fold_input=None):
       continue                              # AF3 does not drop this one
     if frozenset((first, second)) in linked:
       continue
+    if mode == 'esm':
+      prot = np.asarray(batch['is_protein']).astype(bool).reshape(-1)
+      if not (prot[next(iter(atoms_a.values()))] and prot[next(iter(atoms_b.values()))]):
+        continue
+      lead = lambda atoms: min(atoms.values())
+      wanted.append((atoms_a.get('C', lead(atoms_a)), atoms_b.get('N', lead(atoms_b))))
+      continue
     for tail, head in _LINK_ATOMS:
       if tail in atoms_a and head in atoms_b:
         wanted.append((atoms_a[tail], atoms_b[head]))
         break
   # a backbone link is a single bond
   _add_token_bonds(batch, wanted, 1)
-  if not atomized:
+  if not atomized or mode == 'esm':
     return batch
   # a standard residue atomised for its ligand bond (features.ATOMIZED_RESIDUES) has no bonds of its own in AF3's table:
   # its CCD bonds, by order

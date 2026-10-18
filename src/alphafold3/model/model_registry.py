@@ -536,7 +536,11 @@ _FEATURISE = {
                # rosettafold3 already needs, and for the same reason -- and on
                # a modified nucleotide's tokens too.
                atomized_unknown_restype=not os.environ.get(
-                   'AF3_NO_ESM_ATOMIZED_UNK') and 'nucleic',
+                   'AF3_NO_ESM_ATOMIZED_UNK') and 'esm',
+               # its protein MSA comes from the a3m, whose query row is the sequence as typed (PXZ written G reads G)
+               query_letter_msa=True,
+               # compute_token_bonds links an atomised protein residue to its neighbours (prev C - N, C - next N)
+               atomized_backbone_bonds=not os.environ.get('AF3_NO_ESM_BACKBONE_BONDS') and 'esm',
                # esm prepare_input atomises a modified residue or nucleotide from its CCD minus the CCD leaving atoms
                # unless it ends the chain (FGA: OE2 off, OXT kept), and drops nothing from an unbonded glycan (O1 kept)
                ccd_leaving_atoms=not os.environ.get('AF3_NO_ESM_LEAVING'),
