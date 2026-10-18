@@ -43,6 +43,7 @@ _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 # Atoms the pipeline drops before tokenising; process-wide, set per model by model_features.prepare_input:
 #   True       OXT and OP3 only at a polymer chain's ends, modified residues too (rf3/atomworks)
 #   'leaving'  a modified protein residue drops its CCD leaving atoms unless it ends the chain (esm prepare_input)
+#   'leaving_all'  every non-standard polymer residue drops its CCD leaving atoms, ends too (of3 query featuriser)
 INNER_TERMINAL_ATOMS = False
 
 
@@ -492,15 +493,17 @@ class WholePdbPipeline:
       res_names = struct.res_name[polymer]
       for chain in set(chains.tolist()):
         ids = sorted(set(res_ids[chains == chain].tolist()))
-        if INNER_TERMINAL_ATOMS == 'leaving':
-          sel = (chains == chain) & protein
-          for r, name in dict(zip(res_ids[sel].tolist(), res_names[sel].tolist())).items():
-            if name in features._STANDARD_RESIDUES or r == ids[-1]:
+        if INNER_TERMINAL_ATOMS in ('leaving', 'leaving_all'):
+          sel = (chains == chain) & (protein if INNER_TERMINAL_ATOMS == 'leaving' else True)
+          for r, name, prot in zip(res_ids[sel].tolist(), res_names[sel].tolist(), protein[sel].tolist()):
+            if name in features._STANDARD_RESIDUES or (INNER_TERMINAL_ATOMS == 'leaving' and r == ids[-1]):
               continue
             entry = ccd.get(name) or {}
             leaving = {n for n, f, el in zip(entry.get('_chem_comp_atom.atom_id', ()),
                                              entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ()),
                                              entry.get('_chem_comp_atom.type_symbol', ())) if f == 'Y' and el != 'H'}
+            if not leaving and INNER_TERMINAL_ATOMS == 'leaving_all':
+              leaving = {'OXT'} if prot else {'OP3', 'O3P'}  # of3 MOLECULE_TYPE_TO_LEAVING_ATOMS
             ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | leaving
           continue
         for r in ids:

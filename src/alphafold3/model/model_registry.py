@@ -776,6 +776,10 @@ for _m in model_config.CENTRE_REF_CONFORMERS:
 for _m in ('openfold3', 'openbind0'):
   if not os.environ.get('AF3_NO_TERMINAL_DROP'):
     _FEATURISE.setdefault(_m, {})['drop_atoms'] = ('OXT', 'OP3', 'O3P')
+  # of3's query featuriser drops a non-canonical polymer residue's CCD leaving atoms wherever it sits (PXZ OXT', a
+  # terminal MVA's OXT, IAS OD2 not OXT) and builds a CCD ligand whole (an unbonded sugar keeps O1)
+  if not os.environ.get('AF3_NO_OF3_LEAVING'):
+    _FEATURISE.setdefault(_m, {}).update(ccd_leaving_atoms=True, drop_inner_terminal_atoms='leaving_all')
   # of3 profiles the deduplicated first 16384 main-MSA rows; on msa_gappy that is 6530 of 21577, profile max|d| 0.18 without
   if not os.environ.get('AF3_NO_OF3_MAIN_MSA'):
     _FEATURISE.setdefault(_m, {})['of3_main_msa'] = 16384
