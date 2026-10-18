@@ -551,6 +551,18 @@ def _chai_msa(batch, fold_input):
     del_mean[sel] = 0
   batch['profile'] = profile.astype(np.asarray(batch['profile']).dtype)
   batch['deletion_mean'] = del_mean.astype(np.asarray(batch['deletion_mean']).dtype)
+  # a ligand token is UNK in chai's query row and masked padding in every other row, so the a3m's own query copy
+  # differs from row 0 there and survives the dedupe below whenever the input has a ligand
+  lig = np.flatnonzero(np.asarray(batch['is_ligand']).astype(bool).reshape(-1) & np.asarray(batch['seq_mask']).astype(bool).reshape(-1))
+  if lig.size:
+    msa[0, lig] = vocab.index(residue_names.UNK)
+    msa[1:, lig] = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP
+    # native also masks these cells, but our MSA module then moved minisog's riboflavin 1.4 -> 4.5 A from native: opt-in
+    if os.environ.get('AF3_CHAI_LIG_MASK'):
+      mask[1:, lig] = False
+    profile[lig] = np.eye(profile.shape[-1], dtype=np.float32)[vocab.index(residue_names.UNK)]   # its 1-row context
+    batch['profile'] = profile.astype(np.asarray(batch['profile']).dtype)
+  source[0] = 4                       # MSADataSource.QUERY, as create_msa_feat reads row 0 anyway
   # chai drops token-identical rows of the joined MSA (AF3 keeps the paired and the unpaired query, and duplicates)
   live = np.flatnonzero(mask.any(-1))
   _, first = np.unique(msa[live], axis=0, return_index=True)
