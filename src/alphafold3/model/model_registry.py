@@ -581,7 +581,11 @@ _FEATURISE = {
                       else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
                    dedupe_self_msa=not os.environ.get('AF3_NO_BOLTZ2_DEDUPE_MSA'),
                    # raw_last_conformer: its last conformer group keeps the stored frame (constants/boltz2_conformers.py)
-                   raw_last_conformer=not os.environ.get('AF3_NO_BOLTZ2_RAW_LAST')),
+                   raw_last_conformer=not os.environ.get('AF3_NO_BOLTZ2_RAW_LAST'),
+                   # parse_polymer drops a non-canonical residue's CCD leaving atoms (parse_ccd_residue
+                   # drop_leaving_atoms=True) wherever it sits; ligands are parsed whole (an unbonded sugar keeps O1)
+                   **({} if os.environ.get('AF3_NO_BOLTZ2_LEAVING')
+                      else dict(ccd_leaving_atoms=True, drop_inner_terminal_atoms='leaving_all'))),
     # opendde runs its diffusion on an expanded structural-token set, and pads
     # the atom key window rather than sliding it in bounds.
     # struct_num_tokens is deliberately absent: the structural-token count
