@@ -846,6 +846,47 @@ def _rf3_msa(batch, fold_input):
   return batch
 
 
+def _ccd_restype(batch, fold_input):
+  """Protenix's restype for a non-standard residue (add_cano_seq_resname): the CCD one_letter_code read for the
+  residue's own CCD type (peptide -> the amino acid or UNK, DNA -> D + letter or DN, RNA -> letter or N, else UNK), where
+  AF3 takes the CCD parent -- PCA is GLN there (one letter Q), GLU here (parent GLU)."""
+  from alphafold3.constants import chemical_components, residue_names
+  layout = batch.get('token_atoms_layout')
+  if layout is None or 'aatype' not in batch:
+    return batch
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None) if fold_input is not None else None)
+  standard = _standard_residue_names()
+  vocab = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP)
+  amask = np.asarray(batch['ref_mask']).astype(bool)
+  aatype = np.array(batch['aatype'], copy=True)
+  cache = {}
+  for t in range(aatype.shape[0]):
+    a = np.flatnonzero(amask[t])
+    if not a.size:
+      continue
+    name = str(layout.res_name[t, a[0]])
+    if name in standard:
+      continue
+    if name not in cache:
+      entry = ccd.get(name) or {}
+      kind = ''.join(entry.get('_chem_comp.type', ())).upper()
+      one = ''.join(entry.get('_chem_comp.one_letter_code', ())).strip()
+      one = one if len(one) == 1 and one != '?' else ''
+      if 'PEPTIDE' in kind and kind != 'PEPTIDE-LIKE':
+        res = residue_names.PROTEIN_COMMON_ONE_TO_THREE.get(one, residue_names.UNK)
+      elif 'DNA' in kind:
+        res = 'D' + one if 'D' + one in vocab else residue_names.UNK_DNA
+      elif 'RNA' in kind:
+        res = one if one in ('A', 'G', 'C', 'U') else residue_names.UNK_RNA
+      else:
+        res = residue_names.UNK
+      cache[name] = vocab.index(res) if res in vocab else vocab.index(residue_names.UNK)
+    aatype[t] = cache[name]
+  batch['aatype'] = aatype.astype(np.asarray(batch['aatype']).dtype)
+  return batch
+
+
 def _dedupe_self_msa(batch, query_once=False):
   """ESMFold2's self-MSA is the query ONCE, not the query twice.
 
@@ -1358,6 +1399,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('query_letter_msa'):
     from alphafold3.model.pipeline import chiral_features
     chiral_features.apply_query_letter_on_atomized(batch, fold_input)
+  if knobs.get('ccd_restype'):
+    _ccd_restype(batch, fold_input)
   if knobs.get('atomized_element_names'):
     from alphafold3.model.pipeline import chiral_features
     chiral_features.apply_atomized_element_names(batch)
@@ -1579,6 +1622,13 @@ def cyclic_period(batch, chains=True, fold_input=None):
 _LINK_ATOMS = (('C', 'N'), ("O3'", 'P'))
 
 
+def _ccd_is_ligand(name, ccd_kind):
+  """protenix get_mol_type: a residue whose CCD type is neither peptide (PEPTIDE-LIKE aside), DNA nor RNA is a ligand;
+  PEPTIDE-LIKE (PNA) is left out, as native carries no links between those."""
+  kind = ccd_kind(name)
+  return bool(kind) and not ('PEPTIDE' in kind or 'DNA' in kind or 'RNA' in kind)
+
+
 def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
   """Restore the peptide bonds AlphaFold 3 drops at every atomised residue.
 
@@ -1602,6 +1652,8 @@ def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
 
   mode 'both_atomized': of3 -- token_bonds keeps a bond only when BOTH atoms are atomised (filter_fully_atomized_bonds), so
   a link counts between two consecutive non-standard residues and never to a standard neighbour.
+  mode 'protenix': protenix's get_bond_features drops std-std, std-unstd and inter-unstd polymer bonds, so a link
+  counts only where a partner's CCD type makes it a ligand (ACE, the PXZ chromophore), not a modified peptide.
   mode 'esm': esm's compute_token_bonds -- protein links only (prev C - N, C - next N) at an atomised residue, and a
   residue without that atom (PXZ, ACE, NH2) links through its first atomised token; no nucleic links, no CCD extras.
   """
@@ -1630,6 +1682,11 @@ def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
 
   from alphafold3.model import features as af3_features
   atomized = af3_features.ATOMIZED_RESIDUES
+  ccd_kind = None
+  if mode == 'protenix':
+    from alphafold3.constants import chemical_components
+    _ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None))
+    ccd_kind = lambda name: ''.join((_ccd.get(name) or {}).get('_chem_comp.type', ())).upper()
   # a declared bond between two consecutive residues is their link (isoAsp joins through CG, not C)
   linked = {frozenset(((str(a[0]), int(a[1])), (str(b[0]), int(b[1]))))
             for a, b in (getattr(fold_input, 'bonded_atom_pairs', None) or ())}
@@ -1646,6 +1703,8 @@ def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
     if mode == 'both_atomized' and not ((name_a not in standard or first in atomized) and
                                         (name_b not in standard or second in atomized)):
       continue                              # of3 filter_fully_atomized_bonds: both partners atomised
+    if mode == 'protenix' and not (_ccd_is_ligand(name_a, ccd_kind) or _ccd_is_ligand(name_b, ccd_kind)):
+      continue                              # protenix drops polymer-polymer links: a partner must be a ligand by CCD type
     if mode == 'esm':
       prot = np.asarray(batch['is_protein']).astype(bool).reshape(-1)
       if not (prot[next(iter(atoms_a.values()))] and prot[next(iter(atoms_b.values()))]):
@@ -1659,7 +1718,7 @@ def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
         break
   # a backbone link is a single bond
   _add_token_bonds(batch, wanted, 1)
-  if not atomized or mode in ('esm', 'both_atomized'):
+  if not atomized or mode in ('esm', 'both_atomized', 'protenix'):
     return batch
   # a standard residue atomised for its ligand bond (features.ATOMIZED_RESIDUES) has no bonds of its own in AF3's table:
   # its CCD bonds, by order

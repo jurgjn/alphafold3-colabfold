@@ -633,7 +633,10 @@ _FEATURISE = {
                     # protenix configs_inference msa_pair_as_unpair True; its MSA query row is the sequence as typed
                     pair_as_unpair=not os.environ.get('AF3_NO_PX_PAIR_AS_UNPAIR'), query_letter_msa=True,
                     # after the centring its featuriser moves each reference conformer by U(-1, 1) per axis
-                    translate_conformers=True),
+                    translate_conformers=True,
+                    # ccd_restype: a non-standard residue reads its CCD one-letter code (add_cano_seq_resname)
+                    ccd_restype=not os.environ.get('AF3_NO_PX_CCD_RESTYPE'),
+                    atomized_backbone_bonds=not os.environ.get('AF3_NO_PX_ATOMIZED_BONDS') and 'protenix'),
     # PER FAMILY, not per model. One `protenix/model/modules/primitives.py`
     # serves every protenix release, so the padded key window is a property of
     # the implementation and not of a checkpoint. It was set for protenix2
@@ -666,6 +669,9 @@ _FEATURISE = {
                # protenix configs_inference msa_pair_as_unpair True; its MSA query row is the sequence as typed
                pair_as_unpair=not os.environ.get('AF3_NO_PX_PAIR_AS_UNPAIR'), query_letter_msa=True,
                translate_conformers=True,
+               # ccd_restype: a non-standard residue reads its CCD one-letter code (add_cano_seq_resname)
+               ccd_restype=not os.environ.get('AF3_NO_PX_CCD_RESTYPE'),
+               atomized_backbone_bonds=not os.environ.get('AF3_NO_PX_ATOMIZED_BONDS') and 'protenix',
                # declared bonds: discontinuous polymer-polymer and modified-residue-to-ligand, as include_discont_poly_poly_bonds
                declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
                # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
