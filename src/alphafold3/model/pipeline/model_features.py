@@ -948,7 +948,7 @@ def prepare_input(fold_input, spec):
   atomize_ligand_bonded: a polymer residue a declared bond ties to a ligand is one token per atom (atomworks'
   covalent_modifications); process-wide like ccd_unk.
   drop_inner_terminal_atoms: True -- OXT only at a chain's last residue and OP3 only at its first, also on modified
-  residues (atomworks); 'leaving' -- a modified protein residue's CCD leaving atoms unless it ends the chain (esm);
+  residues (atomworks); 'leaving' -- a modified polymer residue's CCD leaving atoms unless it ends the chain (esm);
   'leaving_all' -- every non-standard polymer residue's CCD leaving atoms, ends included (of3);
   process-wide like ccd_unk, applied by the pipeline before tokenising.
   """

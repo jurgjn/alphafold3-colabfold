@@ -537,12 +537,13 @@ _FEATURISE = {
                # a modified nucleotide's tokens too.
                atomized_unknown_restype=not os.environ.get(
                    'AF3_NO_ESM_ATOMIZED_UNK') and 'nucleic',
-               # esm prepare_input atomises a modified residue from its CCD minus the CCD leaving atoms unless it ends
-               # the chain (FGA: OE2 off, OXT kept), and drops nothing from an unbonded glycan (O1 kept)
+               # esm prepare_input atomises a modified residue or nucleotide from its CCD minus the CCD leaving atoms
+               # unless it ends the chain (FGA: OE2 off, OXT kept), and drops nothing from an unbonded glycan (O1 kept)
                ccd_leaving_atoms=not os.environ.get('AF3_NO_ESM_LEAVING'),
                drop_inner_terminal_atoms=not os.environ.get('AF3_NO_ESM_LEAVING') and 'leaving',
+               # its standard residue tables carry no OXT and no 5' OP3 (DNA_HEAVY_ATOMS["DA"] starts at P)
                **({} if os.environ.get('AF3_NO_ESM_DROP_OXT')
-                  else dict(drop_atoms=('OXT',))))
+                  else dict(drop_atoms=('OXT', 'OP3'))))
        for m in model_config.ESMFOLD2_FAMILY},
     # boltz2 keeps a modified residue as ONE token holding all its atoms
     # (data/tokenize/boltz2.py: standard -> per residue, NONPOLYMER -> per atom,

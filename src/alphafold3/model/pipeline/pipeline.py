@@ -42,7 +42,7 @@ _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 
 # Atoms the pipeline drops before tokenising; process-wide, set per model by model_features.prepare_input:
 #   True       OXT and OP3 only at a polymer chain's ends, modified residues too (rf3/atomworks)
-#   'leaving'  a modified protein residue drops its CCD leaving atoms unless it ends the chain (esm prepare_input)
+#   'leaving'  a modified polymer residue drops its CCD leaving atoms unless it ends the chain (esm prepare_input)
 #   'leaving_all'  every non-standard polymer residue drops its CCD leaving atoms, ends too (of3 query featuriser)
 INNER_TERMINAL_ATOMS = False
 
@@ -494,7 +494,7 @@ class WholePdbPipeline:
       for chain in set(chains.tolist()):
         ids = sorted(set(res_ids[chains == chain].tolist()))
         if INNER_TERMINAL_ATOMS in ('leaving', 'leaving_all'):
-          sel = (chains == chain) & (protein if INNER_TERMINAL_ATOMS == 'leaving' else True)
+          sel = chains == chain
           for r, name, prot in zip(res_ids[sel].tolist(), res_names[sel].tolist(), protein[sel].tolist()):
             if name in features._STANDARD_RESIDUES or (INNER_TERMINAL_ATOMS == 'leaving' and r == ids[-1]):
               continue
