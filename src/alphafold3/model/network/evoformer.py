@@ -652,6 +652,7 @@ class Evoformer(hk.Module):
       asym_id: jnp.ndarray | None = None,
       single_post_recycle: jnp.ndarray | None = None,
       rows_keep: jnp.ndarray | None = None,
+      is_dna: jnp.ndarray | None = None,
   ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Processes MSA and returns updated pair activations."""
     dtype = pair_activations.dtype
@@ -719,6 +720,13 @@ class Evoformer(hk.Module):
     msa_activations = hm.Linear(
         self.config.msa_channel, use_bias=chai1, name='msa_activations'
     )(msa_feat)
+    if self.global_config.model == 'boltz2' and is_dna is not None:
+      # Boltz's DN, the DNA unknown (its class 32), which our single nucleic unknown (30, Boltz's N) cannot tell from an
+      # RNA one: the converter keeps the difference of its msa_proj columns, added where a DNA column reads 30. Zero (the
+      # loader's fill) for a blob without it, so those fold as before.
+      dn = hk.get_parameter('boltz2_dn_msa', [self.config.msa_channel], jnp.float32, init=jnp.zeros)
+      at_dn = (msa_batch.rows == 30) & is_dna.astype(bool)[None, :]
+      msa_activations += at_dn.astype(dtype)[..., None] * dn.astype(dtype)
 
     # chai DOES add a single-representation term, `msa_module.linear_s2m`. It
     # lives INSIDE msa_module, which is how it was first missed -- the search
@@ -989,6 +997,7 @@ class Evoformer(hk.Module):
             use_dropout=use_dropout,
             is_ligand=batch.token_features.is_ligand,
             asym_id=batch.token_features.asym_id,
+            is_dna=batch.token_features.is_dna,
             # chai's msa_module.linear_s2m reads the single AFTER its recycle
             # term is added (its argument traces to
             # add(token_single_trunk_initial_repr, recycle_proj(prev))), not

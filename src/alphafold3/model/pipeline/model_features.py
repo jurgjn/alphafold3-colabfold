@@ -1151,9 +1151,44 @@ def _mark_modified_residues(batch, fold_input, unknown_restype=False):
   if unknown_restype and flag.any():
     unknown = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(
         residue_names.UNK)
+    sel = flag.astype(bool)
+    # genuine Boltz-2 (tokenize/boltz2.py, a modified residue tokenised at residue level): res_type is its CHAIN's
+    # unknown, get_unk_token(chain) - a nucleic chain's N (our 30; a DNA chain's DN reads 30 too and model.py adds
+    # Boltz's DN row on a DNA token). The protein unknown on a modified RNA base stretched 2'-O-methylguanosine's
+    # O2'-CM2 to 2.6-2.7 A where genuine Boltz-2 holds 1.55-1.71.
+    nucleic = (np.asarray(batch['is_rna']).astype(bool) | np.asarray(batch['is_dna']).astype(bool)).reshape(-1)
     aatype = np.array(batch['aatype'])
-    aatype[flag.astype(bool)] = unknown
+    parent = aatype.copy()
+    aatype[sel & ~nucleic] = unknown
+    aatype[sel & nucleic] = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP - 1
     batch['aatype'] = aatype
+    # ...its alignment's query reads the protein unknown there - its residue record's type (parse_ccd_residue's
+    # unk_prot_id), which the featuriser writes over the query's letter - so the query's copies, and a profile that is
+    # the query's one-hot, read UNK
+    msa = np.array(batch['msa'])
+    copies = (msa == msa[0][None]).all(-1)
+    for t in np.nonzero(sel)[0]:
+      msa[copies, t] = unknown
+    batch['msa'] = msa
+    profile = np.array(batch['profile'])
+    for t in np.nonzero(sel)[0]:
+      if profile[t, parent[t]] == 1 and profile[t].sum() == 1:
+        profile[t] = 0
+        profile[t, unknown] = 1
+    batch['profile'] = profile.astype(np.asarray(batch['profile']).dtype)
+    # ...and its representative atom is its first (parse_ccd_residue's atom_center=0, atom_disto=0)
+    key = 'token_atoms_to_pseudo_beta'
+    if f'{key}:gather_idxs' in batch:
+      idxs = np.array(batch[f'{key}:gather_idxs'])
+      mask = np.array(batch[f'{key}:gather_mask'])
+      ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+      for t in np.nonzero(sel)[0]:
+        live = np.nonzero(ref_mask[t])[0]
+        if live.size:
+          idxs[t] = t * ref_mask.shape[1] + int(live[0])
+          mask[t] = True
+      batch[f'{key}:gather_idxs'] = idxs
+      batch[f'{key}:gather_mask'] = mask
   return batch
 
 

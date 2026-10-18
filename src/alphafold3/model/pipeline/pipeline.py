@@ -464,6 +464,21 @@ class WholePdbPipeline:
       # read before cleaning, which drops the polymer-polymer bonds
       res_name_of = dict(zip(zip(struct.chain_id.tolist(), struct.res_id.tolist()), struct.res_name.tolist()))
       ccd_leaving = structure_cleaning.declared_bond_leaving_atoms(fold_input.bonded_atom_pairs, res_name_of, ccd)
+    if not self._config.flatten_non_standard_residues:
+      # boltz2 keeps a modified residue as ONE token, and genuine Boltz-2 parses it with drop_leaving_atoms=True: every
+      # CCD leaving atom goes, a chain end's OXT or 5' OP3 included - so a 5' 2-methylguanosine is 24 atoms, where AF3's
+      # rule kept its OP3 and the token's 24 slots then lost the base's C4
+      ccd_leaving = dict(ccd_leaving or {})
+      for chain in fold_input.chains:
+        mods = getattr(chain, 'ptms', None) or getattr(chain, 'modifications', None) or ()
+        for code, position in mods:
+          entry = ccd.get(code) or {}
+          names = entry.get('_chem_comp_atom.atom_id', ())
+          flags = entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ())
+          elements = entry.get('_chem_comp_atom.type_symbol', ())
+          leaving = {n for n, f, e in zip(names, flags, elements) if f == 'Y' and e not in ('H', 'D')}
+          if leaving:
+            ccd_leaving.setdefault((str(chain.id), int(position)), set()).update(leaving)
     unpaired_msa_by_chain_id = {}
     paired_msa_by_chain_id = {}
     templates_by_chain_id = {}

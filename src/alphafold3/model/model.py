@@ -234,6 +234,15 @@ def create_target_feat_embedding(
       s_inputs += hm.Linear(config.seq_channel, use_bias=False,
                             name='boltz2_msa_profile_encoding')(
           jnp.concatenate([profile, deletion], axis=-1))
+      # Boltz's DN (32), the DNA unknown - a DNA N, and a modified DNA residue's one token (get_unk_token) - which our
+      # single nucleic unknown (30, Boltz's RNA N at 27) cannot tell from an RNA one: the converter keeps each
+      # encoding's DN column less its N column, added on a DNA token by its class-30 weight. Zero for a blob without
+      # them (the loader's fill), which folds as before.
+      dn_res = hk.get_parameter('boltz2_dn_res_type', [config.seq_channel], jnp.float32, init=jnp.zeros)
+      dn_prof = hk.get_parameter('boltz2_dn_msa_profile', [config.seq_channel], jnp.float32, init=jnp.zeros)
+      on_dna = batch.token_features.is_dna.astype(dtype)
+      s_inputs += (on_dna * res_oh[:, 30])[:, None] * dn_res.astype(dtype)
+      s_inputs += (on_dna * profile[:, 30])[:, None] * dn_prof.astype(dtype)
       # conditioning inits (trained, non-zero): mol_type (PROTEIN=0/DNA=1/RNA=2/NONPOLYMER=3),
       # method (x-ray=1, the prediction default), modified=0. cyclic=0 -> Linear(0)=0, omitted.
       # These are Embeddings in Boltz; here Linear-over-one-hot (weight (num_cls, seq) == the

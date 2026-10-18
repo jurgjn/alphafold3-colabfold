@@ -244,6 +244,12 @@ def map_input_embedder(sd, params):
     C.t(remap_restype_cols(sd['input_embedder.res_type_encoding.weight'])))            # (31,384)
   S('diffuser/boltz2_msa_profile_encoding', 'weights',
     C.t(remap_restype_cols(sd['input_embedder.msa_profile_encoding.weight'], start=0, n=33)))  # (32,384)
+  # Boltz's DN (32), the DNA unknown, which the 33->31 remap drops: our single nucleic unknown (30) is Boltz's RNA N
+  # (27), so a DNA token reading 30 adds DN's column less N's (model.py boltz2_dn_*; the MSA's in map_trunk below)
+  rt = np.asarray(sd['input_embedder.res_type_encoding.weight'])                       # (384, 33)
+  pe = np.asarray(sd['input_embedder.msa_profile_encoding.weight'])                    # (384, 34)
+  S('diffuser', 'boltz2_dn_res_type', (rt[:, 32] - rt[:, 27]).astype(np.float32))
+  S('diffuser', 'boltz2_dn_msa_profile', (pe[:, 32] - pe[:, 27]).astype(np.float32))
   # conditioning inits: Boltz nn.Embedding weight (num_cls, seq) == our Linear-over-one-hot
   # weight (in=num_cls, out=seq) directly (Embedding[i]==one_hot(i)@W), so NO transpose.
   S('diffuser/boltz2_mol_type_conditioning', 'weights',
@@ -322,6 +328,8 @@ def map_input_embedder(sd, params):
   w_msa = mp[:, msa_cols].copy()                             # (64, 35)
   w_msa[:, 31] = 0.0                                          # zero the msa-mask/extra col (col 31)
   S(f'{EVO}/msa_activations', 'weights', C.t(w_msa))         # (35, 64)
+  # ...and the MSA projection's DN column less its N column (evoformer.py boltz2_dn_msa)
+  S(EVO, 'boltz2_dn_msa', (mp[:, 32] - mp[:, 27]).astype(np.float32))
   return params
 
 

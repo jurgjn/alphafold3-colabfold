@@ -354,6 +354,13 @@ def tokenizer(
           atom_names.append('')
           atom_elements.append('')
 
+      # A residue whose holes push it past the token's slots (2'-O-methylguanosine kept as ONE token, as boltz2
+      # keeps a modified residue: its leaving atoms' holes put C4 at slot 24) is packed - holes dropped - before
+      # anything is truncated, as genuine Boltz-2 keeps every atom; a residue that fits keeps its holes.
+      if len(atom_names) > max_atoms_per_token:
+        kept = [(n, e) for n, e in zip(atom_names, atom_elements) if n]
+        atom_names = [n for n, _ in kept]
+        atom_elements = [e for _, e in kept]
       if len(atom_names) > max_atoms_per_token:
         logging.warning(
             'Atom list for chain %s '

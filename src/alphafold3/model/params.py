@@ -336,6 +336,15 @@ def get_model_haiku_params(model_dir: epath.PathLike) -> hk.Params:
                     'input, not the trunk. Delete the blob to fetch the current one once it is published.', model_dir)
     params['diffuser/evoformer/chai1_bond_trunk'] = {'weights': jnp.zeros(
         (1, params['diffuser/chai1_structure_token_pair']['weights'].shape[1]), jnp.float32)}
+  if 'diffuser/boltz2_res_type_encoding' in params and 'boltz2_dn_res_type' not in params.get('diffuser', {}):
+    # a boltz2 blob from before Boltz's DN rows: a DNA unknown reads Boltz's RNA N, as it always did
+    logging.warning('%s: boltz2 weights without boltz2_dn_*; a DNA N or modified DNA residue reads Boltz\'s RNA '
+                    'unknown. Delete the blob to fetch the current one once it is published.', model_dir)
+    width = params['diffuser/boltz2_res_type_encoding']['weights'].shape[1]
+    params.setdefault('diffuser', {})['boltz2_dn_res_type'] = jnp.zeros((width,), jnp.float32)
+    params['diffuser']['boltz2_dn_msa_profile'] = jnp.zeros((width,), jnp.float32)
+    params.setdefault('diffuser/evoformer', {})['boltz2_dn_msa'] = jnp.zeros(
+        (params['diffuser/evoformer/msa_activations']['weights'].shape[1],), jnp.float32)
   if 'diffuser/chai1_token_feature_embedding' in params and 'chai1_token_dx' not in params.get('diffuser', {}):
     # likewise its DNA-unknown row: a DNA N or modified nucleotide reads chai's RX rather than its DX
     params.setdefault('diffuser', {})['chai1_token_dx'] = jnp.zeros(
