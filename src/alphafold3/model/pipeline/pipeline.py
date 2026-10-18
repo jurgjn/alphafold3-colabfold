@@ -40,8 +40,9 @@ import numpy as np
 
 _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 
-# OXT and OP3 only at a polymer chain's ends, modified residues too (rf3/atomworks); process-wide, set per model by
-# model_features.prepare_input
+# Atoms the pipeline drops before tokenising; process-wide, set per model by model_features.prepare_input:
+#   True       OXT and OP3 only at a polymer chain's ends, modified residues too (rf3/atomworks)
+#   'leaving'  a modified protein residue drops its CCD leaving atoms unless it ends the chain (esm prepare_input)
 INNER_TERMINAL_ATOMS = False
 
 
@@ -484,13 +485,26 @@ class WholePdbPipeline:
           if leaving:
             ccd_leaving.setdefault((str(chain.id), int(position)), set()).update(leaving)
     if INNER_TERMINAL_ATOMS:
-      # a polymer residue keeps OXT only at its chain's end and OP3 only at its start, modified ones too
       ccd_leaving = dict(ccd_leaving or {})
       polymer = ~np.isin(struct.chain_type, list(mmcif_names.NON_POLYMER_CHAIN_TYPES))
       chains, res_ids = struct.chain_id[polymer], struct.res_id[polymer]
+      protein = struct.chain_type[polymer] == mmcif_names.PROTEIN_CHAIN
+      res_names = struct.res_name[polymer]
       for chain in set(chains.tolist()):
         ids = sorted(set(res_ids[chains == chain].tolist()))
+        if INNER_TERMINAL_ATOMS == 'leaving':
+          sel = (chains == chain) & protein
+          for r, name in dict(zip(res_ids[sel].tolist(), res_names[sel].tolist())).items():
+            if name in features._STANDARD_RESIDUES or r == ids[-1]:
+              continue
+            entry = ccd.get(name) or {}
+            leaving = {n for n, f, el in zip(entry.get('_chem_comp_atom.atom_id', ()),
+                                             entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ()),
+                                             entry.get('_chem_comp_atom.type_symbol', ())) if f == 'Y' and el != 'H'}
+            ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | leaving
+          continue
         for r in ids:
+          # a polymer residue keeps OXT only at its chain's end and OP3 only at its start, modified ones too
           names = ({'OXT'} if r != ids[-1] else set()) | ({'OP3'} if r != ids[0] else set())
           ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | names
     unpaired_msa_by_chain_id = {}

@@ -537,6 +537,10 @@ _FEATURISE = {
                # a modified nucleotide's tokens too.
                atomized_unknown_restype=not os.environ.get(
                    'AF3_NO_ESM_ATOMIZED_UNK') and 'nucleic',
+               # esm prepare_input atomises a modified residue from its CCD minus the CCD leaving atoms unless it ends
+               # the chain (FGA: OE2 off, OXT kept), and drops nothing from an unbonded glycan (O1 kept)
+               ccd_leaving_atoms=not os.environ.get('AF3_NO_ESM_LEAVING'),
+               drop_inner_terminal_atoms=not os.environ.get('AF3_NO_ESM_LEAVING') and 'leaving',
                **({} if os.environ.get('AF3_NO_ESM_DROP_OXT')
                   else dict(drop_atoms=('OXT',))))
        for m in model_config.ESMFOLD2_FAMILY},

@@ -947,8 +947,9 @@ def prepare_input(fold_input, spec):
   every call so the next featurisation follows this model.
   atomize_ligand_bonded: a polymer residue a declared bond ties to a ligand is one token per atom (atomworks'
   covalent_modifications); process-wide like ccd_unk.
-  drop_inner_terminal_atoms: OXT only at a chain's last residue and OP3 only at its first, also on modified residues
-  (atomworks); process-wide like ccd_unk, applied by the pipeline before tokenising.
+  drop_inner_terminal_atoms: True -- OXT only at a chain's last residue and OP3 only at its first, also on modified
+  residues (atomworks); 'leaving' -- a modified protein residue's CCD leaving atoms unless it ends the chain (esm);
+  process-wide like ccd_unk, applied by the pipeline before tokenising.
   """
   knobs = spec.featurise
   from alphafold3.model import features as af3_features
@@ -957,7 +958,7 @@ def prepare_input(fold_input, spec):
   af3_features.ATOMIZED_RESIDUES = (_ligand_bonded_residues(fold_input) if knobs.get('atomize_ligand_bonded')
                                     else frozenset())
   from alphafold3.model.pipeline import pipeline as af3_pipeline
-  af3_pipeline.INNER_TERMINAL_ATOMS = bool(knobs.get('drop_inner_terminal_atoms'))
+  af3_pipeline.INNER_TERMINAL_ATOMS = knobs.get('drop_inner_terminal_atoms') or False
   cap = knobs.get('of3_main_msa')
   if not (knobs.get('dedupe_unpaired_msa') or cap):
     return fold_input
