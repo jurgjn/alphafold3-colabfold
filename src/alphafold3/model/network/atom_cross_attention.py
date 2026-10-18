@@ -555,7 +555,8 @@ def atom_cross_att_encoder(
     )
     keys_ref_space_uid = atom_layout.convert(
         queries_to_keys,
-        queries_ref_space_uid,
+        (batch.ref_structure.ref_space_uid
+         if global_config.model in model_config.TOKEN_LAYOUT_KEYS_REF_SPACE_UID else queries_ref_space_uid),
         layout_axes=(-2, -1),
     )
 

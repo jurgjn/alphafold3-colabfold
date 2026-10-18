@@ -708,6 +708,12 @@ MSA_COLUMN_MASK_RATE = {m: 0.1 for m in ESMFOLD2_SSM_RECYCLE}
 # 1.229-1.291 to 0.982-0.996 (the vendor reads 0.986).
 SYMMETRIC_TOKEN_BONDS = ESMFOLD2_FAMILY
 
+# Models whose atom encoder gathers the KEYS' ref_space_uid from the token-atom layout with queries_to_keys, which
+# indexes the queries layout (alphafold3#730): upstream AF3 as released (v3.0.3), so its weights run as DeepMind's code
+# runs them. Every PyTorch-trained port has the per-atom semantics, i.e. the keys taken from the queries layout
+# (IntelliFold's own AF3 engine patches the same thing in, keys_ref_space_uid_from_queries).
+TOKEN_LAYOUT_KEYS_REF_SPACE_UID = ('alphafold3',)
+
 
 REALIGN_SAMPLER = ESMFOLD2_FAMILY
 
