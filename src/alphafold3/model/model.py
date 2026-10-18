@@ -976,7 +976,9 @@ class Model(hk.Module):
               self.config.heads.confidence, self.global_config
           )(
               dense_atom_positions=dense_atom_positions,
-              embeddings=diff_emb,
+              # the TRUNK projection of the token embedding, as chai's confidence head reads it; diff_emb carries the
+              # diffusion module's own (target_feat_structure) and left pLDDT 3.7 low and pTM 0.38 against 0.54
+              embeddings=embeddings,
               seq_mask=diff_batch.token_features.mask,
               token_atoms_to_pseudo_beta=diff_batch.pseudo_beta_info.token_atoms_to_pseudo_beta,
               asym_id=diff_batch.token_features.asym_id,
