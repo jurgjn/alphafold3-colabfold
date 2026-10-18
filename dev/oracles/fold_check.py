@@ -66,6 +66,8 @@ def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
           templates=templates or [])],
       rng_seeds=[seed],
       bonded_atom_pairs=bonded_atom_pairs)
+  # the input-time conventions (UNK atoms, MSA caps, atomised residues, leaving-atom modes), as run_alphafold.py
+  fold_input = model_features.prepare_input(fold_input, spec)
   ccd = decoded_ccd.get_ccd()
   # `buckets` is normally None here -- every gate runs the exact token count.
   # Passing one is how a PADDED batch is built, which is what `--buckets` does
@@ -88,6 +90,7 @@ def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
       fold_input=fold_input, ccd=ccd, buckets=buckets,
       flatten_non_standard_residues=not spec.featurise.get(
           'modified_as_one_token', False),
+      ccd_leaving_atoms=spec.featurise.get('ccd_leaving_atoms', False) or False,
       **kw)
   batch = featurise()[0]
   # ESMFold2 folds from ESM-C's hidden states. LM_PAIR names an npz written by
