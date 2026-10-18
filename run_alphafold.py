@@ -1054,6 +1054,10 @@ def _resolve_esm(use_esm, fold_input, model_runner):
   # default_dir at fp32 on purpose, whatever --weights_precision says: a tower
   # is only ever int8 (converters.esm_lm.QUANT_SCHEME), so it has one directory
   # rather than one per precision.
+  # esm gives ESM-C one id per residue, and a modified (atomised) residue's tokens all carry X
+  chain = next(c for c in fold_input.chains if isinstance(c, folding_input.ProteinChain))
+  modified = {p for _, p in (chain.ptms or ())}
+  sequences = [''.join('X' if i + 1 in modified else a for i, a in enumerate(sequences[0]))]
   hidden = esm.embed(sequences[0], weights_lib.default_dir(tower),
                         'esmc', tower)
   # The shim is the model's own -- every ESMFold2 release trains one, and
@@ -1097,6 +1101,8 @@ def predict_structure(
       ccd=ccd,
       flatten_non_standard_residues=not spec.featurise.get(
           'modified_as_one_token', False),
+      # True, or a mode such as 'polymer' (boltz2: a ligand keeps its side's leaving atoms)
+      ccd_leaving_atoms=spec.featurise.get('ccd_leaving_atoms', False) or False,
       ref_max_modified_date=ref_max_modified_date,
       conformer_max_iterations=conformer_max_iterations,
       resolve_msa_overlaps=resolve_msa_overlaps,
