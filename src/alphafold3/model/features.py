@@ -244,11 +244,9 @@ def tokenizer(
     )
     if chain_type in mmcif_names.PEPTIDE_CHAIN_TYPES:
       res_name = res_names[0]
-      if atomize or (
-          flatten_non_standard_residues
-          and res_name not in residue_names.PROTEIN_TYPES_WITH_UNKNOWN
-          and res_name != residue_names.MSE
-      ):
+      nonstandard = res_name not in residue_names.PROTEIN_TYPES_WITH_UNKNOWN and res_name != residue_names.MSE
+      # one token holds at most max_atoms_per_token atoms; a bigger modified residue is atomised, not truncated
+      if atomize or (nonstandard and (flatten_non_standard_residues or len(idxs) > max_atoms_per_token)):
         # For non-standard protein residues take all atoms.
         # NOTE: This may get very large if we include hydrogens.
         token_idxs.extend(idxs)
@@ -265,10 +263,8 @@ def tokenizer(
       current_standard_token_id += 1
     elif is_nucleic_backbone:
       res_name = res_names[0]
-      if atomize or (
-          flatten_non_standard_residues
-          and res_name not in residue_names.NUCLEIC_TYPES_WITH_2_UNKS
-      ):
+      nonstandard = res_name not in residue_names.NUCLEIC_TYPES_WITH_2_UNKS
+      if atomize or (nonstandard and (flatten_non_standard_residues or len(idxs) > max_atoms_per_token)):
         # For non-standard nucleic residues take all atoms.
         token_idxs.extend(idxs)
         single_atom_token += [True] * len(idxs)
@@ -355,6 +351,8 @@ def tokenizer(
         elif (chain_id, res_id, atom_name) in all_atoms_uids:
           atom_names.append(atom_name)
           atom_elements.append(atom_element)
+        elif res_name not in _STANDARD_RESIDUES and res_name != residue_names.MSE:
+          continue  # a whole modified residue on one token keeps only its real atoms
         # Leave spaces for OXT etc.
         else:
           atom_names.append('')
