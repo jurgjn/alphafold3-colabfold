@@ -629,6 +629,146 @@ def _dna_gap_msa(batch):
   return batch
 
 
+def _a3m_row_parser():
+  """parse(line): an a3m row's class per aligned column and the insertions (lower case) before each."""
+  import string
+  from alphafold3.constants import residue_names
+  vocab = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP)
+  lut = np.full(256, vocab.index(residue_names.UNK), np.int32)
+  for c in string.ascii_uppercase:
+    lut[ord(c)] = vocab.index(residue_names.PROTEIN_COMMON_ONE_TO_THREE.get(c, residue_names.UNK))
+  lut[ord('-')] = vocab.index(residue_names.GAP)
+
+  def parse(line):
+    a = np.frombuffer(line.encode(), np.uint8)
+    ins = (a >= ord('a')) & (a <= ord('z'))
+    keep = np.flatnonzero(~ins)
+    cum = np.concatenate([[0], np.cumsum(ins)])[keep]
+    return lut[a[keep]], np.diff(np.concatenate([[0], cum]))
+  return parse
+
+
+def _set_msa(batch, msa, dele, real, gap):
+  """Writes a rebuilt MSA, every row live on the real tokens, over the batch's, padded with masked gap rows to the depth
+  the batch had; returns that padding for the caller's other per-row features."""
+  n_row = msa.shape[0]
+  rows = max(n_row, np.asarray(batch['msa']).shape[0])
+  pad = lambda x, v: np.concatenate([x, np.full((rows - n_row,) + x.shape[1:], v, x.dtype)]) if rows > n_row else x
+  dt = np.asarray(batch['deletion_matrix']).dtype
+  lim = np.iinfo(dt).max if np.issubdtype(dt, np.integer) else np.inf
+  batch['msa'] = pad(msa, gap).astype(np.asarray(batch['msa']).dtype)
+  batch['msa_mask'] = pad(np.broadcast_to(real, msa.shape), False).astype(np.asarray(batch['msa_mask']).dtype)
+  batch['deletion_matrix'] = pad(np.minimum(dele, lim), 0).astype(dt)     # int8 as AF3's safe_cast_int8
+  if 'num_alignments' in batch:
+    batch['num_alignments'] = np.asarray(n_row, np.asarray(batch['num_alignments']).dtype)
+  return pad
+
+
+_BOLTZ_MAX_MSA_SEQS = 8192    # `boltz predict --max_msa_seqs`: parse_csv keeps this many unique rows per chain
+_BOLTZ_MAX_PAIRS, _BOLTZ_MAX_TOTAL = 8192, 16384    # construct_paired_msa; inference max_seqs is const.max_msa_seqs
+
+
+def _boltz_msa(batch, fold_input):
+  """Boltz-2's MSA as `boltz predict` builds it from a chain's key,sequence CSV (query, paired rows keyed 1.., then
+  the unpaired rows): parse_csv drops repeats of a sequence (gaps removed, insertions upper-cased) and stops at 8192
+  rows; construct_paired_msa lays rows sharing a key across chains side by side (msa_paired 1 for those chains), fills
+  the other chains of a paired row and then the unpaired rows from each chain's remaining sequences, to 16384. Its
+  `visited` set never matches, so a paired sequence comes round again in the unpaired block, as in AF3. A chain
+  without an MSA (ligand, nucleic, protein without alignments) has its query (UNK on a ligand) and then gaps. Profile
+  and deletion mean are over every row, the latter of the deletion value (pi / 2) * arctan(d / 3)."""
+  import collections
+  from alphafold3.common import folding_input as fi
+  from alphafold3.constants import residue_names
+  from alphafold3.data import parsers
+
+  vocab = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP)
+  gap, unk = vocab.index(residue_names.GAP), vocab.index(residue_names.UNK)
+  parse = _a3m_row_parser()
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  resi = np.asarray(batch['residue_index']).reshape(-1)
+  real = np.asarray(batch['seq_mask']).astype(bool).reshape(-1)
+  lig = np.asarray(batch['is_ligand']).astype(bool).reshape(-1)
+  query = np.asarray(batch['msa'])[0].copy()
+  query[lig & real] = unk
+  chains = [i for i in range(len(fold_input.chains)) if (real & (asym == i + 1)).any()]
+  seqs = {}
+  for i in chains:
+    c = fold_input.chains[i]
+    if not isinstance(c, fi.ProteinChain):
+      continue
+    paired = parsers.parse_fasta(c.paired_msa or '')[0][1:]
+    unpaired = parsers.parse_fasta(c.unpaired_msa or '')[0][1:]
+    if not paired and not unpaired:
+      continue
+    seen, rows = set(), []
+    # the CSV's query row is the chain sequence as typed (a modified position keeps its letter)
+    typed = getattr(c, '_sequence', c.sequence)
+    for key, line in [(None, typed)] + [(k + 1, r) for k, r in enumerate(paired)] + [(None, r) for r in unpaired]:
+      line = line.strip()
+      flat = line.replace('-', '').upper()
+      if not line or flat in seen:
+        continue
+      seen.add(flat)
+      rows.append((key, line))
+      if len(rows) >= _BOLTZ_MAX_MSA_SEQS:
+        break
+    seqs[i] = rows
+  # construct_paired_msa
+  taxonomy = {}
+  for i in chains:
+    for j, (key, _) in enumerate(seqs.get(i, ())):
+      if key is not None:
+        taxonomy.setdefault(key, []).append((i, j))
+  taxonomy = sorted([v for v in taxonomy.values() if len(v) > 1], key=lambda v: len({i for i, _ in v}), reverse=True)
+  available = {i: collections.deque(range(1, len(seqs.get(i, [None])))) for i in chains}
+  pairing, is_paired = [{i: 0 for i in chains}], [{i: 1 for i in chains}]
+  for pairs in taxonomy:
+    occ = {}
+    for i, j in pairs:
+      occ.setdefault(i, []).append(j)
+    for k in range(max(len(v) for v in occ.values())):
+      row = {i: v[k % len(v)] for i, v in occ.items()}
+      flag = {i: int(i in row) for i in chains}
+      for i in chains:
+        if i not in row:
+          row[i] = available[i].popleft() if available[i] else -1
+      pairing.append(row)
+      is_paired.append(flag)
+      if len(pairing) >= _BOLTZ_MAX_PAIRS:
+        break
+    if len(pairing) >= _BOLTZ_MAX_PAIRS:
+      break
+  left = max(len(v) for v in available.values())
+  for _ in range(min(_BOLTZ_MAX_TOTAL - len(pairing), left)):
+    pairing.append({i: available[i].popleft() if available[i] else -1 for i in chains})
+    is_paired.append({i: 0 for i in chains})
+  pairing, is_paired = pairing[:_BOLTZ_MAX_TOTAL], is_paired[:_BOLTZ_MAX_TOTAL]
+  n_row, n_tok = len(pairing), asym.size
+  msa = np.full((n_row, n_tok), gap, np.int32)
+  dele = np.zeros((n_row, n_tok), np.float32)
+  flag = np.zeros((n_row, n_tok), np.float32)
+  msa[0] = query
+  for i in chains:
+    sel = np.flatnonzero(real & (asym == i + 1))
+    flag[:, sel] = np.asarray([p[i] for p in is_paired], np.float32)[:, None]
+    if i not in seqs:
+      continue
+    col = resi[sel] - 1
+    idx = np.asarray([p[i] for p in pairing])
+    for r in np.flatnonzero(idx > 0):
+      tok, d = parse(seqs[i][idx[r]][1])
+      if tok.size > col.max():          # boltz indexes by residue; a row shorter than its chain is malformed, skip it
+        msa[r, sel], dele[r, sel] = tok[col], d[col]
+  n_cls = np.asarray(batch['profile']).shape[-1]
+  counts = np.bincount((np.arange(n_tok) * n_cls + np.minimum(msa, n_cls - 1)).ravel(),
+                       minlength=n_tok * n_cls).reshape(n_tok, n_cls).astype(np.float32)
+  pad = _set_msa(batch, msa, dele, real, gap)
+  batch['msa_paired'] = pad(flag, 0)
+  batch['profile'] = (counts / n_row).astype(np.asarray(batch['profile']).dtype)
+  batch['deletion_mean'] = ((np.pi / 2) * np.arctan(dele / 3.0)).mean(0).astype(np.asarray(batch['deletion_mean']).dtype)
+  return batch
+
+
 def _dedupe_self_msa(batch, query_once=False):
   """ESMFold2's self-MSA is the query ONCE, not the query twice.
 
@@ -1150,7 +1290,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('drop_atoms'):
     _drop_atoms_by_name(batch, knobs['drop_atoms'])
   if knobs.get('ccd_leaving_atoms'):
-    _check_ccd_leaving(batch, fold_input)
+    _check_ccd_leaving(batch, fold_input, polymer_only=knobs['ccd_leaving_atoms'] == 'polymer')
   if knobs.get('std_conformers'):
     from alphafold3.constants import chai1_conformers
     _override_ref_conformers(batch, chai1_conformers.as_conformers())
@@ -1186,6 +1326,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _chai_msa(batch, fold_input)
   if knobs.get('dna_gap_msa'):
     _dna_gap_msa(batch)
+  if knobs.get('boltz_msa') and fold_input is not None and 'msa' in batch:
+    _boltz_msa(batch, fold_input)
   if knobs.get('dedupe_self_msa'):
     _dedupe_self_msa(batch, query_once=knobs['dedupe_self_msa'] == 'query_once')
   if knobs.get('native_nonprotein_msa'):
@@ -1582,7 +1724,7 @@ def _declared_polymer_bonds(batch, fold_input, rule='all'):
   return _add_token_bonds(batch, pairs, features.BOND_ORDER_COVALENT)
 
 
-def _check_ccd_leaving(batch, fold_input):
+def _check_ccd_leaving(batch, fold_input, polymer_only=False):
   """Warn if a declared bond's CCD leaving atom is still in the layout: the featuriser has to drop it before
   tokenising (featurise_input's ccd_leaving_atoms, which an older caller does not pass)."""
   from absl import logging
@@ -1601,8 +1743,10 @@ def _check_ccd_leaving(batch, fold_input):
     present.add(key + (str(layout.atom_name[t, a]),))
     res_name[key] = str(layout.res_name[t, a])
   ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None))
+  from alphafold3.common import folding_input as fi
+  ligand = {c.id for c in fold_input.chains if isinstance(c, fi.Ligand)} if polymer_only else set()
   left = sorted(k + (n,) for k, names in structure_cleaning.declared_bond_leaving_atoms(pairs_in, res_name, ccd).items()
-                for n in names if k + (n,) in present)
+                for n in names if k + (n,) in present and k[0] not in ligand)
   if left:
     logging.warning('declared-bond leaving atoms still present (featurised without ccd_leaving_atoms?): %s', left[:8])
 

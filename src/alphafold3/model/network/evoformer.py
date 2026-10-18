@@ -681,8 +681,8 @@ class Evoformer(hk.Module):
     msa_feat = featurization.create_msa_feat(
         msa_batch, self.soft_seq, self.design_mask, chai1=chai1,
         is_ligand=is_ligand, asym_id=asym_id,
-        # esm prepare_input: deletion_value = (pi / 2) * arctan(d / 3), where AF3 scales by 2 / pi
-        deletion_scale=(jnp.pi / 2.0 if self.global_config.model in model_config.ESMFOLD2_FAMILY
+        # esm prepare_input and boltz2 process_msa_features: deletion_value = (pi / 2) * arctan(d / 3), where AF3 scales by 2 / pi
+        deletion_scale=(jnp.pi / 2.0 if self.global_config.model in model_config.ESMFOLD2_FAMILY + ('boltz2',)
                         else 2.0 / jnp.pi)).astype(dtype)
 
     # Boltz-2 appends an is_paired MSA feature (Boltz msa features = [onehot(33), has_deletion,
@@ -703,6 +703,8 @@ class Evoformer(hk.Module):
       query_paired = 0.0 if self.global_config.model == 'rosettafold3' else 1.0
       is_paired = jnp.where(jnp.arange(num_msa_rows) == 0, query_paired, 0.0).astype(dtype)
       is_paired = jnp.broadcast_to(is_paired[:, None, None], msa_feat.shape[:2] + (1,))
+      if msa_batch.paired is not None:
+        is_paired = msa_batch.paired[..., None].astype(dtype)   # boltz_msa: native's per-chain pairing flags
       msa_feat = jnp.concatenate([msa_feat, is_paired], axis=-1)
 
     if self.global_config.model in model_config.ESMFOLD2_FAMILY:

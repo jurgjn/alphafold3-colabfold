@@ -439,6 +439,8 @@ class MSA:
   num_paired: xnp_ndarray | None = None
   # Per-row source database class (chai-1's MSADataSource); None unless a model's featuriser sets msa_source.
   source: xnp_ndarray | None = None
+  # Per-(row, token) flag that the row was paired across chains (Boltz-2's msa_paired); None unless its featuriser set it.
+  paired: xnp_ndarray | None = None
 
   @classmethod
   def compute_features(
@@ -705,6 +707,7 @@ class MSA:
         num_alignments=self.num_alignments,
         num_paired=self.num_paired,
         source=None if self.source is None else self.source[indices],
+        paired=None if self.paired is None else self.paired[indices, :],
     )
 
   @classmethod
@@ -718,6 +721,7 @@ class MSA:
         num_alignments=batch['num_alignments'],
         num_paired=batch.get('num_paired_alignments'),
         source=batch.get('msa_source'),
+        paired=batch.get('msa_paired'),
     )
     return output
 
@@ -731,6 +735,7 @@ class MSA:
         'num_alignments': self.num_alignments,
         **({} if self.num_paired is None else {'num_paired_alignments': self.num_paired}),
         **({} if self.source is None else {'msa_source': self.source}),
+        **({} if self.paired is None else {'msa_paired': self.paired}),
     }
 
 

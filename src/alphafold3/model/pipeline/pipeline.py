@@ -477,6 +477,10 @@ class WholePdbPipeline:
       # read before cleaning, which drops the polymer-polymer bonds
       res_name_of = dict(zip(zip(struct.chain_id.tolist(), struct.res_id.tolist()), struct.res_name.tolist()))
       ccd_leaving = structure_cleaning.declared_bond_leaving_atoms(fold_input.bonded_atom_pairs, res_name_of, ccd)
+      if self._config.ccd_leaving_atoms == 'polymer':
+        # boltz parses a ligand whole: its side of a declared bond keeps the CCD leaving atoms
+        ligand = set(struct.chain_id[np.isin(struct.chain_type, list(mmcif_names.NON_POLYMER_CHAIN_TYPES))].tolist())
+        ccd_leaving = {k: v for k, v in ccd_leaving.items() if k[0] not in ligand}
     if not self._config.flatten_non_standard_residues:
       # boltz2 keeps a modified residue as ONE token, and genuine Boltz-2 parses it with drop_leaving_atoms=True: every
       # CCD leaving atom goes, a chain end's OXT or 5' OP3 included - so a 5' 2-methylguanosine is 24 atoms, where AF3's
