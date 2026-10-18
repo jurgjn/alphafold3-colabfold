@@ -677,18 +677,12 @@ _FEATURISE = {
     # windows 16 and 17 ALONE. With both, the whole encoder is exact at full
     # depth: a_token 2.33e-05, q_atom 1.23e-05, every window at the numerical
     # floor.
-    # dedupe_self_msa: IntelliFold-2 forks boltz's featuriser, `dummy_msa` and
-    # the pairing loop included, so a chain with no alignments gets a DEPTH-1
-    # MSA (one dummy sequence, first row per chain, nothing left to pair or
-    # append). AF3 hands the same input the query twice.
-    # drop_atoms: IntelliFold forks boltz's fixed atom tables, which carry no
-    # terminal OXT and no 5' OP3 (`const.ref_atoms["GLU"]` ends at OE2, its "A"
-    # starts at P).
+    # No dedupe_self_msa and no terminal-atom drop: those were the boltz-1 training pipeline's (dummy_msa, ref_atoms
+    # without OXT/OP3). IntelliFold-v2's released inference is its vendored AF3 engine, which featurises as AF3 does;
+    # against it (gauntlet out_if2knob) keeping both moved cyclic_dl_peptide 0.27 -> 0.09 A and barnase pLDDT to native's.
     'intellifold2': dict(qblock_keys=True,
-                         dedupe_self_msa=not os.environ.get(
-                             'AF3_NO_IF2_DEDUPE_MSA'),
-                         **({} if os.environ.get('AF3_NO_TERMINAL_DROP')
-                            else dict(drop_atoms=('OXT', 'OP3', 'O3P')))),
+                         **({} if not os.environ.get('AF3_IF2_BOLTZ1_FEATURES')
+                            else dict(dedupe_self_msa=True, drop_atoms=('OXT', 'OP3', 'O3P')))),
     # rf3 (atomworks) renames atomised atoms to their ELEMENT symbol, carries
     # chirality features, aligns restypes to its own alphabet, and calls an
     # atomised polymer token UNKNOWN where AlphaFold 3 keeps the parent residue
