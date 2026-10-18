@@ -797,6 +797,10 @@ for _m in ('openfold3', 'openbind0'):
   # (PXZ typed as G reads G; ours read UNK there and the parent elsewhere, which flipped actinomycin's chromophore)
   if not os.environ.get('AF3_NO_OF3_ATOMIZED_RESTYPE'):
     _FEATURISE.setdefault(_m, {}).update(atomized_unknown_restype='aatype', query_letter_msa=True)
+  # of3 MSA has no DNA query rows (gap everywhere, zero profile), and its token_bonds link two consecutive atomised
+  # residues (SAR4-MVA5) but never an atomised residue to a standard neighbour
+  if not os.environ.get('AF3_NO_OF3_DNA_GAP'):
+    _FEATURISE.setdefault(_m, {}).update(dna_gap_msa=True, atomized_backbone_bonds='both_atomized')
   # of3 profiles the deduplicated first 16384 main-MSA rows; on msa_gappy that is 6530 of 21577, profile max|d| 0.18 without
   if not os.environ.get('AF3_NO_OF3_MAIN_MSA'):
     _FEATURISE.setdefault(_m, {})['of3_main_msa'] = 16384

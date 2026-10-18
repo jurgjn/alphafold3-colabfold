@@ -607,6 +607,28 @@ def _empty_template_gap(batch, gap_index=21, slots='first'):
   batch['template_aatype'] = aatype
 
 
+def _dna_gap_msa(batch):
+  """OpenFold3 adds query rows for protein and RNA only (colabfold_msa_server): a DNA chain reads gap in every MSA row
+  and a zero profile and deletion mean; a ligand token's profile is zero too (ours: a gap one-hot)."""
+  from alphafold3.constants import residue_names
+  dna = np.asarray(batch['is_dna']).astype(bool).reshape(-1)
+  prof = np.array(batch['profile'])
+  prof[dna | np.asarray(batch['is_ligand']).astype(bool).reshape(-1)] = 0.0
+  batch['profile'] = prof
+  if not dna.any():
+    return batch
+  msa = np.array(batch['msa'])
+  msa[:, dna] = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(residue_names.GAP)
+  batch['msa'] = msa
+  for k in ('deletion_matrix', 'deletion_mean'):
+    v = np.array(batch[k])
+    v[..., dna] = 0
+    batch[k] = v
+  if not any(np.asarray(batch[k]).any() for k in ('is_protein', 'is_rna') if k in batch):
+    _dedupe_self_msa(batch)           # no protein or RNA: OF3's MSA is the one dummy row
+  return batch
+
+
 def _dedupe_self_msa(batch, query_once=False):
   """ESMFold2's self-MSA is the query ONCE, not the query twice.
 
@@ -1144,6 +1166,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _zero_msa(batch)
   if knobs.get('chai_msa') and has_msa and fold_input is not None:
     _chai_msa(batch, fold_input)
+  if knobs.get('dna_gap_msa'):
+    _dna_gap_msa(batch)
   if knobs.get('dedupe_self_msa'):
     _dedupe_self_msa(batch, query_once=knobs['dedupe_self_msa'] == 'query_once')
   if knobs.get('native_nonprotein_msa'):
@@ -1337,6 +1361,8 @@ def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
   is how every model in this package is told about that, and which is shared rather
   than RF3-specific.
 
+  mode 'both_atomized': of3 -- token_bonds keeps a bond only when BOTH atoms are atomised (filter_fully_atomized_bonds), so
+  a link counts between two consecutive non-standard residues and never to a standard neighbour.
   mode 'esm': esm's compute_token_bonds -- protein links only (prev C - N, C - next N) at an atomised residue, and a
   residue without that atom (PXZ, ACE, NH2) links through its first atomised token; no nucleic links, no CCD extras.
   """
@@ -1378,6 +1404,9 @@ def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
       continue                              # AF3 does not drop this one
     if frozenset((first, second)) in linked:
       continue
+    if mode == 'both_atomized' and not ((name_a not in standard or first in atomized) and
+                                        (name_b not in standard or second in atomized)):
+      continue                              # of3 filter_fully_atomized_bonds: both partners atomised
     if mode == 'esm':
       prot = np.asarray(batch['is_protein']).astype(bool).reshape(-1)
       if not (prot[next(iter(atoms_a.values()))] and prot[next(iter(atoms_b.values()))]):
@@ -1391,7 +1420,7 @@ def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
         break
   # a backbone link is a single bond
   _add_token_bonds(batch, wanted, 1)
-  if not atomized or mode == 'esm':
+  if not atomized or mode in ('esm', 'both_atomized'):
     return batch
   # a standard residue atomised for its ligand bond (features.ATOMIZED_RESIDUES) has no bonds of its own in AF3's table:
   # its CCD bonds, by order
