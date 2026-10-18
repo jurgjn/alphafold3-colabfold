@@ -44,6 +44,9 @@ PAIR_PROJECTIONS = None
 TRIMUL_KERNELS = None
 # GLU_TRANSITION(dtype, channels, hidden) -> f(x, ln_scale, ln_offset, wa, wb, wo[, keep], *, add_input) or None
 GLU_TRANSITION = None
+# PAD_KEEP: the kernels above take the pair mask as `keep` (ln_projection, output_projection and the epilogue as a last
+# positional argument, the transition as its keep) and skip the row blocks it leaves out, the bucket's padding
+PAD_KEEP = False
 
 
 def _layer_norm_params(name, n):
@@ -407,7 +410,7 @@ class GridSelfAttention(hk.Module):
     return None if kernel is None or projections is None else (kernel, *projections)
 
   @hk.transparent
-  def _ln_projection(self, act, ln_projection):
+  def _ln_projection(self, act, ln_projection, keep=None):
     """act_norm, q/k/v/gate and the pair bias in one kernel from the raw pair: p [X, Y, G, H, D], bias [H, X, Y]."""
     x, y, c = act.shape
     h = self.config.num_head
@@ -416,12 +419,12 @@ class GridSelfAttention(hk.Module):
     wb, _ = hm.haiku_linear_get_params(act, num_output=h, name='pair_bias_projection')
     w, gb = self._qkvg_weights(act, h, d)
     p, bias, kv = ln_projection(act.reshape(-1, c), *ln, jnp.moveaxis(w, 1, 0).reshape(4, c, h * d),
-                                wb.astype(act.dtype))
+                                wb.astype(act.dtype), *([] if keep is None else [keep.reshape(-1)]))
     kv = None if kv is None else kv.reshape(x, y, 2, h, d)
     return p.reshape(x, y, -1, h, d), bias.reshape(h, x, y), kv, gb
 
   @hk.transparent
-  def _ln_packed_attention(self, act, p, bias, kv, gb, kmask, kernels, residual):
+  def _ln_packed_attention(self, act, p, bias, kv, gb, kmask, kernels, residual, keep=None):
     """The packed kernel on _ln_projection's output, then output_projection with the residual in one kernel."""
     attention, _, output_projection = kernels
     x, y, c = act.shape
@@ -433,6 +436,8 @@ class GridSelfAttention(hk.Module):
                                         initializer=self.global_config.final_init, name='output_projection')
     bo = jnp.zeros((c,), act.dtype) if bo is None else bo.astype(act.dtype)
     res = [] if residual is None else [residual.reshape(-1, c)]
+    if keep is not None:
+      res = (res or [None]) + [keep.reshape(-1)]
     return output_projection(out.reshape(-1, h * d), wo.astype(act.dtype), bo, *res).reshape(x, y, c)
 
   def __call__(self, act, pair_mask, residual=None):
@@ -450,6 +455,8 @@ class GridSelfAttention(hk.Module):
     assert len(act.shape) == 3
     assert len(pair_mask.shape) == 2
 
+    # the pair's own rows that matter, for the kernels that skip padding (PAD_KEEP), in act's layout
+    keep = pair_mask.astype(act.dtype) if PAD_KEEP else None
     pair_mask = jnp.swapaxes(pair_mask, -1, -2)
     num_residues = act.shape[0]
 
@@ -461,7 +468,7 @@ class GridSelfAttention(hk.Module):
     kernels = self._ln_projection_kernels(act) if packed else None
     if kernels is not None:
       # act_norm and pair_bias_projection run in the kernel that projects q/k/v/gate; the bias comes out as below
-      p, nonbatched_bias, kv, gate_bias = self._ln_projection(act, kernels[1])
+      p, nonbatched_bias, kv, gate_bias = self._ln_projection(act, kernels[1], keep)
     else:
       act = hm.LayerNorm(name='act_norm')(act)
 
@@ -530,7 +537,7 @@ class GridSelfAttention(hk.Module):
       nonbatched_bias = jnp.swapaxes(nonbatched_bias, -1, -2)
 
     if kernels is not None:
-      out = self._ln_packed_attention(act, p, nonbatched_bias, kv, gate_bias, pair_mask, kernels, residual)
+      out = self._ln_packed_attention(act, p, nonbatched_bias, kv, gate_bias, pair_mask, kernels, residual, keep)
     elif packed:
       out = self._packed_attention(act, nonbatched_bias, pair_mask)
       out = out if out is None or residual is None else residual + out
@@ -677,8 +684,9 @@ class TriangleMultiplication(hk.Module):
                                        initializer=final, name='output_projection')
     wgo, _ = hm.haiku_linear_get_params(act, num_output=c, initializer=final, name='gating_linear')
     zero = jnp.zeros((c,), act.dtype)
+    keep = [mask.astype(act.dtype).reshape(-1)] if PAD_KEEP else []
     out = epilogue(tri.reshape(hidden_dim, -1), act.reshape(-1, c), *in_ln, *ln, wo.astype(act.dtype), zero,
-                   wgo.astype(act.dtype), zero, add_input=residual is act).reshape(act.shape)
+                   wgo.astype(act.dtype), zero, *keep, add_input=residual is act).reshape(act.shape)
     return out if residual is None or residual is act else residual + out
 
   @hk.transparent
@@ -1110,7 +1118,8 @@ class PairFormerIteration(hk.Module):
     # output is pointwise, so the two are identical.
     if not parallel and TransitionBlock.glu_kernel(self.config.pair_transition, act.dtype, act.shape[-1]):
       # the residual add (and OpenFold3's mask) can then happen inside a fused kernel; no sharding, it never holds the hidden
-      act = unsharded(act, mask=pair_mask if _mt else None, residual=act)
+      # with PAD_KEEP every model's pair mask goes in: its padded rows then skip the transition, real rows are as before
+      act = unsharded(act, mask=pair_mask if _mt or PAD_KEEP else None, residual=act)
     else:
       _trans = transition_block(act if not parallel else pair_in)
       if _mt:
