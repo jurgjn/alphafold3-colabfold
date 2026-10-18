@@ -613,6 +613,7 @@ _FEATURISE = {
                     # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
                     # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
                     ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
+                    drop_inner_terminal_atoms='protenix',
                     empty_template_gap=not os.environ.get(
                         'AF3_NO_DDE_TEMPLATE_GAP'),
                     empty_template_gap_slots='first',
@@ -658,6 +659,7 @@ _FEATURISE = {
                # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
                # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
                ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
+               drop_inner_terminal_atoms='protenix',
                # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width
                **({} if os.environ.get('AF3_NO_PX_NATIVE_RNG')
                   else {'native_rng': {'protenix1': 128, 'protenix2': 256}[m]}))

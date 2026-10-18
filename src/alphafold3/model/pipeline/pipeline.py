@@ -45,6 +45,8 @@ _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 #   'leaving'  a modified polymer residue drops its CCD leaving atoms unless it ends the chain (esm prepare_input)
 #   'leaving_all'  every non-standard polymer residue drops its CCD leaving atoms, ends too (of3 query featuriser)
 #   'chai'     a non-standard residue is its CCD heavy atoms minus OXT/OXT', ends too; a nucleotide keeps OP3 (chai conformer cache)
+#   'protenix' a non-standard residue whose CCD type protenix reads as a ligand (PEPTIDE-LIKE PNA) drops its CCD leaving atoms,
+#              ends too (json_parser._remove_non_std_ccd_leaving_atoms: no polymer link, OXT kept only for protein)
 INNER_TERMINAL_ATOMS = False
 
 
@@ -489,35 +491,33 @@ class WholePdbPipeline:
     if INNER_TERMINAL_ATOMS:
       ccd_leaving = dict(ccd_leaving or {})
       polymer = ~np.isin(struct.chain_type, list(mmcif_names.NON_POLYMER_CHAIN_TYPES))
-      chains, res_ids = struct.chain_id[polymer], struct.res_id[polymer]
+      chains, res_ids, res_names = struct.chain_id[polymer], struct.res_id[polymer], struct.res_name[polymer]
       protein = struct.chain_type[polymer] == mmcif_names.PROTEIN_CHAIN
-      res_names = struct.res_name[polymer]
       for chain in set(chains.tolist()):
-        ids = sorted(set(res_ids[chains == chain].tolist()))
-        if INNER_TERMINAL_ATOMS == 'chai':
-          for r, name, prot in zip(res_ids[chains == chain].tolist(), res_names[chains == chain].tolist(),
-                                   protein[chains == chain].tolist()):
-            if name not in features._STANDARD_RESIDUES:
-              # '!' marks an atom the AF3 link rule would drop but this model keeps
-              ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | ({'OXT', "OXT'"} if prot else {'!OP3'})
-          continue
-        if INNER_TERMINAL_ATOMS in ('leaving', 'leaving_all'):
-          sel = chains == chain
-          for r, name, prot in zip(res_ids[sel].tolist(), res_names[sel].tolist(), protein[sel].tolist()):
-            if name in features._STANDARD_RESIDUES or (INNER_TERMINAL_ATOMS == 'leaving' and r == ids[-1]):
-              continue
+        sel = chains == chain
+        ids = sorted(set(res_ids[sel].tolist()))
+        for r, name, prot in set(zip(res_ids[sel].tolist(), res_names[sel].tolist(), protein[sel].tolist())):
+          if INNER_TERMINAL_ATOMS is True:
+            # a polymer residue keeps OXT only at its chain's end and OP3 only at its start, modified ones too
+            drop = ({'OXT'} if r != ids[-1] else set()) | ({'OP3'} if r != ids[0] else set())
+          elif name in features._STANDARD_RESIDUES:
+            continue
+          elif INNER_TERMINAL_ATOMS == 'chai':
+            # '!' marks an atom the AF3 link rule would drop but this model keeps
+            drop = {'OXT', "OXT'"} if prot else {'!OP3'}
+          else:
             entry = ccd.get(name) or {}
-            leaving = {n for n, f, el in zip(entry.get('_chem_comp_atom.atom_id', ()),
-                                             entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ()),
-                                             entry.get('_chem_comp_atom.type_symbol', ())) if f == 'Y' and el != 'H'}
-            if not leaving and INNER_TERMINAL_ATOMS == 'leaving_all':
-              leaving = {'OXT'} if prot else {'OP3', 'O3P'}  # of3 MOLECULE_TYPE_TO_LEAVING_ATOMS
-            ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | leaving
-          continue
-        for r in ids:
-          # a polymer residue keeps OXT only at its chain's end and OP3 only at its start, modified ones too
-          names = ({'OXT'} if r != ids[-1] else set()) | ({'OP3'} if r != ids[0] else set())
-          ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | names
+            kind = ''.join(entry.get('_chem_comp.type', ())).upper()
+            if INNER_TERMINAL_ATOMS == 'protenix' and (('PEPTIDE' in kind and kind != 'PEPTIDE-LIKE') or 'DNA' in kind or 'RNA' in kind):
+              continue
+            if INNER_TERMINAL_ATOMS == 'leaving' and r == ids[-1]:
+              continue
+            drop = {n for n, f, el in zip(entry.get('_chem_comp_atom.atom_id', ()),
+                                          entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ()),
+                                          entry.get('_chem_comp_atom.type_symbol', ())) if f == 'Y' and el != 'H'}
+            if not drop and INNER_TERMINAL_ATOMS == 'leaving_all':
+              drop = {'OXT'} if prot else {'OP3', 'O3P'}  # of3 MOLECULE_TYPE_TO_LEAVING_ATOMS
+          ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | drop
     unpaired_msa_by_chain_id = {}
     paired_msa_by_chain_id = {}
     templates_by_chain_id = {}
