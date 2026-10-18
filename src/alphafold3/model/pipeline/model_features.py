@@ -950,6 +950,7 @@ def prepare_input(fold_input, spec):
   drop_inner_terminal_atoms: True -- OXT only at a chain's last residue and OP3 only at its first, also on modified
   residues (atomworks); 'leaving' -- a modified polymer residue's CCD leaving atoms unless it ends the chain (esm);
   'leaving_all' -- every non-standard polymer residue's CCD leaving atoms, ends included (of3);
+  'chai' -- OXT/OXT' off every non-standard amino acid, OP3 kept on every non-standard nucleotide (chai);
   process-wide like ccd_unk, applied by the pipeline before tokenising.
   """
   knobs = spec.featurise

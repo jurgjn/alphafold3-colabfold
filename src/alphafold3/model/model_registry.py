@@ -742,7 +742,11 @@ _FEATURISE = {
                   atomized_unknown_restype='chai', chai_msa=True,
                   # its TokenBondRestraint: every declared bond, directed, into both pair inputs
                   declared_bond_feature=not os.environ.get('AF3_NO_DECLARED_BONDS'),
-                  std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS')),
+                  std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS'),
+                  # chai builds every residue from its conformer cache: CCD heavy atoms minus OXT (5CM keeps OP3, a
+                  # terminal MSE has no OXT, an unbonded sugar keeps O1); a declared bond drops its CCD leaving atoms
+                  **({} if os.environ.get('AF3_NO_CHAI_LEAVING')
+                     else dict(ccd_leaving_atoms=True, drop_inner_terminal_atoms='chai'))),
 }
 
 # Conformer centering rides in as a featurise KNOB as well as a

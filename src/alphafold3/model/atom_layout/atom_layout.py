@@ -877,7 +877,8 @@ def make_flat_atom_layout(
       if residues.chain_type[idx] in mmcif_names.LIGAND_CHAIN_TYPES:
         # protenix keeps a glycan's unbonded O1, which AF3 drops (fix_standalone_glycans off)
         drop_atoms = set()
-      drop_atoms |= ccd_leaving.get((str(residues.chain_id[idx]), int(residues.res_id[idx])), set())
+      extra = ccd_leaving.get((str(residues.chain_id[idx]), int(residues.res_id[idx])), set())
+      drop_atoms = (drop_atoms - {n[1:] for n in extra if n.startswith('!')}) | {n for n in extra if not n.startswith('!')}
 
     # If deprotonation info is available, remove the specific atoms.
     if residues.deprotonation is not None:

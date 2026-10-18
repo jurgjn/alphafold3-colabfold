@@ -44,6 +44,7 @@ _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 #   True       OXT and OP3 only at a polymer chain's ends, modified residues too (rf3/atomworks)
 #   'leaving'  a modified polymer residue drops its CCD leaving atoms unless it ends the chain (esm prepare_input)
 #   'leaving_all'  every non-standard polymer residue drops its CCD leaving atoms, ends too (of3 query featuriser)
+#   'chai'     a non-standard residue is its CCD heavy atoms minus OXT/OXT', ends too; a nucleotide keeps OP3 (chai conformer cache)
 INNER_TERMINAL_ATOMS = False
 
 
@@ -493,6 +494,13 @@ class WholePdbPipeline:
       res_names = struct.res_name[polymer]
       for chain in set(chains.tolist()):
         ids = sorted(set(res_ids[chains == chain].tolist()))
+        if INNER_TERMINAL_ATOMS == 'chai':
+          for r, name, prot in zip(res_ids[chains == chain].tolist(), res_names[chains == chain].tolist(),
+                                   protein[chains == chain].tolist()):
+            if name not in features._STANDARD_RESIDUES:
+              # '!' marks an atom the AF3 link rule would drop but this model keeps
+              ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | ({'OXT', "OXT'"} if prot else {'!OP3'})
+          continue
         if INNER_TERMINAL_ATOMS in ('leaving', 'leaving_all'):
           sel = chains == chain
           for r, name, prot in zip(res_ids[sel].tolist(), res_names[sel].tolist(), protein[sel].tolist()):
