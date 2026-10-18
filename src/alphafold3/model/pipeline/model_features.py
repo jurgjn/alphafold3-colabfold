@@ -891,10 +891,15 @@ def _crop_msa_padding(batch):
   """For a model that runs every MSA row it is given: crop the padding to a power-of-two bucket over the real rows"""
   if 'msa' not in batch:
     return
-  rows = np.asarray(batch['msa_mask']).shape[0]
+  mask = np.asarray(batch['msa_mask'])
+  rows = mask.shape[0]
   depth = min(rows, max(1024, 1 << max(0, _msa_depth(batch) - 1).bit_length()))
+  # live rows first, in order: chai's dedupe masks duplicates in place, and a plain [:depth] cut real rows past them
+  # (msa_gappy kept 4139 of its 6529)
+  live = mask.any(-1)
+  order = np.concatenate([np.flatnonzero(live), np.flatnonzero(~live)])[:depth]
   for key in ('msa', 'msa_mask', 'deletion_matrix'):
-    batch[key] = batch[key][:depth]
+    batch[key] = np.asarray(batch[key])[order]
 
 
 def _native_rng(batch, seed, pair_channel, fold_input):
