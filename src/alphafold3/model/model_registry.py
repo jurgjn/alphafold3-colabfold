@@ -626,6 +626,8 @@ _FEATURISE = {
                     native_nonprotein_msa=not os.environ.get('AF3_NO_DDE_NONPROTEIN_MSA'),
                     # and deduplicates a protein chain's unpaired MSA, which AF3 keeps as supplied
                     dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
+                    # protenix configs_inference msa_pair_as_unpair True; its MSA query row is the sequence as typed
+                    pair_as_unpair=not os.environ.get('AF3_NO_PX_PAIR_AS_UNPAIR'), query_letter_msa=True,
                     # after the centring its featuriser moves each reference conformer by U(-1, 1) per axis
                     translate_conformers=True),
     # PER FAMILY, not per model. One `protenix/model/modules/primitives.py`
@@ -657,6 +659,8 @@ _FEATURISE = {
                dedupe_self_msa=not os.environ.get('AF3_NO_PX_DEDUPE_MSA'),
                native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'),
                dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
+               # protenix configs_inference msa_pair_as_unpair True; its MSA query row is the sequence as typed
+               pair_as_unpair=not os.environ.get('AF3_NO_PX_PAIR_AS_UNPAIR'), query_letter_msa=True,
                translate_conformers=True,
                # declared bonds: discontinuous polymer-polymer and modified-residue-to-ligand, as include_discont_poly_poly_bonds
                declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',

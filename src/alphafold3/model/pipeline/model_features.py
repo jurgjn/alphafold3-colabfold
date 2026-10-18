@@ -1000,7 +1000,7 @@ def prepare_input(fold_input, spec):
   from alphafold3.model.pipeline import pipeline as af3_pipeline
   af3_pipeline.INNER_TERMINAL_ATOMS = knobs.get('drop_inner_terminal_atoms') or False
   cap = knobs.get('of3_main_msa')
-  if not (knobs.get('dedupe_unpaired_msa') or cap):
+  if not (knobs.get('dedupe_unpaired_msa') or cap or knobs.get('pair_as_unpair')):
     return fold_input
   import dataclasses
   import string
@@ -1019,12 +1019,17 @@ def prepare_input(fold_input, spec):
 
   chains = []
   for c in fold_input.chains:
-    if isinstance(c, folding_input.ProteinChain) and c.unpaired_msa:
-      c = folding_input.ProteinChain(id=c.id, sequence=c.sequence, ptms=c.ptms, description=c.description,
-                                     unpaired_msa=dedupe(c.unpaired_msa), paired_msa=c.paired_msa,
+    if isinstance(c, folding_input.ProteinChain) and (c.unpaired_msa or (knobs.get('pair_as_unpair') and c.paired_msa)):
+      unpaired = c.unpaired_msa or ''
+      if knobs.get('pair_as_unpair') and c.paired_msa:
+        # protenix msa_pair_as_unpair: the paired rows join the unpaired MSA (paired first), deduplicated
+        unpaired = c.paired_msa.rstrip('\n') + '\n' + unpaired
+      # the sequence as typed (.sequence is the CCD-parent letters)
+      c = folding_input.ProteinChain(id=c.id, sequence=getattr(c, '_sequence', c.sequence), ptms=c.ptms,
+                                     description=c.description, unpaired_msa=dedupe(unpaired), paired_msa=c.paired_msa,
                                      templates=c.templates)
     elif cap and isinstance(c, folding_input.RnaChain) and c.unpaired_msa:
-      c = folding_input.RnaChain(id=c.id, sequence=c.sequence, modifications=c.modifications,
+      c = folding_input.RnaChain(id=c.id, sequence=getattr(c, '_sequence', c.sequence), modifications=c.modifications,
                                  description=c.description, unpaired_msa=dedupe(c.unpaired_msa))
     chains.append(c)
   return dataclasses.replace(fold_input, chains=chains)
