@@ -783,6 +783,10 @@ for _m in ('openfold3', 'openbind0'):
   # terminal MVA's OXT, IAS OD2 not OXT) and builds a CCD ligand whole (an unbonded sugar keeps O1)
   if not os.environ.get('AF3_NO_OF3_LEAVING'):
     _FEATURISE.setdefault(_m, {}).update(ccd_leaving_atoms=True, drop_inner_terminal_atoms='leaving_all')
+  # of3 tokens of an atomised residue read restype UNK, while its msa query row and profile keep the sequence letter
+  # (PXZ typed as G reads G; ours read UNK there and the parent elsewhere, which flipped actinomycin's chromophore)
+  if not os.environ.get('AF3_NO_OF3_ATOMIZED_RESTYPE'):
+    _FEATURISE.setdefault(_m, {}).update(atomized_unknown_restype='aatype', query_letter_msa=True)
   # of3 profiles the deduplicated first 16384 main-MSA rows; on msa_gappy that is 6530 of 21577, profile max|d| 0.18 without
   if not os.environ.get('AF3_NO_OF3_MAIN_MSA'):
     _FEATURISE.setdefault(_m, {})['of3_main_msa'] = 16384
