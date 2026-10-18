@@ -721,6 +721,8 @@ _FEATURISE = {
                          # atomworks keeps OXT/OP3 of an atomised residue only at the chain end
                          drop_inner_terminal_atoms=True,
                          restype_alignment=True,
+                         # rf3_msa: rows, caps and dense stacking as atomworks builds them (model_features._rf3_msa)
+                         rf3_msa=not os.environ.get('AF3_NO_RF3_MSA'),
                          # native gives a modified nucleotide's atomised tokens the protein UNK too (5CM: 20)
                          atomized_unknown_restype='nucleic',
                          atomized_backbone_bonds=True,

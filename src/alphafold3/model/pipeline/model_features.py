@@ -769,6 +769,83 @@ def _boltz_msa(batch, fold_input):
   return batch
 
 
+_RF3_MAX_MSA_SEQS = 10000      # rf3 build_af3_transform_pipeline max_msa_sequences and n_msa
+
+
+def _rf3_msa(batch, fold_input):
+  """RoseTTAFold3's MSA as atomworks builds it from one a3m per protein entity (query, paired rows, unpaired rows):
+  parse_a3m keeps the first 10000 sequences, no deduplication. One entity with an MSA is used as read. Several are
+  joined by TaxID (ColabFold headers carry none, so only the query row pairs) and, dense, each entity's other rows
+  lose those that are all gap in its own columns -- the paired block's empty rows, which ends ColabFold's row
+  alignment -- and are stacked side by side, padded with gaps. A chain without an MSA has its query (restype) and then
+  padding. Profile and insertion mean count non-padded rows only; the mean is of raw insertion counts."""
+  from alphafold3.common import folding_input as fi
+  from alphafold3.constants import residue_names
+  from alphafold3.data import parsers
+
+  vocab = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP)
+  gap, unk = vocab.index(residue_names.GAP), vocab.index(residue_names.UNK)
+  parse = _a3m_row_parser()
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  resi = np.asarray(batch['residue_index']).reshape(-1)
+  real = np.asarray(batch['seq_mask']).astype(bool).reshape(-1)
+  query = np.asarray(batch['msa'])[0].copy()
+  aatype = np.asarray(batch['aatype']).reshape(-1)
+  # entities with an MSA, in chain order: (sequence, paired, unpaired) -> rows
+  entity_rows, chain_entity = {}, {}
+  for i, c in enumerate(fold_input.chains):
+    if not isinstance(c, fi.ProteinChain):
+      continue
+    paired = parsers.parse_fasta(c.paired_msa or '')[0][1:]
+    unpaired = parsers.parse_fasta(c.unpaired_msa or '')[0][1:]
+    if not paired and not unpaired:
+      continue
+    key = (c.sequence, c.paired_msa, c.unpaired_msa)
+    if key not in entity_rows:
+      lines = [r.strip() for r in paired + unpaired if r.strip()][:_RF3_MAX_MSA_SEQS - 1]
+      entity_rows[key] = [parse(r) for r in lines]
+    chain_entity[i] = key
+  if len(entity_rows) > 1:
+    entity_rows = {k: [(t, d) for t, d in v if (t != gap).any()] for k, v in entity_rows.items()}
+  n_row = 1 + max([len(v) for v in entity_rows.values()], default=0)
+  n_tok = asym.size
+  msa = np.full((n_row, n_tok), gap, np.int32)
+  dele = np.zeros((n_row, n_tok), np.float32)
+  padded = np.ones((n_row, n_tok), bool)
+  padded[0] = False
+  msa[0] = np.where(query == gap, aatype, query)     # a token with no alignment reads its own restype in row 0
+  # an atomised residue (several tokens on one residue) is a ligand to atomworks: no alignment, and UNK in row 0
+  # unless it is a standard residue (atomised for a bond to a ligand), which keeps its own letter
+  _, inv, cnt = np.unique(np.stack([asym, resi]), axis=1, return_inverse=True, return_counts=True)
+  atomised = real & (cnt[inv.reshape(-1)] > 1)
+  layout = batch.get('token_atoms_layout')
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  if layout is not None and atomised.any():
+    from alphafold3.model.pipeline import chiral_features
+    standard = chiral_features._standard_residues()
+    amask = np.asarray(batch['ref_mask']).astype(bool)
+    for t in np.flatnonzero(atomised):
+      a = np.flatnonzero(amask[t])
+      if not a.size or str(layout.res_name[t, a[0]]) not in standard:
+        msa[0, t] = unk
+  for i, key in chain_entity.items():
+    sel = np.flatnonzero(real & (asym == i + 1) & ~atomised)
+    col = resi[sel] - 1
+    for r, (tok, d) in enumerate(entity_rows[key], start=1):
+      if tok.size > col.max():
+        msa[r, sel], dele[r, sel] = tok[col], d[col]
+      padded[r, sel] = False
+  live = ~padded
+  n_cls = np.asarray(batch['profile']).shape[-1]
+  counts = np.bincount((np.arange(n_tok) * n_cls + np.minimum(msa, n_cls - 1))[live],
+                       minlength=n_tok * n_cls).reshape(n_tok, n_cls).astype(np.float32)
+  n_live = np.maximum(live.sum(0), 1)
+  _set_msa(batch, msa, dele, real, gap)
+  batch['profile'] = (counts / n_live[:, None]).astype(np.asarray(batch['profile']).dtype)
+  batch['deletion_mean'] = ((dele * live).sum(0) / n_live).astype(np.asarray(batch['deletion_mean']).dtype)
+  return batch
+
+
 def _dedupe_self_msa(batch, query_once=False):
   """ESMFold2's self-MSA is the query ONCE, not the query twice.
 
@@ -1328,6 +1405,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _dna_gap_msa(batch)
   if knobs.get('boltz_msa') and fold_input is not None and 'msa' in batch:
     _boltz_msa(batch, fold_input)
+  if knobs.get('rf3_msa') and fold_input is not None and 'msa' in batch:
+    _rf3_msa(batch, fold_input)
   if knobs.get('dedupe_self_msa'):
     _dedupe_self_msa(batch, query_once=knobs['dedupe_self_msa'] == 'query_once')
   if knobs.get('native_nonprotein_msa'):
