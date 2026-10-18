@@ -1826,8 +1826,8 @@ def _add_token_bonds(batch, pairs, order_code):
 def _declared_polymer_bonds(batch, fold_input, rule='all'):
   """bondedAtomPairs that AF3 does not featurise, as token bonds, by the vendor's own rule.
 
-  AF3 keeps a declared bond only between a STANDARD residue or a ligand and a ligand; a bond between two polymer
-  residues, or from a modified (atomised) residue to a ligand, never reaches its token bonds.
+  AF3 keeps a declared bond with a ligand on one side, a modified (atomised) residue's included, one way; a bond between
+  two polymer residues never reaches its token bonds.
 
     'all'            boltz-2: its tokeniser makes every bond between two tokens a token bond (type + 1). A disulfide to
                      a D-Cys folded 21.7 A apart without it, against native's 2.4.
