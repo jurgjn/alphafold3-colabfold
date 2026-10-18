@@ -471,6 +471,9 @@ def _chai_tokenise(rows):
   return tok, dele
 
 
+_CHAI_UNIREF_QUOTA = 9999   # msa_dataset_source_to_quota[UNIREF90] 10_000, minus the query
+
+
 def _chai_msa(batch, fold_input):
   """chai-1's MSA inputs where AF3's differ, once any chain has an alignment.
 
@@ -485,7 +488,9 @@ def _chai_msa(batch, fold_input):
   and no other row (masked). AF3 gives it its own classes and real gap rows. Ligands keep create_msa_feat's handling.
   Token-identical rows are then masked, as chai drops them.
   """
+  import string
   from alphafold3.common import folding_input as fi
+  from alphafold3.constants import residue_names
   from alphafold3.data import parsers
 
   asym = np.asarray(batch['asym_id']).reshape(-1)
@@ -493,15 +498,40 @@ def _chai_msa(batch, fold_input):
   profile = np.array(batch['profile'], np.float32)
   del_mean = np.array(batch['deletion_mean'], np.float32)
   msa, mask, dele = np.array(batch['msa']), np.array(batch['msa_mask']), np.array(batch['deletion_matrix'])
+  # chai's colabfold reader: a UniRef* header is UNIREF90 (2), anything else BFD_UNICLUST (0); matched to our rows by
+  # their residues on the chain's columns, first a3m occurrence wins
+  source = np.full(msa.shape[0], 2, np.int32)
+  vocab = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP)
+  to_cls = {c: vocab.index(residue_names.PROTEIN_COMMON_ONE_TO_THREE.get(c, residue_names.UNK)) for c in string.ascii_uppercase}
+  to_cls['-'] = vocab.index(residue_names.GAP)
   for index, chain in enumerate(fold_input.chains):
     sel = np.flatnonzero(asym == index + 1)
     if isinstance(chain, fi.Ligand) or not sel.size:
       continue
     col = resi[sel] - 1
-    rows = []
+    rows, heads = [], []
     if isinstance(chain, fi.ProteinChain):
       for a3m in (chain.paired_msa, chain.unpaired_msa):
-        rows += [r for r in parsers.parse_fasta(a3m or '')[0] if r]
+        seqs, descs = parsers.parse_fasta(a3m or '')
+        rows += [r for r in seqs if r]
+        heads += [d for r, d in zip(seqs, descs) if r]
+    if len(rows) > 1:
+      # chai's per-source quota (parse_aligned_pqt_to_msa_context): at most 9999 UNIREF90 rows, BFD_UNICLUST unlimited
+      uniref = np.cumsum([h.startswith('UniRef') for h in heads[1:]])
+      kept = [0] + [i + 1 for i, h in enumerate(heads[1:]) if not h.startswith('UniRef') or uniref[i] <= _CHAI_UNIREF_QUOTA]
+      rows, heads = [rows[i] for i in kept], [heads[i] for i in kept]
+      cols = sel[np.sort(np.unique(resi[sel], return_index=True)[1])]   # first token of each residue
+      want = {}
+      for r, h in zip(rows[1:], heads[1:]):
+        key = bytes(to_cls.get(c, vocab.index(residue_names.UNK)) for c in r if not c.islower())
+        want.setdefault(key, 2 if h.startswith('UniRef') else 0)
+      n_paired = int(np.asarray(batch.get('num_paired_alignments', 0)))
+      for k in np.flatnonzero(mask[:, cols].any(-1))[1:]:
+        hit = want.get(bytes(msa[k, cols].astype(np.uint8)))
+        if hit is not None and (msa[k, cols] != to_cls['-']).any():
+          source[k] = hit
+        elif hit is None and k >= n_paired and len(kept) < len(uniref) + 1:
+          mask[k, cols] = False                     # a UniRef row past the quota
     if len(rows) > 1:
       tok, dl = _chai_tokenise([chain.sequence] + rows)
       _, keep = np.unique(tok, axis=0, return_index=True)
@@ -526,6 +556,7 @@ def _chai_msa(batch, fold_input):
   _, first = np.unique(msa[live], axis=0, return_index=True)
   mask[np.setdiff1d(live, live[first])] = False
   batch['msa'], batch['msa_mask'], batch['deletion_matrix'] = msa, mask, dele
+  batch['msa_source'] = source
   return batch
 
 
@@ -898,8 +929,9 @@ def _crop_msa_padding(batch):
   # (msa_gappy kept 4139 of its 6529)
   live = mask.any(-1)
   order = np.concatenate([np.flatnonzero(live), np.flatnonzero(~live)])[:depth]
-  for key in ('msa', 'msa_mask', 'deletion_matrix'):
-    batch[key] = np.asarray(batch[key])[order]
+  for key in ('msa', 'msa_mask', 'deletion_matrix', 'msa_source'):
+    if key in batch:
+      batch[key] = np.asarray(batch[key])[order]
 
 
 def _native_rng(batch, seed, pair_channel, fold_input):

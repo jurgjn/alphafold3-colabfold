@@ -437,6 +437,8 @@ class MSA:
   num_alignments: xnp_ndarray
   # Leading rows that came from the paired MSA (chai-1's IsPairedMSA reads it); None in a batch built without it.
   num_paired: xnp_ndarray | None = None
+  # Per-row source database class (chai-1's MSADataSource); None unless a model's featuriser sets msa_source.
+  source: xnp_ndarray | None = None
 
   @classmethod
   def compute_features(
@@ -702,6 +704,7 @@ class MSA:
         deletion_mean=self.deletion_mean,
         num_alignments=self.num_alignments,
         num_paired=self.num_paired,
+        source=None if self.source is None else self.source[indices],
     )
 
   @classmethod
@@ -714,6 +717,7 @@ class MSA:
         deletion_mean=batch['deletion_mean'],
         num_alignments=batch['num_alignments'],
         num_paired=batch.get('num_paired_alignments'),
+        source=batch.get('msa_source'),
     )
     return output
 
@@ -726,6 +730,7 @@ class MSA:
         'deletion_mean': self.deletion_mean,
         'num_alignments': self.num_alignments,
         **({} if self.num_paired is None else {'num_paired_alignments': self.num_paired}),
+        **({} if self.source is None else {'msa_source': self.source}),
     }
 
 

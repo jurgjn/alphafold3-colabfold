@@ -278,9 +278,9 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
     #    paired block's homolog rows (not its query) and only where both that token's chain and the first token's
     #    chain have a hit. AF3 lays unpaired rows side by side too, so "covers more than one chain" marked every row
     #    of every complex paired where native has none (tetr_dimer_dna: 30464/30464 cells wrong).
-    #  * MSADataSource labels which database a row came from. chai's run uses
-    #    4 for the query row and mostly 2 for the rest, so that is what we
-    #    emit. Rows from a third source (0) are not distinguishable to us.
+    #  * MSADataSource labels which database a row came from: 4 for the query row, and per row what chai's colabfold
+    #    reader synthesises from the a3m header (UniRef* -> UNIREF90 2, anything else -> BFD_UNICLUST 0) when the
+    #    featuriser carried it (msa.source), else 2.
     n_row = msa_1hot.shape[0]
     is_paired = jnp.zeros(msa_1hot.shape[:2], msa_1hot.dtype)
     if asym_id is not None and msa.num_paired is not None:
@@ -293,7 +293,7 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
       paired = (r > 0) & (r < msa.num_paired) & tok_hit & tok_hit[:, :1] & msa.mask.astype(bool)
       is_paired = paired.astype(msa_1hot.dtype)
     is_paired = is_paired[..., None]
-    src = jnp.where(jnp.arange(n_row) == 0, 4, 2)
+    src = jnp.where(jnp.arange(n_row) == 0, 4, 2 if msa.source is None else msa.source)
     src = jax.nn.one_hot(src, 6, dtype=msa_1hot.dtype)
     src = jnp.broadcast_to(src[:, None, :], msa_1hot.shape[:2] + (6,))
     return jnp.concatenate(
