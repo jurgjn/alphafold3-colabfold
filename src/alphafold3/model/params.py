@@ -314,6 +314,7 @@ def get_model_haiku_params(model_dir: epath.PathLike) -> hk.Params:
   if not params:
     raise FileNotFoundError(f'Model missing from "{model_dir}"')
   _check_blob_convention(model_dir, params)
+  _check_required_scopes(model_dir, params)
   _upgrade_esmfold2_class_rows(model_dir, params)
   # chai1's blobs carry chai-lab's structure token-pair weights from 28141c7 on (model.Chai1StructurePair);
   # one fetched before has the model and not its diffusion's pair input
@@ -378,6 +379,29 @@ def _upgrade_esmfold2_class_rows(model_dir, params) -> None:
     w[new] = w[old]
     params[scope]['weights'] = jnp.asarray(w)
   logging.info('%s: ESMFold2 weights before blob convention 2, DNA and N rows rotated into its class order', model_dir)
+
+
+# Scopes a model's graph builds that an OLDER blob of it lacks. Without this a
+# stale cached blob fails deep inside haiku ("Unable to retrieve parameter")
+# with nothing saying the fix is to fetch the blob again.
+_REQUIRED_SCOPES = {
+    # 2026-10-19: RF3's confidence pair needs the two s_inputs rows our 447-wide
+    # target_feat drops (confidence_head.masked_global_norm).
+    'rosettafold3': ('diffuser/confidence_head/~_embed_features/'
+                     'left_target_feat_project_absent',),
+}
+
+
+def _check_required_scopes(model_dir, params) -> None:
+  name = os.path.basename(os.path.normpath(os.path.expanduser(str(model_dir))))
+  missing = [s for s in _REQUIRED_SCOPES.get(name.split('-')[0], ())
+             if s not in params]
+  if missing:
+    raise ValueError(
+        f'{name}: these weights predate parameters this library needs '
+        f'({missing[0]}). Re-download the blob (delete {model_dir} and let '
+        'ensure_weights refetch it), or re-run the converter against the '
+        'checkpoint.')
 
 
 def _check_blob_convention(model_dir, params) -> None:
