@@ -31,7 +31,8 @@ import numpy as np
 import rdkit.Chem as rd_chem
 
 
-# AF3 builds an unknown amino acid as GLY; a model whose featuriser keeps the CCD UNK (N CA C O CB CG) clears this
+# AF3 builds an unknown amino acid as GLY; a model whose featuriser keeps the CCD UNK (N CA C O CB CG) clears this, and
+# a residue name builds it from that residue's atoms instead (boltz: N CA C O CB = 'ALA')
 UNK_AS_GLY = True
 
 
@@ -518,7 +519,7 @@ def get_all_atoms_in_entry(
   # The CCD version of 'UNK' is weird. It has a CB and a CG atom. We just want
   # the minimal amino-acid here which is GLY.
   if res_name == 'UNK' and UNK_AS_GLY:
-    res_name = 'GLY'
+    res_name = 'GLY' if UNK_AS_GLY is True else UNK_AS_GLY
   ccd_data = ccd.get(res_name)
   if not ccd_data:
     raise ValueError(f'Unknown residue type {res_name}')

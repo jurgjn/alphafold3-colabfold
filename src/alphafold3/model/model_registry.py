@@ -541,17 +541,23 @@ _FEATURISE = {
                # rosettafold3 already needs, and for the same reason -- and on
                # a modified nucleotide's tokens too.
                atomized_unknown_restype=not os.environ.get(
-                   'AF3_NO_ESM_ATOMIZED_UNK') and 'nucleic',
+                   'AF3_NO_ESM_ATOMIZED_UNK') and 'esm',
+               # its protein MSA comes from the a3m, whose query row is the sequence as typed (PXZ written G reads G)
+               query_letter_msa=True,
+               # compute_token_bonds links an atomised protein residue to its neighbours (prev C - N, C - next N)
+               atomized_backbone_bonds=not os.environ.get('AF3_NO_ESM_BACKBONE_BONDS') and 'esm',
+               # esm prepare_input atomises a modified residue or nucleotide from its CCD minus the CCD leaving atoms
+               # unless it ends the chain (FGA: OE2 off, OXT kept), and drops nothing from an unbonded glycan (O1 kept)
+               ccd_leaving_atoms=not os.environ.get('AF3_NO_ESM_LEAVING'),
+               drop_inner_terminal_atoms=not os.environ.get('AF3_NO_ESM_LEAVING') and 'leaving',
                # DIAGNOSTIC: AF3_ESM_PTM_ONE_TOKEN=1 keeps a modified residue
                # as ONE token holding all its atoms (boltz2's convention)
-               # instead of atomising it. esmfold2 places a residue's atoms
-               # correctly when they are WITHIN a token and ~1.7x too far apart
-               # when they are separate tokens, so this says whether the fault
-               # is cross-token geometry itself.
+               # instead of atomising it.
                **(dict(modified_as_one_token=True)
                   if os.environ.get('AF3_ESM_PTM_ONE_TOKEN') else {}),
+               # its standard residue tables carry no OXT and no 5' OP3 (DNA_HEAVY_ATOMS["DA"] starts at P)
                **({} if os.environ.get('AF3_NO_ESM_DROP_OXT')
-                  else dict(drop_atoms=('OXT',))))
+                  else dict(drop_atoms=('OXT', 'OP3'))))
        for m in model_config.ESMFOLD2_FAMILY},
     # boltz2 keeps a modified residue as ONE token holding all its atoms
     # (data/tokenize/boltz2.py: standard -> per residue, NONPOLYMER -> per atom,
@@ -601,8 +607,16 @@ _FEATURISE = {
                    # SMILES atoms named element + canonical rank, as boltz
                    # names them (_boltz_smiles_atom_names).
                    smiles_atom_names='boltz',
+                   # deletion_mean: boltz averages its deletion VALUE, (pi / 2) * arctan(d / 3), as ESMFold2 does
+                   esm_deletion_mean=not os.environ.get('AF3_NO_BOLTZ2_DELETION'),
+                   # boltz_msa: rows, pairing and caps as boltz predict builds them (model_features._boltz_msa)
+                   boltz_msa=not os.environ.get('AF3_NO_BOLTZ2_MSA'),
                    # raw_last_conformer: its last conformer group keeps the stored frame (constants/boltz2_conformers.py)
-                   raw_last_conformer=not os.environ.get('AF3_NO_BOLTZ2_RAW_LAST')),
+                   raw_last_conformer=not os.environ.get('AF3_NO_BOLTZ2_RAW_LAST'),
+                   # parse_polymer drops a non-canonical residue's CCD leaving atoms (parse_ccd_residue
+                   # drop_leaving_atoms=True) wherever it sits; ligands are parsed whole (an unbonded sugar keeps O1)
+                   **({} if os.environ.get('AF3_NO_BOLTZ2_LEAVING')
+                      else dict(ccd_leaving_atoms='polymer', drop_inner_terminal_atoms='leaving_all'))),
     # opendde runs its diffusion on an expanded structural-token set, and pads
     # the atom key window rather than sliding it in bounds.
     # struct_num_tokens is deliberately absent: the structural-token count
@@ -630,6 +644,7 @@ _FEATURISE = {
                     # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
                     # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
                     ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
+                    drop_inner_terminal_atoms='protenix',
                     empty_template_gap=not os.environ.get(
                         'AF3_NO_DDE_TEMPLATE_GAP'),
                     empty_template_gap_slots='first',
@@ -638,8 +653,13 @@ _FEATURISE = {
                     native_nonprotein_msa=not os.environ.get('AF3_NO_DDE_NONPROTEIN_MSA'),
                     # and deduplicates a protein chain's unpaired MSA, which AF3 keeps as supplied
                     dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
+                    # protenix configs_inference msa_pair_as_unpair True; its MSA query row is the sequence as typed
+                    pair_as_unpair=not os.environ.get('AF3_NO_PX_PAIR_AS_UNPAIR'), query_letter_msa=True,
                     # after the centring its featuriser moves each reference conformer by U(-1, 1) per axis
-                    translate_conformers=True),
+                    translate_conformers=True,
+                    # ccd_restype: a non-standard residue reads its CCD one-letter code (add_cano_seq_resname)
+                    ccd_restype=not os.environ.get('AF3_NO_PX_CCD_RESTYPE'),
+                    atomized_backbone_bonds=not os.environ.get('AF3_NO_PX_ATOMIZED_BONDS') and 'protenix'),
     # PER FAMILY, not per model. One `protenix/model/modules/primitives.py`
     # serves every protenix release, so the padded key window is a property of
     # the implementation and not of a checkpoint. It was set for protenix2
@@ -669,12 +689,18 @@ _FEATURISE = {
                dedupe_self_msa=not os.environ.get('AF3_NO_PX_DEDUPE_MSA'),
                native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'),
                dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
+               # protenix configs_inference msa_pair_as_unpair True; its MSA query row is the sequence as typed
+               pair_as_unpair=not os.environ.get('AF3_NO_PX_PAIR_AS_UNPAIR'), query_letter_msa=True,
                translate_conformers=True,
+               # ccd_restype: a non-standard residue reads its CCD one-letter code (add_cano_seq_resname)
+               ccd_restype=not os.environ.get('AF3_NO_PX_CCD_RESTYPE'),
+               atomized_backbone_bonds=not os.environ.get('AF3_NO_PX_ATOMIZED_BONDS') and 'protenix',
                # declared bonds: discontinuous polymer-polymer and modified-residue-to-ligand, as include_discont_poly_poly_bonds
                declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
                # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
                # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
                ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
+               drop_inner_terminal_atoms='protenix',
                # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width
                **({} if os.environ.get('AF3_NO_PX_NATIVE_RNG')
                   else {'native_rng': {'protenix1': 128, 'protenix2': 256}[m]}))
@@ -694,13 +720,9 @@ _FEATURISE = {
     # windows 16 and 17 ALONE. With both, the whole encoder is exact at full
     # depth: a_token 2.33e-05, q_atom 1.23e-05, every window at the numerical
     # floor.
-    # dedupe_self_msa: IntelliFold-2 forks boltz's featuriser, `dummy_msa` and
-    # the pairing loop included, so a chain with no alignments gets a DEPTH-1
-    # MSA (one dummy sequence, first row per chain, nothing left to pair or
-    # append). AF3 hands the same input the query twice.
-    # drop_atoms: IntelliFold forks boltz's fixed atom tables, which carry no
-    # terminal OXT and no 5' OP3 (`const.ref_atoms["GLU"]` ends at OE2, its "A"
-    # starts at P).
+    # No dedupe_self_msa and no terminal-atom drop: those were the boltz-1 training pipeline's (dummy_msa, ref_atoms
+    # without OXT/OP3). IntelliFold-v2's released inference is its vendored AF3 engine, which featurises as AF3 does;
+    # against it (gauntlet out_if2knob) keeping both moved cyclic_dl_peptide 0.27 -> 0.09 A and barnase pLDDT to native's.
     'intellifold2': dict(qblock_keys=True,
                          # 'query', as boltz2: the featuriser IntelliFold forks
                          # keeps the a3m as given, query once, WITH alignments
@@ -742,12 +764,20 @@ _FEATURISE = {
     'rosettafold3': dict(**({} if os.environ.get('AF3_NO_TERMINAL_DROP')
                             else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
                          chirals=True, atomized_element_names=True,
+                         # atomworks keeps OXT/OP3 of an atomised residue only at the chain end
+                         drop_inner_terminal_atoms=True,
                          restype_alignment=True,
+                         # rf3_msa: rows, caps and dense stacking as atomworks builds them (model_features._rf3_msa)
+                         rf3_msa=not os.environ.get('AF3_NO_RF3_MSA'),
                          # native gives a modified nucleotide's atomised tokens the protein UNK too (5CM: 20)
                          atomized_unknown_restype='nucleic',
                          atomized_backbone_bonds=True,
                          # atomworks keeps a modified (atomised) residue's bond to a ligand, drops polymer-polymer ones
                          declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'ligand',
+                         # atomworks atomises a residue covalently bound to a ligand (covalent_modifications.py)
+                         atomize_ligand_bonded=not os.environ.get('AF3_NO_RF3_ATOMIZE_BONDED'),
+                         # atomworks drops a declared bond's CCD leaving atoms too (bR: retinal O1 at the Schiff base)
+                         ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                          padded_keys=True,
                          # 'query': atomworks keeps the a3m as given, query
                          # once, with or without real alignments -- a 4-row a3m
@@ -775,7 +805,11 @@ _FEATURISE = {
                   atomized_unknown_restype='chai', chai_msa=True,
                   # its TokenBondRestraint: every declared bond, directed, into both pair inputs
                   declared_bond_feature=not os.environ.get('AF3_NO_DECLARED_BONDS'),
-                  std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS')),
+                  std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS'),
+                  # chai builds every residue from its conformer cache: CCD heavy atoms minus OXT (5CM keeps OP3, a
+                  # terminal MSE has no OXT, an unbonded sugar keeps O1); a declared bond drops its CCD leaving atoms
+                  **({} if os.environ.get('AF3_NO_CHAI_LEAVING')
+                     else dict(ccd_leaving_atoms=True, drop_inner_terminal_atoms='chai'))),
 }
 
 # Conformer centering rides in as a featurise KNOB as well as a
@@ -810,6 +844,18 @@ for _m in model_config.CENTRE_REF_CONFORMERS:
 for _m in ('openfold3', 'openbind0'):
   if not os.environ.get('AF3_NO_TERMINAL_DROP'):
     _FEATURISE.setdefault(_m, {})['drop_atoms'] = ('OXT', 'OP3', 'O3P')
+  # of3's query featuriser drops a non-canonical polymer residue's CCD leaving atoms wherever it sits (PXZ OXT', a
+  # terminal MVA's OXT, IAS OD2 not OXT) and builds a CCD ligand whole (an unbonded sugar keeps O1)
+  if not os.environ.get('AF3_NO_OF3_LEAVING'):
+    _FEATURISE.setdefault(_m, {}).update(ccd_leaving_atoms=True, drop_inner_terminal_atoms='leaving_all')
+  # of3 tokens of an atomised residue read restype UNK, while its msa query row and profile keep the sequence letter
+  # (PXZ typed as G reads G; ours read UNK there and the parent elsewhere, which flipped actinomycin's chromophore)
+  if not os.environ.get('AF3_NO_OF3_ATOMIZED_RESTYPE'):
+    _FEATURISE.setdefault(_m, {}).update(atomized_unknown_restype='aatype', query_letter_msa=True)
+  # of3 MSA has no DNA query rows (gap everywhere, zero profile), and its token_bonds link two consecutive atomised
+  # residues (SAR4-MVA5) but never an atomised residue to a standard neighbour
+  if not os.environ.get('AF3_NO_OF3_DNA_GAP'):
+    _FEATURISE.setdefault(_m, {}).update(dna_gap_msa=True, atomized_backbone_bonds='both_atomized')
   # of3 profiles the deduplicated first 16384 main-MSA rows; on msa_gappy that is 6530 of 21577, profile max|d| 0.18 without
   if not os.environ.get('AF3_NO_OF3_MAIN_MSA'):
     _FEATURISE.setdefault(_m, {})['of3_main_msa'] = 16384
@@ -825,6 +871,12 @@ for _m in ('openfold3', 'openbind0'):
   if not os.environ.get('AF3_NO_OF3_MSA_ROWS'):
     _FEATURISE.setdefault(_m, {}).update(
         of3_msa_rows=True, modified_restype='protein_unknown')
+# chai-1 too builds an unknown amino acid from the CCD UNK (6 atoms per X on unk_residues, ours 4), as do protenix,
+# opendde and rf3 (their natives' UNK carry CB and CG); boltz's const.ref_atoms["UNK"] is N CA C O CB
+if not os.environ.get('AF3_NO_CCD_UNK'):
+  for _m in ('chai1', 'protenix1', 'protenix2', 'opendde', 'rosettafold3'):
+    _FEATURISE.setdefault(_m, {})['ccd_unk'] = True
+  _FEATURISE.setdefault('boltz2', {})['ccd_unk'] = 'cb'
 
 
 # Where a converted model's weights are published. The file name is what
@@ -1177,7 +1229,9 @@ def featurise_kwargs(spec):
       # protenix/opendde's leaving atoms by CCD flags. Declared as a knob on
       # main and passed by NO caller -- model_features warned at runtime that
       # "an older caller does not pass" it; this is where callers get it.
-      ccd_leaving_atoms=bool(knobs.get('ccd_leaving_atoms', False)),
+      # True, or a mode such as 'polymer' (boltz2: a ligand keeps its side's
+      # leaving atoms).
+      ccd_leaving_atoms=knobs.get('ccd_leaving_atoms', False) or False,
       keep_modified_nucleotide_op3=bool(
           knobs.get('keep_modified_nucleotide_op3', False)))
 

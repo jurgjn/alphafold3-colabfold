@@ -702,8 +702,13 @@ PAIR_ONLY_TRUNK = ESMFOLD2_FAMILY
 # line has no lm_encoder at all: it calls the shim once with
 # `lm_dropout=config.lm_dropout`, which its config sets to 0.0. Applying 25%
 # there drops a quarter of a signal the model was never trained to lose.
-LM_PAIR_DROPOUT = {m: (0.25 if m in ESMFOLD2_SSM_RECYCLE else 0.0)
+# esm's fold() raises it to 0.3 (`lm_dropout`, the paper's folding-eval value) over the checkpoint's 0.25.
+LM_PAIR_DROPOUT = {m: (0.3 if m in ESMFOLD2_SSM_RECYCLE else 0.0)
                    for m in ESMFOLD2_FAMILY}
+
+# esm's fold() masks this fraction of MSA columns in every row but the query, once per fold and shared by every
+# recycle (`msa_column_mask_rate`, maybe_apply_msa_column_masking); a no-op without an MSA.
+MSA_COLUMN_MASK_RATE = {m: 0.1 for m in ESMFOLD2_SSM_RECYCLE}
 
 
 # Models whose sampler rigid-aligns the noisy coordinates onto the denoised
@@ -726,6 +731,12 @@ LM_PAIR_DROPOUT = {m: (0.25 if m in ESMFOLD2_SSM_RECYCLE else 0.0)
 # in its atom pair features. Measured: symmetrising alone takes a glycerol from
 # 1.229-1.291 to 0.982-0.996 (the vendor reads 0.986).
 SYMMETRIC_TOKEN_BONDS = ESMFOLD2_FAMILY
+
+# Models whose atom encoder gathers the KEYS' ref_space_uid from the token-atom layout with queries_to_keys, which
+# indexes the queries layout (alphafold3#730): upstream AF3 as released (v3.0.3), so its weights run as DeepMind's code
+# runs them. Every PyTorch-trained port has the per-atom semantics, i.e. the keys taken from the queries layout
+# (IntelliFold's own AF3 engine patches the same thing in, keys_ref_space_uid_from_queries).
+TOKEN_LAYOUT_KEYS_REF_SPACE_UID = ('alphafold3',)
 
 
 REALIGN_SAMPLER = ESMFOLD2_FAMILY
@@ -753,10 +764,6 @@ REALIGN_SAMPLER = ESMFOLD2_FAMILY
 #: (boltz2, opendde, intellifold2, esmfold2) or only the base name (chai1,
 #: openfold3, protenix2, rosettafold3), and for those the binding cannot matter.
 ATOM_PAIR_COND_SPLIT = ('alphafold3',)
-
-#: Models whose atom encoder gathers the keys' `ref_space_uid` from the TOKEN
-#: layout, as upstream AlphaFold 3 does (see atom_cross_attention.py).
-KEYS_UID_FROM_TOKEN_LAYOUT = ('alphafold3',)
 
 NORMED_ATOM_FEATURES = ESMFOLD2_FAMILY
 
@@ -844,34 +851,6 @@ TRANSPOSED_COLUMN_PAIR_BIAS = ('openfold3', 'opendde', 'boltz2') + PROTENIX_FAMI
 # so the claim in TemplateEmbedding's own comment that "the empty slots
 # contribute exactly zero" is wrong for every one of them.
 TEMPLATE_MEAN_OVER_ALL_SLOTS = PROTENIX_FAMILY
-
-
-# Models whose template cross-chain visibility is "SAME SOURCE TEMPLATE" rather
-# than "same chain".
-#
-# AF3 masks a template's pair features with `asym_id_i == asym_id_j`, because its
-# templates are per chain and carry no inter-chain information. Boltz-2's
-# TemplateV2Module -- which is what its checkpoint declares
-# (`hyper_parameters['use_templates_v2'] = True`) -- masks with
-# `visibility_ids_i == visibility_ids_j` instead, and visibility_ids is NOT
-# asym_id: `featurizerv2` sets it to the TEMPLATE'S PDB ID for every chain that
-# template covers, and to `-1 - asym_id` for chains with no template. So two
-# chains templated from the same structure SEE EACH OTHER, which is the entire
-# point of giving a complex a complex template -- and an untemplated chain still
-# sees only itself.
-#
-# Identical for a single chain, and identical when each chain has its own
-# template from a different source. It differs exactly where a template spans
-# more than one chain, which is where the interface information lives. Our
-# features express that directly: handing the same template to both chains of a
-# homodimer produces ONE row covering both (152 tokens, chains {1, 2}), so the
-# row's own coverage IS the visibility group.
-#
-# `template_parity.py` cannot see this -- `folding_input.Template` is per chain
-# and the gate folds a single one, which is the same blind spot that hid the
-# structural atom axis (verified on RNA) and openbind0's pair bias (verified on
-# the wrong release).
-TEMPLATE_VISIBILITY_BY_COVERAGE = ('boltz2',)
 
 
 # Models whose TEMPLATE stack adds an OUTER residual around the whole pairformer

@@ -1140,6 +1140,12 @@ def _resolve_esm(use_esm, fold_input, model_runner):
   # the wrapped [BOS, c1, EOS, BOS, c2, EOS] form -- see esm.embed, which cites
   # the native mask. This used to raise, on a comment claiming the tower
   # implemented the wrapping but had not been gated; neither half was true.
+  # esm gives ESM-C one id per residue, and a modified (atomised) residue's
+  # tokens all carry X.
+  sequences = [
+      ''.join('X' if i + 1 in {p for _, p in (c.ptms or ())} else a
+              for i, a in enumerate(c.sequence))
+      for c in fold_input.chains if isinstance(c, folding_input.ProteinChain)]
   return None, esm.lm_pair_for(model_name, sequences, model_runner.model_dir)
 
 

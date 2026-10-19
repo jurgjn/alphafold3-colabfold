@@ -309,7 +309,9 @@ def apply_atomized_element_names(batch):
     return batch
   layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
 
+  from alphafold3.model import features as af3_features
   standard = _standard_residues()
+  atomized = af3_features.ATOMIZED_RESIDUES
   mask = np.asarray(batch['ref_mask']).astype(bool)
   element = np.asarray(batch['ref_element'])
   chars = np.array(batch['ref_atom_name_chars'], copy=True)
@@ -318,7 +320,8 @@ def apply_atomized_element_names(batch):
   num_token, num_dense = mask.shape[-2], mask.shape[-1]
   for t in range(num_token):
     for s in range(num_dense):
-      if not mask[t, s] or str(layout.res_name[t, s]) in standard:
+      if not mask[t, s] or (str(layout.res_name[t, s]) in standard
+                            and (str(layout.chain_id[t, s]), int(layout.res_id[t, s])) not in atomized):
         continue
       name = symbol.get(int(element[t, s]), '')
       if not name:
@@ -370,15 +373,9 @@ def apply_restype_alignment_on_atomized(batch):
   msa = batch.get('msa')
 
   if msa is not None:
-    # a token with no alignment of its own: gap in every LIVE row, including the
-    # query. Padded rows hold 0, not the gap, so testing every row never fired on
-    # a padded MSA: a ligand token kept the GAP profile where stock RF3 has its
-    # restype (UNK) -- s_inputs differed at exactly the ligand tokens.
-    msa_arr = np.asarray(msa)
-    live = (np.asarray(batch['msa_mask']).any(-1) if 'msa_mask' in batch
-            else np.ones(msa_arr.shape[0], bool))
-    unaligned = ((msa_arr[live] == gap_idx).all(axis=0)
-                 & (aatype != gap_idx) & live.any())
+    # a token with no alignment of its own: gap in every LIVE row, including the query (padding rows read 0, not gap)
+    live = np.asarray(batch['msa_mask']).astype(bool).any(-1) if batch.get('msa_mask') is not None else slice(None)
+    unaligned = (np.asarray(msa)[live] == gap_idx).all(axis=0) & (aatype != gap_idx)
   else:
     # no MSA to consult -- fall back to the old restype test, which is exact when
     # the alignment is the query alone (the only case reachable without `msa`)
@@ -418,7 +415,8 @@ def _element_symbols(periodic_table):
   return {v: k.upper() for k, v in periodic_table.ATOMIC_NUMBER.items()}
 
 
-def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None):
+def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None, channels=('aatype', 'profile', 'msa'),
+                                     msa_nucleic_only=False):
   '''an atomised polymer token is UNKNOWN to RF3, not its parent residue type.
 
   AlphaFold 3 atomises a modified residue but keeps the PARENT restype on every one
@@ -448,6 +446,10 @@ def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None
 
   nucleic_unknown gives a modified nucleotide's atomised tokens that class instead: chai-1's DX/RX, both our N (30), on
   which the forward tells DNA from RNA.
+
+  channels: of3 sets UNK on restype alone and keeps the sequence letter in its msa and profile.
+  msa_nucleic_only: esm reads a protein MSA from the a3m, whose query keeps the parent letter; only a nucleotide's row 0
+  is its (UNK) restype (prepare_input.compute_msa_features).
 
   RF3 and ESMFold2 only: every other ported family trains on AlphaFold 3's parent-restype
   convention. Boltz-2 wants the unknown restype too, but on a residue it keeps as ONE
@@ -488,7 +490,11 @@ def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None
   aatype = np.array(batch['aatype'])
   aatype[atomized] = cls[atomized]
   batch['aatype'] = aatype
+  if 'profile' not in channels:
+    return batch
 
+  if msa_nucleic_only:
+    atomized = atomized & is_nucleic
   profile = np.array(batch['profile'], copy=True)
   profile[atomized] = 0.0
   profile[atomized, cls[atomized]] = 1.0
@@ -499,4 +505,45 @@ def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None
     msa = np.array(msa, copy=True)
     msa[:, atomized] = cls[atomized]
     batch['msa'] = msa
+  return batch
+
+
+def apply_query_letter_on_atomized(batch, fold_input):
+  """An atomised protein residue's MSA query row and profile take the INPUT sequence letter, as of3 builds its query row
+  from the sequence: PXZ written as G reads G there, where AF3's query row reads the CCD parent (none: UNK)."""
+  from alphafold3.common import folding_input
+  from alphafold3.constants import residue_names
+
+  layout = batch.get('token_atoms_layout')
+  if layout is None or fold_input is None or batch.get('msa') is None:
+    return batch
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  # the sequence as typed: ProteinChain.sequence already swaps a modified position for its CCD parent (X for PXZ)
+  seqs = {c.id: getattr(c, '_sequence', c.sequence) for c in fold_input.chains if isinstance(c, folding_input.ProteinChain)}
+  vocab = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP)
+  standard = _standard_residues()
+  mask = np.asarray(batch['ref_mask']).astype(bool)
+  msa = np.array(batch['msa'], copy=True)
+  profile = np.array(batch['profile'], copy=True)
+  rows = np.asarray(batch['msa_mask']).astype(bool) if batch.get('msa_mask') is not None else np.ones(msa.shape, bool)
+  for t in np.flatnonzero(np.asarray(batch['is_protein']).astype(bool).reshape(-1)):
+    s = np.flatnonzero(mask[t])
+    if not s.size or str(layout.res_name[t, s[0]]) in standard:
+      continue
+    seq = seqs.get(str(layout.chain_id[t, s[0]]))
+    r = int(layout.res_id[t, s[0]]) - 1
+    if seq is None or not 0 <= r < len(seq):
+      continue
+    three = residue_names.PROTEIN_COMMON_ONE_TO_THREE.get(seq[r], residue_names.UNK)
+    cls = vocab.index(three) if three in vocab else vocab.index(residue_names.UNK)
+    old = int(msa[0, t])
+    if old == cls:
+      continue
+    # the query and its copies (AF3 adds the query again to an empty MSA) carry the old class
+    hit = rows[:, t] & (msa[:, t] == old)
+    n = max(int(rows[:, t].sum()), 1)
+    profile[t, old] -= hit.sum() / n
+    profile[t, cls] += hit.sum() / n
+    msa[hit, t] = cls
+  batch['msa'], batch['profile'] = msa, np.clip(profile, 0.0, 1.0)
   return batch

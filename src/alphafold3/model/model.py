@@ -23,6 +23,7 @@ from collections.abc import Iterable, Mapping
 import concurrent
 import dataclasses
 import functools
+import os
 from typing import Any, TypeAlias
 
 from absl import logging
@@ -703,6 +704,8 @@ class Model(hk.Module):
       )
 
     override = diffusion_head.SAMPLER_OVERRIDE
+    if batch.predicted_structure_info.atom_mask.shape[-1] != 24:
+      override = None   # sampler kernels lay out 24 atom slots; boltz2's widened layout keeps the XLA sampler
     sampler = None if override is None or hk.running_init() else override(
         self.global_config.model, sample_config)
     if sampler is not None:
@@ -860,6 +863,16 @@ class Model(hk.Module):
     native_rng = {k[len('px_'):]: batch.pop(k) for k in list(batch) if k.startswith('px_')} or None
 
     batch = feat_batch.Batch.from_data_dict(batch)
+    # opt-in: masked, ours folded bacteriorhodopsin's trimer on 1 of 10 seeds where native did on 4 (unmasked, ours 7 of
+    # 10); the mask itself matches native's stack, the cause is open
+    rate = model_config.MSA_COLUMN_MASK_RATE.get(self.global_config.model, 0.0) if os.environ.get(
+        'AF3_ESM_COLUMN_MASK') else 0.0
+    if rate:
+      # drawn from the fold's key, so a seed reproduces it; every recycle sees the same columns
+      col_keep = jax.random.uniform(jax.random.fold_in(key, 0xC0), batch.msa.mask.shape[1:]) >= rate
+      keep = (jnp.arange(batch.msa.mask.shape[0]) == 0)[:, None] | col_keep[None, :]
+      batch = dataclasses.replace(batch, msa=dataclasses.replace(
+          batch.msa, mask=batch.msa.mask * keep.astype(batch.msa.mask.dtype)))
 
     # DENOISE RETURNS HERE, before the prologue. `create_target_feat_embedding`
     # below is an atom-level transformer over every atom, and entering
@@ -1198,7 +1211,9 @@ class Model(hk.Module):
               self.config.heads.confidence, self.global_config
           )(
               dense_atom_positions=dense_atom_positions,
-              embeddings=diff_emb,
+              # the TRUNK projection of the token embedding, as chai's confidence head reads it; diff_emb carries the
+              # diffusion module's own (target_feat_structure) and left pLDDT 3.7 low and pTM 0.38 against 0.54
+              embeddings=embeddings,
               seq_mask=diff_batch.token_features.mask,
               token_atoms_to_pseudo_beta=diff_batch.pseudo_beta_info.token_atoms_to_pseudo_beta,
               asym_id=diff_batch.token_features.asym_id,

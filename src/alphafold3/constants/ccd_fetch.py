@@ -107,13 +107,11 @@ def write_pickles(codes, ccd_pickle_path, sets_pickle_path, log=print,
   merged = '\n'.join(cifs.values())
   ccd = {k: v.to_dict()
          for k, v in cif_dict.parse_multi_data_cif(merged).items()}
-  with open(ccd_pickle_path, 'wb') as f:
-    pickle.dump(ccd, f)
   from alphafold3.constants import chemical_components
+  chemical_components.write_atomic(ccd_pickle_path, lambda f: pickle.dump(ccd, f))
   chemical_components.write_ccd_index(ccd, ccd_pickle_path)
   sets = chemical_component_sets_gen.find_ions_and_glycans_in_ccd(ccd)
-  with open(sets_pickle_path, 'wb') as f:
-    pickle.dump(sets, f)
+  chemical_components.write_atomic(sets_pickle_path, lambda f: pickle.dump(sets, f))
   if libcifpp_dir is not None:
     os.makedirs(libcifpp_dir, exist_ok=True)
     dst = os.path.join(libcifpp_dir, 'components.cif')

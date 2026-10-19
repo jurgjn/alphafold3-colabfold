@@ -629,8 +629,8 @@ class Evoformer(hk.Module):
     four PAIR-ONLY blocks, the same PairFormerIteration-with-zeroed-attention
     identity the trunk and the coda already ride.
 
-    The dropout is the part that cannot move outside. ESMFold2 keeps 25% dropout
-    on this tensor at INFERENCE and resamples it every recycle pass, so it has
+    The dropout is the part that cannot move outside. ESMFold2 keeps dropout (fold()'s
+    0.3) on this tensor at INFERENCE and resamples it every recycle pass, so it has
     to sit inside the loop -- precomputing one masked copy per pass would mean
     carrying n_pass pair tensors instead of one.
     """
@@ -706,8 +706,8 @@ class Evoformer(hk.Module):
     msa_feat = featurization.create_msa_feat(
         msa_batch, self.soft_seq, self.design_mask, chai1=chai1,
         is_ligand=is_ligand, asym_id=asym_id,
-        # esm prepare_input: deletion_value = (pi / 2) * arctan(d / 3), where AF3 scales by 2 / pi
-        deletion_scale=(jnp.pi / 2.0 if self.global_config.model in model_config.ESMFOLD2_FAMILY
+        # esm prepare_input and boltz2 process_msa_features: deletion_value = (pi / 2) * arctan(d / 3), where AF3 scales by 2 / pi
+        deletion_scale=(jnp.pi / 2.0 if self.global_config.model in model_config.ESMFOLD2_FAMILY + ('boltz2',)
                         else 2.0 / jnp.pi)).astype(dtype)
 
     # Boltz-2 appends an is_paired MSA feature (Boltz msa features = [onehot(33), has_deletion,
@@ -741,6 +741,8 @@ class Evoformer(hk.Module):
         origin = row_origin[:num_msa_rows]
       is_paired = jnp.where(origin == 0, query_paired, 0.0).astype(dtype)
       is_paired = jnp.broadcast_to(is_paired[:, None, None], msa_feat.shape[:2] + (1,))
+      if msa_batch.paired is not None:
+        is_paired = msa_batch.paired[..., None].astype(dtype)   # boltz_msa: native's per-chain pairing flags
       msa_feat = jnp.concatenate([msa_feat, is_paired], axis=-1)
 
     if self.global_config.model in model_config.ESMFOLD2_FAMILY:
@@ -751,7 +753,8 @@ class Evoformer(hk.Module):
       # row still arrives one-hot on class 0 and picks up a real embedding. It
       # is masked out of the outer product, so it cost nothing measurable here,
       # but it only stays harmless as long as every consumer honours the mask.
-      msa_feat *= msa_batch.mask.astype(dtype)[..., None]
+      # Only the one-hot: a column-masked cell keeps has_deletion / deletion_value (msa_oh * msa_attn, hd and dv as is)
+      msa_feat = jnp.concatenate([msa_feat[..., :-2] * msa_batch.mask.astype(dtype)[..., None], msa_feat[..., -2:]], -1)
 
     # chai's MSA feature embedding is feature_embedding's input_projs.MSA,
     # which unlike ours carries a bias.

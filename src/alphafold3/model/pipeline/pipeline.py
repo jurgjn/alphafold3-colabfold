@@ -40,6 +40,19 @@ import numpy as np
 
 _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 
+# Atoms the pipeline drops before tokenising; process-wide, set per model by model_features.prepare_input:
+#   True       OXT and OP3 only at a polymer chain's ends, modified residues too (rf3/atomworks)
+#   'leaving'  a modified polymer residue drops its CCD leaving atoms unless it ends the chain (esm prepare_input)
+#   'leaving_all'  every non-standard polymer residue drops its CCD leaving atoms, ends too (of3 query featuriser)
+#   'chai'     a non-standard residue is its CCD heavy atoms minus OXT/OXT', ends too; a nucleotide keeps OP3 (chai conformer cache)
+#   'protenix' a non-standard residue whose CCD type protenix reads as a ligand (PEPTIDE-LIKE PNA) drops its CCD leaving atoms,
+#              ends too (json_parser._remove_non_std_ccd_leaving_atoms: no polymer link, OXT kept only for protein)
+INNER_TERMINAL_ATOMS = False
+
+# Atom slots per token when a model keeps a whole modified residue on one token (boltz2) and one has more than 24 heavy
+# atoms; process-wide, set per input by model_features.prepare_input. None: the config's max_atoms_per_token.
+MAX_ATOMS_PER_TOKEN = None
+
 
 def calculate_bucket_size(
     num_tokens: int, buckets: Sequence[int] | None
@@ -247,7 +260,7 @@ class WholePdbPipeline:
         features.tokenizer(
             flat_output_layout,
             ccd=ccd,
-            max_atoms_per_token=self._config.max_atoms_per_token,
+            max_atoms_per_token=MAX_ATOMS_PER_TOKEN or self._config.max_atoms_per_token,
             flatten_non_standard_residues=self._config.flatten_non_standard_residues,
             logging_name=logging_name,
         )
@@ -467,6 +480,10 @@ class WholePdbPipeline:
       # read before cleaning, which drops the polymer-polymer bonds
       res_name_of = dict(zip(zip(struct.chain_id.tolist(), struct.res_id.tolist()), struct.res_name.tolist()))
       ccd_leaving = structure_cleaning.declared_bond_leaving_atoms(fold_input.bonded_atom_pairs, res_name_of, ccd)
+      if self._config.ccd_leaving_atoms == 'polymer':
+        # boltz parses a ligand whole: its side of a declared bond keeps the CCD leaving atoms
+        ligand = set(struct.chain_id[np.isin(struct.chain_type, list(mmcif_names.NON_POLYMER_CHAIN_TYPES))].tolist())
+        ccd_leaving = {k: v for k, v in ccd_leaving.items() if k[0] not in ligand}
     if not self._config.flatten_non_standard_residues:
       # boltz2 keeps a modified residue as ONE token, and genuine Boltz-2 parses it with drop_leaving_atoms=True: every
       # CCD leaving atom goes, a chain end's OXT or 5' OP3 included - so a 5' 2-methylguanosine is 24 atoms, where AF3's
@@ -482,6 +499,36 @@ class WholePdbPipeline:
           leaving = {n for n, f, e in zip(names, flags, elements) if f == 'Y' and e not in ('H', 'D')}
           if leaving:
             ccd_leaving.setdefault((str(chain.id), int(position)), set()).update(leaving)
+    if INNER_TERMINAL_ATOMS:
+      ccd_leaving = dict(ccd_leaving or {})
+      polymer = ~np.isin(struct.chain_type, list(mmcif_names.NON_POLYMER_CHAIN_TYPES))
+      chains, res_ids, res_names = struct.chain_id[polymer], struct.res_id[polymer], struct.res_name[polymer]
+      protein = struct.chain_type[polymer] == mmcif_names.PROTEIN_CHAIN
+      for chain in set(chains.tolist()):
+        sel = chains == chain
+        ids = sorted(set(res_ids[sel].tolist()))
+        for r, name, prot in set(zip(res_ids[sel].tolist(), res_names[sel].tolist(), protein[sel].tolist())):
+          if INNER_TERMINAL_ATOMS is True:
+            # a polymer residue keeps OXT only at its chain's end and OP3 only at its start, modified ones too
+            drop = ({'OXT'} if r != ids[-1] else set()) | ({'OP3'} if r != ids[0] else set())
+          elif name in features._STANDARD_RESIDUES:
+            continue
+          elif INNER_TERMINAL_ATOMS == 'chai':
+            # '!' marks an atom the AF3 link rule would drop but this model keeps
+            drop = {'OXT', "OXT'"} if prot else {'!OP3'}
+          else:
+            entry = ccd.get(name) or {}
+            kind = ''.join(entry.get('_chem_comp.type', ())).upper()
+            if INNER_TERMINAL_ATOMS == 'protenix' and (('PEPTIDE' in kind and kind != 'PEPTIDE-LIKE') or 'DNA' in kind or 'RNA' in kind):
+              continue
+            if INNER_TERMINAL_ATOMS == 'leaving' and r == ids[-1]:
+              continue
+            drop = {n for n, f, el in zip(entry.get('_chem_comp_atom.atom_id', ()),
+                                          entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ()),
+                                          entry.get('_chem_comp_atom.type_symbol', ())) if f == 'Y' and el != 'H'}
+            if not drop and INNER_TERMINAL_ATOMS == 'leaving_all':
+              drop = {'OXT'} if prot else {'OP3', 'O3P'}  # of3 MOLECULE_TYPE_TO_LEAVING_ATOMS
+          ccd_leaving[(chain, r)] = ccd_leaving.get((chain, r), set()) | drop
     unpaired_msa_by_chain_id = {}
     paired_msa_by_chain_id = {}
     templates_by_chain_id = {}

@@ -562,9 +562,8 @@ def atom_cross_att_encoder(
     # against their own code, so only AF3 keeps the upstream indexing.
     keys_ref_space_uid = atom_layout.convert(
         queries_to_keys,
-        batch.ref_structure.ref_space_uid
-        if global_config.model in model_config.KEYS_UID_FROM_TOKEN_LAYOUT
-        else queries_ref_space_uid,
+        (batch.ref_structure.ref_space_uid
+         if global_config.model in model_config.TOKEN_LAYOUT_KEYS_REF_SPACE_UID else queries_ref_space_uid),
         layout_axes=(-2, -1),
     )
 
@@ -639,8 +638,7 @@ def atom_cross_att_encoder(
           hm.Linear(
               c.per_atom_pair_channels,
               precision='highest',
-              # The same collision as row/col above, for the same reason.
-              name=f'{name}_embed_pair_offsets{suffix}',
+              name=f'{name}_embed_pair_offsets{suffix}',  # the same collision as row/col
           )(offsets)
           * offsets_valid[:, :, :, None]
       )
@@ -650,8 +648,7 @@ def atom_cross_att_encoder(
       # distogram feature above)
       sq_dists = jnp.sum(jnp.square(offsets), axis=-1)
       pair_act += (
-          hm.Linear(c.per_atom_pair_channels,
-                    name=f'{name}_embed_pair_distances{suffix}')(
+          hm.Linear(c.per_atom_pair_channels, name=f'{name}_embed_pair_distances{suffix}')(
               1.0 / (1 + sq_dists[:, :, :, None])
           )
           * offsets_valid[:, :, :, None]

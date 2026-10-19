@@ -592,31 +592,44 @@ class ConfidenceHead(hk.Module):
     # boltz2 converter TILES its weight and this needs no branch. Its prediction
     # is still token-level -- every atom of a token reports the same number.
     _n_atom = dense_atom_positions.shape[-2]
+    # boltz2's tiled weights are stored at AF3's 24 slots; a wider layout (one token per large modified residue)
+    # builds them there and broadcasts slot 0, which every slot equals
+    _n_w = 24 if self.global_config.model == 'boltz2' else _n_atom
+    _widen = lambda x: x if _n_w == _n_atom else jnp.broadcast_to(x[:, :1], (x.shape[0], _n_atom) + x.shape[2:])
     if self.global_config.model == 'chai1' and atom_name_chars is not None:
-      # chai predicts pLDDT over the 37 canonical ATOM37 slots and gathers per
-      # atom by the atom's index in THAT table -- not by our dense slot. The two
-      # orders differ (CB is ATOM37 slot 3 and dense slot 4; TRP's NE1 is 24),
-      # and the permutation is residue-type dependent, so it cannot be folded
-      # into the weights. Recover it by matching the atom NAME, which we already
-      # carry per dense slot, against ATOM37.
+      # chai predicts pLDDT over 37 slots and gathers per atom by the atom's index
+      # in ITS table -- not by our dense slot (CB is slot 3 there and dense slot 4;
+      # TRP's NE1 is 24), so the permutation is residue-type dependent and cannot
+      # be folded into the weights. chai's atom_names_to_atom37_indices: ATOM37
+      # for amino acids, a per-nucleotide order for A G C U / DA DG DC DT, the
+      # position for UNK, and slot 0 for a single-atom token. Recovered by
+      # matching the atom NAME against the token's restype row.
+      from alphafold3.constants import chai1_atom_slots
       plddt_logits = hm.Linear(
           (len(atom_types.ATOM37), self.config.num_plddt_bins),
           initializer=self.global_config.final_init,
           name='plddt_logits',
       )(self._head_norm('plddt_logits_ln', single_act))
+      rows = chai1_atom_slots.SLOT_NAMES
       table = jnp.asarray(
-          [[ord(c) - 32 for c in n.ljust(4)] for n in atom_types.ATOM37],
-          jnp.int32)                                        # (37, 4)
-      hit = jnp.all(atom_name_chars[:, :, None, :] == table[None, None], axis=-1)
-      idx = jnp.argmax(hit, axis=-1)                        # (n_token, n_atom)
+          [[[ord(c) - 32 for c in n.ljust(4)] if n else [-1] * 4 for n in (r or [''] * 37)] for r in rows],
+          jnp.int32)                                        # (restypes, 37, 4)
+      by_name = jnp.asarray([r is not None for r in rows])
+      aatype = token_features.aatype
+      hit = jnp.all(atom_name_chars[:, :, None, :] == table[aatype][:, None], axis=-1)
+      n_atom = atom_name_chars.shape[1]
+      n_real = jnp.any(atom_name_chars != 0, axis=-1).sum(axis=-1)
+      idx = jnp.where(by_name[aatype][:, None], jnp.argmax(hit, axis=-1),
+                      jnp.arange(n_atom)[None, :])
+      idx = jnp.where(n_real[:, None] <= 1, 0, idx)          # (n_token, n_atom)
       plddt_logits = jnp.take_along_axis(
           plddt_logits, idx[..., None], axis=1)
     else:
-      plddt_logits = hm.Linear(
-          (_n_atom, self.config.num_plddt_bins),
+      plddt_logits = _widen(hm.Linear(
+          (_n_w, self.config.num_plddt_bins),
           initializer=self.global_config.final_init,
           name='plddt_logits',
-      )(self._head_norm('plddt_logits_ln', single_act))
+      )(self._head_norm('plddt_logits_ln', single_act)))
     # Some vendors index the per-atom heads by the atom's RANK among the token's
     # real atoms, not by its dense slot. The two agree until a slot is empty:
     # a nucleotide's dropped OP3 is dense slot 0, so every atom read its
@@ -648,11 +661,11 @@ class ConfidenceHead(hk.Module):
     if self.global_config.model in model_config.NO_RESOLVED_HEAD:
       pass          # no such head here; nothing to build
     else:
-      experimentally_resolved_logits = hm.Linear(
-          (_n_atom, 2),
+      experimentally_resolved_logits = _widen(hm.Linear(
+          (_n_w, 2),
           initializer=self.global_config.final_init,
           name='experimentally_resolved_logits',
-      )(self._head_norm('experimentally_resolved_ln', single_act))
+      )(self._head_norm('experimentally_resolved_ln', single_act)))
       if atom_rank is not None:
         experimentally_resolved_logits = jnp.take_along_axis(
             experimentally_resolved_logits, atom_rank[..., None], axis=1)

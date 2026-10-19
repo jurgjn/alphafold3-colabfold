@@ -29,7 +29,6 @@ from alphafold3.model.components import haiku_modules as hm
 from . import modules
 from alphafold3.model.scoring import scoring
 
-import os
 
 import haiku as hk
 import jax
@@ -568,20 +567,6 @@ class Boltz2TemplateEmbedding(hk.Module):
         hm.LayerNorm(name='z_norm', use_fast_variance=False)(z))       # (N,N,64)
     pair_mask = padding_mask_2d
 
-    # Boltz-2 masks by SOURCE TEMPLATE, not by chain: a row that covers two
-    # chains makes their cross-chain block visible. See
-    # model_config.TEMPLATE_VISIBILITY_BY_COVERAGE. Built per row, because that
-    # is what the coverage is -- an untemplated chain falls back to seeing only
-    # itself, which is `-1 - asym_id` upstream.
-    by_coverage = (gc.model in model_config.TEMPLATE_VISIBILITY_BY_COVERAGE
-                   and not os.environ.get('AF3_NO_BOLTZ2_TEMPLATE_VIS'))
-    if by_coverage:
-      covered = (atom_mask.reshape(T, atom_mask.shape[1], -1).sum(-1) > 0)  # (T,N)
-      cov_2d = (covered[:, :, None] & covered[:, None, :])
-      un_2d = ((~covered)[:, :, None] & (~covered)[:, None, :]
-               & multichain_mask_2d.astype(jnp.bool_)[None])
-      vis_2d = (cov_2d | un_2d).astype(multichain_mask_2d.dtype)          # (T,N,N)
-
     def per_template(aa, pos, am, vis):
       a_tij = self._features(aa, pos, am, vis).astype(dtype)
       v = z_part + hm.Linear(c.num_channels, use_bias=False, name='a_proj')(a_tij)
@@ -605,8 +590,9 @@ class Boltz2TemplateEmbedding(hk.Module):
           v = stacked
       return hm.LayerNorm(name='v_norm', use_fast_variance=False)(v)   # (N,N,64)
 
-    vis_in = vis_2d if by_coverage else jnp.broadcast_to(
-        multichain_mask_2d[None], (T,) + multichain_mask_2d.shape)
+    # Boltz-2 masks by visibility_ids, one per template file over the chains it covers; an AF3 template is a single
+    # chain, so that is the same-chain mask
+    vis_in = jnp.broadcast_to(multichain_mask_2d[None], (T,) + multichain_mask_2d.shape)
     slots = (aatype, atom_positions, atom_mask, vis_in)
     shared = _Shared(lambda s: hk.vmap(per_template, in_axes=0, out_axes=0, split_rng=False)(*s),
                      self.module_name)
@@ -746,9 +732,9 @@ class RoseTTAFold3TemplateEmbedding(Boltz2TemplateEmbedding):
       4-20A)] = 63 boundaries; NaN / out-of-range -> last bin. CLOSE range (1-20A).
     * has_condition[i,j]: 1 where the template covers the pair (CA present on both,
       intra-chain); masks the whole feature.
-    * joint_noise_level: af3_noise_scale_to_noise_level(sqrt(ns_i^2+ns_j^2)); for an
-      EXACT template noise_scale=0 -> use eps (masked by has_condition anyway). A clean
-      template fold feeds noise_scale=0. af3_noise_scale_to_noise_level(t)=(log(t/16)+1.2)/1.5.
+    * joint_noise_level: af3_noise_scale_to_noise_level(sqrt(ns_i^2+ns_j^2)) with rf3's inference
+      template_noise_scale 1e-5 on every token (-8.49; 1e-4 read -7.19).
+      af3_noise_scale_to_noise_level(t)=(log(t/16)+1.2)/1.5.
 
   GOOD FOR BINDERS: distogram-conditioning = feed the target's internal distances as a
   flexible hint (define the target without pinning exact coordinates).
@@ -782,8 +768,8 @@ class RoseTTAFold3TemplateEmbedding(Boltz2TemplateEmbedding):
     disto = jax.nn.one_hot(idx, 64)                                  # (N,N,64)
     # has_condition: covered pairs, intra-chain
     has_cond = (ca_mask[:, None] * ca_mask[None]) * asym_mask_2d      # (N,N)
-    # joint_noise_level: exact template -> noise_scale ~ 0 (use eps); scalar broadcast
-    nl = self._af3_noise_scale_to_noise_level(jnp.asarray(1e-4, disto.dtype))
+    # joint_noise_level of rf3's inference default: template_noise_scale 1e-5 per token, joint sqrt(2) * 1e-5
+    nl = self._af3_noise_scale_to_noise_level(jnp.asarray(jnp.sqrt(2.0) * 1e-5, jnp.float32)).astype(disto.dtype)
     nl_ch = jnp.broadcast_to(nl, (N, N))                            # (N,N)
     feat = jnp.concatenate(
         [disto, has_cond[..., None], nl_ch[..., None]], -1)          # (N,N,66)
@@ -804,8 +790,8 @@ class RoseTTAFold3TemplateEmbedding(Boltz2TemplateEmbedding):
     PRESENT templates, so with zero templates it returns exactly 0 -- dropping a real term
     from the RF3 trunk and leaving the pair representation (and the distogram) wrong.
 
-    RF3 conditions on ONE distogram_condition, so multiple templates are collapsed to the
-    mean of the present ones (identical to the single-template case, zeros when none).
+    RF3 conditions on ONE distogram_condition, so of several templates the first present one is used
+    (identical to the single-template case, zeros when none).
     """
     c = self.config
     gc = self.global_config
@@ -820,8 +806,9 @@ class RoseTTAFold3TemplateEmbedding(Boltz2TemplateEmbedding):
         lambda aa, pos, am: self._features(aa, pos, am, multichain_mask_2d),
         in_axes=0, out_axes=0, split_rng=False)(aatype, atom_positions, atom_mask)
     present = (atom_mask.reshape(T, -1).sum(-1) > 0).astype(feats.dtype)   # (T,)
-    a_tij = (jnp.einsum('t,tijc->ijc', present, feats)
-             / jnp.clip(present.sum(), 1.0, None)).astype(dtype)
+    # the first present template (the top hit): a mean over several blurs the one-hot distogram rf3 is trained on
+    first = present * (jnp.cumsum(present) == 1).astype(feats.dtype)
+    a_tij = jnp.einsum('t,tijc->ijc', first, feats).astype(dtype)
 
     v = hm.Linear(c.num_channels, use_bias=False, name='z_proj')(
         hm.LayerNorm(name='z_norm', use_fast_variance=False)(z))

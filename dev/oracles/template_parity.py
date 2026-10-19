@@ -662,11 +662,8 @@ def main(argv=None):
   ap.add_argument('--dimer', action='store_true',
                   help='put the self-template on chain A of a TWO-CHAIN input. '
                        'The template embedder masks cross-chain pairs '
-                       '(multichain_mask_2d), and boltz2 masks by template '
-                       'COVERAGE instead (visibility_ids, '
-                       'TEMPLATE_VISIBILITY_BY_COVERAGE) -- neither term does '
-                       'anything on the one-chain input this gate otherwise '
-                       'runs, so both shipped ungated.')
+                       '(multichain_mask_2d) -- which does nothing on the '
+                       'one-chain input this gate otherwise runs.')
   ap.add_argument('--model_dir', default=None)
   args = ap.parse_args(argv)
   sys.argv = sys.argv[:1]

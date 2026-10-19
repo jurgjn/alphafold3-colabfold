@@ -173,6 +173,11 @@ def _compute_asym_entity_and_sym_id(
   )
 
 
+# (chain_id, res_id) of standard polymer residues tokenised one token per atom anyway; process-wide, set per model by
+# model_features.prepare_input (rf3: atomworks atomises a residue covalently bound to a ligand)
+ATOMIZED_RESIDUES = frozenset()
+
+
 def tokenizer(
     flat_output_layout: atom_layout.AtomLayout,
     ccd: chemical_components.Ccd,
@@ -226,7 +231,8 @@ def tokenizer(
   ):
 
     # Get chain type and chain id of this residue
-    chain_type, chain_id, _ = key
+    chain_type, chain_id, res_id = key
+    atomize = (str(chain_id), int(res_id)) in ATOMIZED_RESIDUES
 
     # Get names and global idxs for all atoms of this residue
     _, _, _, res_names, atom_names, idxs = zip(*group_iter)
@@ -238,11 +244,9 @@ def tokenizer(
     )
     if chain_type in mmcif_names.PEPTIDE_CHAIN_TYPES:
       res_name = res_names[0]
-      if (
-          flatten_non_standard_residues
-          and res_name not in residue_names.PROTEIN_TYPES_WITH_UNKNOWN
-          and res_name != residue_names.MSE
-      ):
+      nonstandard = res_name not in residue_names.PROTEIN_TYPES_WITH_UNKNOWN and res_name != residue_names.MSE
+      # one token holds at most max_atoms_per_token atoms; a bigger modified residue is atomised, not truncated
+      if atomize or (nonstandard and (flatten_non_standard_residues or len(idxs) > max_atoms_per_token)):
         # For non-standard protein residues take all atoms.
         # NOTE: This may get very large if we include hydrogens.
         token_idxs.extend(idxs)
@@ -259,10 +263,8 @@ def tokenizer(
       current_standard_token_id += 1
     elif is_nucleic_backbone:
       res_name = res_names[0]
-      if (
-          flatten_non_standard_residues
-          and res_name not in residue_names.NUCLEIC_TYPES_WITH_2_UNKS
-      ):
+      nonstandard = res_name not in residue_names.NUCLEIC_TYPES_WITH_2_UNKS
+      if atomize or (nonstandard and (flatten_non_standard_residues or len(idxs) > max_atoms_per_token)):
         # For non-standard nucleic residues take all atoms.
         token_idxs.extend(idxs)
         single_atom_token += [True] * len(idxs)
@@ -349,6 +351,8 @@ def tokenizer(
         elif (chain_id, res_id, atom_name) in all_atoms_uids:
           atom_names.append(atom_name)
           atom_elements.append(atom_element)
+        elif res_name not in _STANDARD_RESIDUES and res_name != residue_names.MSE:
+          continue  # a whole modified residue on one token keeps only its real atoms
         # Leave spaces for OXT etc.
         else:
           atom_names.append('')
@@ -433,6 +437,10 @@ class MSA:
   num_alignments: xnp_ndarray
   # Leading rows that came from the paired MSA (chai-1's IsPairedMSA reads it); None in a batch built without it.
   num_paired: xnp_ndarray | None = None
+  # Per-row source database class (chai-1's MSADataSource); None unless a model's featuriser sets msa_source.
+  source: xnp_ndarray | None = None
+  # Per-(row, token) flag that the row was paired across chains (Boltz-2's msa_paired); None unless its featuriser set it.
+  paired: xnp_ndarray | None = None
 
   @classmethod
   def compute_features(
@@ -698,6 +706,8 @@ class MSA:
         deletion_mean=self.deletion_mean,
         num_alignments=self.num_alignments,
         num_paired=self.num_paired,
+        source=None if self.source is None else self.source[indices],
+        paired=None if self.paired is None else self.paired[indices, :],
     )
 
   @classmethod
@@ -710,6 +720,8 @@ class MSA:
         deletion_mean=batch['deletion_mean'],
         num_alignments=batch['num_alignments'],
         num_paired=batch.get('num_paired_alignments'),
+        source=batch.get('msa_source'),
+        paired=batch.get('msa_paired'),
     )
     return output
 
@@ -722,6 +734,8 @@ class MSA:
         'deletion_mean': self.deletion_mean,
         'num_alignments': self.num_alignments,
         **({} if self.num_paired is None else {'num_paired_alignments': self.num_paired}),
+        **({} if self.source is None else {'msa_source': self.source}),
+        **({} if self.paired is None else {'msa_paired': self.paired}),
     }
 
 
@@ -1215,6 +1229,10 @@ class PolymerLigandBondInfo:
       atom_names = bond_layout.atom_name.copy()
       atom_names[np.isin(bond_layout.chain_type, peptide_types)] = 'CA'  # pyrefly: ignore[bad-argument-type]
       atom_names[np.isin(bond_layout.chain_type, nucleic_types)] = "C1'"  # pyrefly: ignore[bad-argument-type]
+      # an atomised residue's token is the bonded atom itself
+      atomized = np.vectorize(lambda c, r: (str(c), int(r)) in ATOMIZED_RESIDUES, otypes=[bool])(
+          bond_layout.chain_id, bond_layout.res_id) if ATOMIZED_RESIDUES else False
+      atom_names = np.where(atomized, bond_layout.atom_name, atom_names)
       adjusted_bond_layout = atom_layout.AtomLayout(
           atom_name=atom_names,
           res_id=bond_layout.res_id,
