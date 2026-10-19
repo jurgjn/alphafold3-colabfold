@@ -62,6 +62,29 @@ def _types(model):
   return T
 
 
+def _keyed_a3m(paired, unpaired):
+  """A pairedMsa + unpairedMsa as ONE esm chain MSA: esm pairs rows across
+  chains by a `key=N` token in the header (paired_msa.construct_paired_msa)
+  and lays every unkeyed row block-diagonally after the paired block. The
+  query, then the pair a3m's rows keyed by their row index, then the single
+  a3m's rows past its query, unkeyed."""
+  def rows(a3m):
+    out, h = [], None
+    for line in a3m.splitlines():
+      if line.startswith('>'):
+        h = line[1:]
+      elif line.strip():
+        out.append((h, line.strip()))
+    return out
+  pr, ur = rows(paired), rows(unpaired)
+  lines = ['>query', pr[0][1]]
+  for r, (_, q) in enumerate(pr[1:], 1):
+    lines += ['>key=%d' % r, q]
+  for h, q in ur[1:]:
+    lines += ['>' + (h or 'hit'), q]
+  return '\n'.join(lines) + '\n'
+
+
 def _structure_input(j, bonds=None, model='esmfold2'):
   T = _types(model)
   DNAInput, LigandInput, MSA, Modification, ProteinInput, RNAInput, StructurePredictionInput = (
@@ -77,7 +100,10 @@ def _structure_input(j, bonds=None, model='esmfold2'):
                          ccd=m.get('ptmType', m.get('modificationType')))
             for m in e.get('modifications', [])] or None
     msa = None
-    if kind in ('protein', 'rna') and e.get('unpairedMsa') and len(e['unpairedMsa'].splitlines()) > 2:
+    if kind == 'protein' and len((e.get('pairedMsa') or '').splitlines()) > 2:
+      import io
+      msa = MSA.from_a3m(io.StringIO(_keyed_a3m(e['pairedMsa'], e.get('unpairedMsa') or '')))
+    elif kind in ('protein', 'rna') and e.get('unpairedMsa') and len(e['unpairedMsa'].splitlines()) > 2:
       import io
       msa = MSA.from_a3m(io.StringIO(e['unpairedMsa']))
     if kind == 'protein':
@@ -408,6 +434,109 @@ def forward(model, out_dir, in_npz, out_npz):
   np.savez(out_npz, **res)
 
 
+def trajectory(model, out_dir, in_npz, out_npz):
+  """esm's REAL DiffusionStructureHead.sample at the checkpoint's settings
+  (inference_num_steps, the 256 clip, its Kabsch realign), one sample, every
+  random draw the harness's (vendor_native_parity --trajectory): the initial
+  positions, and per step the augmentation rotation (_random_rotations; esm
+  rotates as x @ R, as the harness means it), translation and noise. esm
+  samples over its padded atom axis: the draws go to the real atom slots."""
+  import torch
+  from esm.models.esmfold2 import layers as Lmod
+  z = np.load(in_npz)
+  lay = np.load(os.path.join(out_dir, 'layout.npz'))
+  slot = lay['atom_slot']
+  with open(os.path.join(out_dir, 'case.json')) as f:
+    j = json.load(f)
+  feats, _ = _features(j, model=model)
+  _fp32_autocast()
+  m = _model(model)
+  _fp32_atom_attention(_attention_module(m))
+  lm_cfg = getattr(m.config, 'lm_encoder', None)
+  if lm_cfg is not None and not isinstance(lm_cfg, dict):
+    lm_cfg.lm_dropout = 0.0
+  if hasattr(m.config, 'force_lm_dropout_during_inference'):
+    m.config.lm_dropout = 0.0
+    m.config.force_lm_dropout_during_inference = False
+  got = {}
+  if hasattr(m, '_init_pair_state'):
+    orig_init = m._init_pair_state
+
+    def init_pair_state(ref):
+      st = orig_init(ref)
+      got['pair_state0'] = st[0].float().cpu().numpy()
+      return st
+    m._init_pair_state = init_pair_state
+  n_atoms = feats['ref_pos'].shape[1]
+  x0 = torch.tensor(z['traj_x0'], dtype=torch.float32)
+  eps = torch.tensor(z['traj_eps'], dtype=torch.float32)
+  rot = torch.tensor(z['traj_rot'], dtype=torch.float32)
+  trans = torch.tensor(z['traj_trans'], dtype=torch.float32)
+  n = {'randn': 0, 'eps': 0, 'trans': 0, 'aug': 0}
+
+  def padded(v, shape, device):
+    out = torch.zeros((n_atoms, 3), dtype=torch.float32)
+    out[slot] = v
+    return out.reshape(shape).to(device)
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def randn(self, *size, device=None, dtype=None, **kw):
+      assert n['randn'] == 0, 'one randn (the initial positions) expected'
+      n['randn'] += 1
+      return padded(x0, size, device)
+
+    def randn_like(self, x, **kw):
+      if x.shape[-2] == 1:              # the augmentation's translation
+        k = n['trans']
+        n['trans'] += 1
+        return trans[k].reshape(x.shape).to(x)
+      k = n['eps']
+      n['eps'] += 1
+      return padded(eps[k], x.shape, x.device).to(x.dtype)
+
+  sh = m.structure_head
+
+  def rotations(bsz, dtype, device):
+    k = n['aug']
+    n['aug'] += 1
+    return rot[k][None].expand(bsz, 3, 3).to(device=device, dtype=dtype)
+  sh._random_rotations = rotations
+  Lmod.torch = _Torch()
+  orig_sample = sh.sample
+
+  def sample(*a, **kw):
+    out = orig_sample(*a, **kw)
+    got['final'] = out['sample_atom_coords'][0].float().cpu().numpy()[slot]
+    steps = sh.inference_num_steps if kw.get('num_sampling_steps') is None else int(kw['num_sampling_steps'])
+    sched = sh.inference_noise_schedule(steps, torch.device('cpu'))
+    cap = kw.get('max_inference_sigma')
+    if cap is not None:
+      sched = torch.cat([torch.tensor([float(cap)]), sched[sched <= float(cap)]])
+    got['sigmas'] = sched.float().numpy()
+    return out
+  sh.sample = sample
+  hidden = np.load(os.path.join(out_dir, 'esmc_hidden.npz'))['lm_hidden']
+  f = {k: v.to(_dev()) for k, v in feats.items() if isinstance(v, torch.Tensor)}
+  tok = feats['token_attention_mask'][0].numpy().astype(bool)
+  with torch.no_grad():
+    h = torch.tensor(hidden, device=_dev())[None]
+    import inspect
+    accepted = inspect.signature(m.forward).parameters
+    extra = {k: v for k, v in dict(lm_mask_pct=0.0, msa_column_mask_rate=0.0,
+                                   msa_max_depth=10 ** 6 if os.environ.get('MSA_ALL_ROWS') else None).items()
+             if k in accepted and v is not None}
+    m(**{k: v for k, v in f.items() if k in accepted}, lm_hidden_states=h,
+      num_loops=int(z['recycling_steps']), num_diffusion_samples=1, **extra)
+  res = dict(sigmas=got['sigmas'], steps=n['aug'], final=got['final'])
+  if 'pair_state0' in got:
+    nt = int(tok.sum())
+    res['pair_state0'] = got['pair_state0'][:nt, :nt]
+  np.savez(out_npz, **res)
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)

@@ -26,6 +26,21 @@ import numpy as np
 CACHE = os.path.expanduser('~/.boltz')
 
 
+def _boltz_csv(paired, unpaired):
+  """A pairedMsa + unpairedMsa as ONE boltz MSA csv, exactly as `boltz
+  predict`'s compute_msa writes the ColabFold server's pair: the pair a3m's
+  rows keyed by row index (all-gap rows dropped), then the unpaired rows past
+  their query keyed -1. boltz pairs across chains on that key."""
+  pr = [l.strip() for l in paired.strip().splitlines()[1::2]]
+  keys = [i for i, s in enumerate(pr) if s != '-' * len(s)]
+  pr = [s for s in pr if s != '-' * len(s)]
+  ur = [l.strip() for l in unpaired.strip().splitlines()[1::2]] if unpaired.strip() else []
+  if pr:
+    ur = ur[1:]
+  return '\n'.join(['key,sequence'] + ['%s,%s' % (k, q) for k, q in
+                                        zip(keys + [-1] * len(ur), pr + ur)])
+
+
 def _yaml_from_af3(j, msa_dir):
   """AF3 fold-input JSON -> boltz YAML text (the schema boltz documents)."""
   import yaml
@@ -39,7 +54,12 @@ def _yaml_from_af3(j, msa_dir):
         d['cyclic'] = True
       msa = e.get('unpairedMsa')
       seq_only = (not msa) or msa.strip() == '>q\n%s' % e['sequence']
-      if seq_only:
+      if len((e.get('pairedMsa') or '').splitlines()) > 2:
+        p = os.path.join(msa_dir, '%s.csv' % ids[0])
+        with open(p, 'w') as f:
+          f.write(_boltz_csv(e['pairedMsa'], msa or ''))
+        d['msa'] = p
+      elif seq_only:
         d['msa'] = 'empty'
       else:
         p = os.path.join(msa_dir, '%s.a3m' % ids[0])

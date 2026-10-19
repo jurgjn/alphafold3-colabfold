@@ -69,16 +69,16 @@ def _case_inputs(j, d):
           pos = m.get('ptmPosition', m.get('basePosition'))
           seq[pos - 1] = '(%s)' % m.get('ptmType', m.get('modificationType'))
         lines += ['>%s|name=%s' % (kind, cid), ''.join(seq)]
-        if kind == 'protein' and e.get('unpairedMsa') and len(e['unpairedMsa'].splitlines()) > 2:
+        if kind == 'protein' and (len((e.get('unpairedMsa') or '').splitlines()) > 2
+                                  or len((e.get('pairedMsa') or '').splitlines()) > 2):
           msa_dir = msa_dir or os.path.join(d, 'msa')
           os.makedirs(msa_dir, exist_ok=True)
           path = os.path.join(msa_dir, expected_basename(e['sequence']))
           if not os.path.exists(path):
-            _write_pqt(e['sequence'], e['unpairedMsa'], path, pd)
+            _write_pqt(e['sequence'], e.get('unpairedMsa') or '', path, pd, e.get('pairedMsa') or '')
       elif kind == 'ligand':
         if cid in glycan_chains:
-          codes = e['ccdCodes']
-          lines += ['>glycan|name=%s' % cid, ''.join('%s' % c for c in codes)]
+          lines += ['>glycan|name=%s' % cid, _glycan_string(e['ccdCodes'], cid, j.get('bondedAtomPairs'))]
         elif 'smiles' in e:
           lines += ['>ligand|name=%s' % cid, e['smiles']]
         else:
@@ -93,6 +93,8 @@ def _case_inputs(j, d):
           sys.exit(3)
           lines += ['>ligand|name=%s' % cid, _CCD_SMILES[code]]
   for k, (a, b) in enumerate(j.get('bondedAtomPairs') or ()):
+    if a[0] == b[0] and a[0] in glycan_chains:
+      continue  # a glycosidic bond: in the glycan string
     def ref(x):
       # chai's res_idx: residue one-letter + 1-based index, '@' atom; a ligand
       # or glycan names only its atom
@@ -157,24 +159,52 @@ def _template_m8(case_dir, cache_folder):
   return path
 
 
-def _write_pqt(query, a3m, path, pd):
-  """One chain's aligned.pqt as chai's ColabFold path writes it (colabfold.py)."""
-  from chai_lab.data.parsing.msas.data_source import MSADataSource
+def _glycan_string(codes, cid, bonds):
+  """chai's glycan string (glycans.py: `NAG(4-1 NAG)`, a sugar then each child
+  as `(<src O>-<dst C> CHILD)`) from the case's intra-chain O->C bonds; a bare
+  run of codes would be sugars with no glycosidic bond at all."""
+  children = {i: [] for i in range(1, len(codes) + 1)}
+  for a, b in bonds or ():
+    if a[0] == b[0] == cid:
+      (src, sa), (dst, da) = ((a[1], a[2]), (b[1], b[2])) if a[2].startswith('O') else ((b[1], b[2]), (a[1], a[2]))
+      assert sa.startswith('O') and da.startswith('C'), (a, b)
+      children[src].append((int(sa[1:]), int(da[1:]), dst))
+
+  def emit(i):
+    return codes[i - 1] + ''.join('(%d-%d %s)' % (s, d, emit(c)) for s, d, c in children[i])
+  return emit(1)
+
+
+def _a3m_rows(a3m):
   rows, header = [], None
   for line in a3m.splitlines():
     if line.startswith('>'):
       header = line[1:]
     elif line.strip():
       rows.append((header, line.strip()))
-  # paired block: the query alone (AF3's pairedMsa is empty in every case here)
-  paired = [('0', rows[0][0], rows[0][1])]
+  return rows
+
+
+def _write_pqt(query, a3m, path, pd, paired_a3m=''):
+  """One chain's aligned.pqt as chai's ColabFold path writes it (colabfold.py):
+  the pair a3m's rows keyed by their row index (the query is row 0, key '0';
+  all-gap padding rows skipped), then the single a3m's rows past its query that
+  are not already in the paired block."""
+  from chai_lab.data.parsing.msas.data_source import MSADataSource
+  rows = _a3m_rows(a3m) or [('query', query)]
+  prows = _a3m_rows(paired_a3m)
+  if prows:
+    paired = [(str(i), h, s) for i, (h, s) in enumerate(prows) if set(s) != {'-'}]
+  else:
+    # no pair a3m: the paired block is the query alone
+    paired = [('0', rows[0][0], rows[0][1])]
   in_paired = {s for _, _, s in paired}
   single = [(h, s) for i, (h, s) in enumerate(rows) if i > 0 and s not in in_paired]
   headers = [h for _, h, _ in paired] + [h for h, _ in single]
   sources = ['query'] + [MSADataSource.UNIREF90.value if h.startswith('UniRef') else MSADataSource.BFD_UNICLUST.value
                          for h in headers[1:]]
   df = pd.DataFrame(dict(sequence=[s for _, _, s in paired] + [s for _, s in single], source_database=sources,
-                         pairing_key=['0'] + [''] * len(single), comment=''))
+                         pairing_key=[k for k, _, _ in paired] + [''] * len(single), comment=''))
   df.to_parquet(path)
 
 
@@ -186,7 +216,7 @@ def _np(t):
   return t.cpu().numpy()
 
 
-def _fp32_graphs(module):
+def _fp32_graphs(module, from_dtypes=(15,)):
   """Rewrite every bfloat16 dtype argument (ScalarType 15) in a TorchScript
   module's graphs to float32 (6). chai's exported components keep fp32 weights
   and cast to bf16 inside the graph (the trunk: 1360 aten::to casts); this is the
@@ -212,34 +242,45 @@ def _fp32_graphs(module):
         if i < len(args) and args[i] == 'dtype':
           src = inp.node()
           if src.kind() == 'prim::Constant' and src.hasAttribute('value') \
-              and src.kindOf('value') == 'i' and src.i('value') == 15:
+              and src.kindOf('value') == 'i' and src.i('value') in from_dtypes:
             with graph.insert_point_guard(node):
               node.replaceInput(i, graph.insertConstant(6))
             changed += 1
 
   # the bucketed entry points chai calls (chai1.AVAILABLE_MODEL_SIZES); they are
   # reachable by getattr but not listed by dir()
-  for size in (256, 384, 512, 768, 1024, 1536, 2048):
+  for size in ('', 256, 384, 512, 768, 1024, 1536, 2048):
     try:
-      g = getattr(module, 'forward_%d' % size).graph
+      g = getattr(module, 'forward_%s' % size if size else 'forward').graph
     except (AttributeError, RuntimeError):
       continue
     walk(g, g)
-  # ...and every submodule's own methods: a call like `(to_qkv).forward(x)` runs
-  # that module's graph, with casts of its own
+  # ...and every submodule's own methods: a call like `(to_qkv).forward2(x)` runs
+  # that module's graph, with casts of its own. Each bucket calls its own
+  # numbered copy (forward, forward1, forward2, ...), so walk them all, not just
+  # `forward` (which left bucket 512's to_qkv in bf16)
   # (no dedupe by id(): the graph wrappers are temporaries and their ids are
   # reused, which silently skipped most submodules; a second pass finds nothing)
   for sub in module.modules():
     try:
-      g = sub.forward.graph
-    except (AttributeError, RuntimeError):
+      names = sub._c._method_names()
+    except AttributeError:
       continue
-    walk(g, g)
+    for name in names:
+      try:
+        g = sub._c._get_method(name).graph
+      except RuntimeError:
+        continue
+      walk(g, g)
   return changed
 
 
-def _run(case_dir, recycles, on_inputs, inject=None):
-  """chai's own featurise + fold, with every exported component wrapped."""
+def _run(case_dir, recycles, on_inputs, inject=None, traj=None):
+  """chai's own featurise + fold, with every exported component wrapped.
+
+  traj (the `trajectory` command): chai's real 200-step sampler, one sample,
+  with chai1's torch.randn and center_random_augmentation replaced by the
+  harness's draws (see trajectory); nothing injected into the components."""
   from pathlib import Path
   import torch
   import chai_lab.chai1 as C
@@ -281,15 +322,18 @@ def _run(case_dir, recycles, on_inputs, inject=None):
 
     def forward(self, **kw):
       self.calls += 1
-      if self.name == 'diffusion_module.pt' and self.calls == 1:
+      if inject is not None and self.name == 'diffusion_module.pt' and self.calls == 1:
         dev = kw['atom_noised_coords'].device
         kw = dict(kw, atom_noised_coords=torch.tensor(inject['noisy'], device=dev)[None, None],
                   noise_sigma=torch.full((1, 1), inject['sigma'], device=dev))
         out = self.inner.forward(**kw)
         got['denoised'] = _np(out).reshape(-1, 3)   # (1, [ds,] atoms, 3) -> (atoms, 3)
         return out
-      if self.name == 'confidence_head.pt':
+      if self.name == 'confidence_head.pt' and inject is not None:
         kw = dict(kw, atom_coords=torch.tensor(inject['positions'], device=kw['atom_coords'].device)[None])
+      if self.name == 'confidence_head.pt' and traj is not None:
+        got.setdefault('final', _np(kw['atom_coords']).reshape(-1, 3))
+        raise _Stop()
       if self.name == 'trunk.pt' and os.environ.get('CHAI_TRUNK_INIT'):
         # chai's own trunk on SUPPLIED initial reprs (ours): how far chai's output
         # moves for that input difference alone -- the gap a correct trunk shows
@@ -336,13 +380,18 @@ def _run(case_dir, recycles, on_inputs, inject=None):
       print('CHAI_FP32: %s: %d bf16 dtype arguments -> fp32' % (key, n), file=sys.stderr)
     return Wrap(key, w)
   C.load_exported = load
+  orig_torch, orig_aug = C.torch, C.center_random_augmentation
+  if traj is not None:
+    C.torch, C.center_random_augmentation = traj
   try:
-    C.run_folding_on_context(ctx, output_dir=out, num_trunk_recycles=recycles + 1, num_diffn_timesteps=2,
+    C.run_folding_on_context(ctx, output_dir=out, num_trunk_recycles=recycles + 1,
+                             num_diffn_timesteps=200 if traj is not None else 2,
                              num_diffn_samples=1, seed=1, device=torch.device('cuda:0'), low_memory=False)
   except _Stop:
     pass
   finally:
     C.load_exported, C.Collate = orig, orig_collate
+    C.torch, C.center_random_augmentation = orig_torch, orig_aug
   return got
 
 
@@ -432,6 +481,58 @@ def forward(model, out_dir, in_npz, out_npz):
               'tap.emb_msa': got['emb.MSA'][:, :n]})
 
 
+def trajectory(model, out_dir, in_npz, out_npz):
+  """chai's REAL sampler (run_folding_on_context at its default 200 timesteps,
+  one sample: 199 Heun steps on the midpoint schedule), every random draw the
+  harness's (vendor_native_parity --trajectory): chai1's two torch.randn calls
+  (initial positions, per-step noise) and center_random_augmentation (which
+  rotates as R @ x; the replacement applies the harness's x @ R, keeping
+  chai's masked centroid). chai samples over its PADDED atom axis: the draws
+  go to the real atoms (atom_exists_mask, the layout's order), zero elsewhere."""
+  import torch
+  import chai_lab.chai1 as C
+  from chai_lab.model.utils import calc_centroid
+  z = np.load(in_npz)
+  x0 = torch.tensor(z['traj_x0'], dtype=torch.float32)
+  eps = torch.tensor(z['traj_eps'], dtype=torch.float32)
+  rot = torch.tensor(z['traj_rot'], dtype=torch.float32)
+  trans = torch.tensor(z['traj_trans'], dtype=torch.float32)
+  n = {'randn': 0, 'aug': 0}
+  box = {}
+
+  def scatter(v, shape, device):
+    out = torch.zeros(shape, dtype=torch.float32)
+    out.reshape(-1, shape[-2], 3)[:, box['real']] = v
+    return out.to(device)
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def randn(self, *size, device=None, **kw):
+      shape = tuple(size[0]) if len(size) == 1 and not isinstance(size[0], int) else size
+      k = n['randn']
+      n['randn'] += 1
+      return scatter(x0 if k == 0 else eps[k - 1], shape, device)
+
+  def aug(atom_coords, atom_single_mask, s_trans=1.0, rotations=None):
+    k = n['aug']
+    n['aug'] += 1
+    centroid = calc_centroid(atom_coords, mask=atom_single_mask)[:, None]
+    x = atom_coords - centroid
+    return x @ rot[k].to(x) + s_trans * trans[k].to(x)
+
+  def on_inputs(inputs):
+    box['real'] = torch.from_numpy(_np(inputs['atom_exists_mask'])[0].astype(bool))
+  got = _run(out_dir, int(z['recycling_steps']), on_inputs, traj=(_Torch(), aug))
+  from chai_lab.model.diffusion_schedules import InferenceNoiseSchedule
+  sig = InferenceNoiseSchedule(s_max=C.DiffusionConfig.S_tmax, s_min=4e-4, p=7.0,
+                               sigma_data=C.DiffusionConfig.sigma_data).get_schedule(
+                                   device=torch.device('cpu'), num_timesteps=200)
+  np.savez(out_npz, sigmas=sig.float().numpy(), steps=n['aug'],
+           final=got['final'][box['real'].numpy()])
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)

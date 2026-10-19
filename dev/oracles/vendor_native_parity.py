@@ -440,6 +440,10 @@ def trajectory_case(model, name, j, recycles):
     bdir = os.path.join(tmp, 'vendor')
     _vendor(model, 'featurise', cj, bdir)
     lay = dict(np.load(os.path.join(bdir, 'layout.npz')))
+    # ESMFold2: ours folds from the vendor's own ESM-C hidden states, as run_case
+    hidden = os.path.join(bdir, 'esmc_hidden.npz')
+    if os.path.exists(hidden):
+      os.environ['ESMC_HIDDEN'] = hidden
     batch, raw, cfg, model_dir = featurise_ours(model, j, recycles, 'none')
     idx, arows = align(raw, lay)
     rows += arows
@@ -458,6 +462,9 @@ def trajectory_case(model, name, j, recycles):
              recycling_steps=recycles, precision='fp32')
     _vendor(model, 'trajectory', bdir, inp, os.path.join(tmp, 'b.npz'))
     b = dict(np.load(os.path.join(tmp, 'b.npz')))
+    if 'pair_state0' in b:
+      # the vendor's random initial pair state (ESMFold2), injected as run_case does
+      batch = dict(batch, **{'inject/pair_state0': jnp.asarray(b['pair_state0'])})
   # ours: the real sampler, XLA path, one sample, the same draws in our layout
   ev = cfg.heads.diffusion.eval
   ev.num_samples = 1
@@ -476,6 +483,7 @@ def trajectory_case(model, name, j, recycles):
     ours = forward_ours(batch, cfg, model_dir, None, None, None, real_sampler=True)
   finally:
     dh.TRAJ_INJECT = None
+    os.environ.pop('ESMC_HIDDEN', None)
   n = int(lay['token_pad'].sum())
   vs = np.asarray(b['sigmas'], np.float64)
   rows.append(('traj', 'steps ours %d vendor %d' % (steps, int(b['steps'])),

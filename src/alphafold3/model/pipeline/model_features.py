@@ -484,6 +484,133 @@ def _chai_tokenise(rows):
 _CHAI_UNIREF_QUOTA = 9999   # msa_dataset_source_to_quota[UNIREF90] 10_000, minus the query
 
 
+def _np126_argsort(v):
+  """numpy 1.26's generic `argsort(kind='quicksort')` (npysort/quicksort.cpp
+  aquicksort_: introsort, median of three, insertion sort at 16 or fewer, heapsort
+  past 2*floor(log2 n) depth), index for index."""
+  v = list(v)
+  n = len(v)
+  t = list(range(n))
+  if n < 2:
+    return t
+
+  def heapsort(pl, num):
+    a = lambda i: pl + i - 1          # 1-based into t
+    for l in range(num >> 1, 0, -1):
+      tmp = t[a(l)]
+      i, j = l, l << 1
+      while j <= num:
+        if j < num and v[t[a(j)]] < v[t[a(j + 1)]]:
+          j += 1
+        if v[tmp] < v[t[a(j)]]:
+          t[a(i)] = t[a(j)]
+          i, j = j, j + j
+        else:
+          break
+      t[a(i)] = tmp
+    m = num
+    while m > 1:
+      tmp = t[a(m)]
+      t[a(m)] = t[a(1)]
+      m -= 1
+      i, j = 1, 2
+      while j <= m:
+        if j < m and v[t[a(j)]] < v[t[a(j + 1)]]:
+          j += 1
+        if v[tmp] < v[t[a(j)]]:
+          t[a(i)] = t[a(j)]
+          i, j = j, j + j
+        else:
+          break
+      t[a(i)] = tmp
+
+  pl, pr = 0, n - 1
+  stack, depths = [], []
+  cdepth = (n.bit_length() - 1) * 2
+  while True:
+    if cdepth < 0:
+      heapsort(pl, pr - pl + 1)
+    else:
+      while pr - pl > 15:
+        pm = pl + ((pr - pl) >> 1)
+        if v[t[pm]] < v[t[pl]]:
+          t[pm], t[pl] = t[pl], t[pm]
+        if v[t[pr]] < v[t[pm]]:
+          t[pr], t[pm] = t[pm], t[pr]
+        if v[t[pm]] < v[t[pl]]:
+          t[pm], t[pl] = t[pl], t[pm]
+        vp = v[t[pm]]
+        pi, pj = pl, pr - 1
+        t[pm], t[pj] = t[pj], t[pm]
+        while True:
+          pi += 1
+          while v[t[pi]] < vp:
+            pi += 1
+          pj -= 1
+          while vp < v[t[pj]]:
+            pj -= 1
+          if pi >= pj:
+            break
+          t[pi], t[pj] = t[pj], t[pi]
+        pk = pr - 1
+        t[pi], t[pk] = t[pk], t[pi]
+        if pi - pl < pr - pi:
+          stack.append((pi + 1, pr))
+          pr = pi - 1
+        else:
+          stack.append((pl, pi - 1))
+          pl = pi + 1
+        cdepth -= 1
+        depths.append(cdepth)
+      for pi in range(pl + 1, pr + 1):
+        vi = t[pi]
+        vp = v[vi]
+        pj = pi
+        while pj > pl and vp < v[t[pj - 1]]:
+          t[pj] = t[pj - 1]
+          pj -= 1
+        t[pj] = vi
+    if not stack:
+      break
+    pl, pr = stack.pop()
+    cdepth = depths.pop()
+  return t
+
+
+def _chai_unpaired_order(chain):
+  """The order chai lays a chain's UNPAIRED rows in, as indices into its single a3m's rows past the query that are not
+  in the pair a3m (the rows our merged MSA holds for it, in a3m order).
+
+  chai's ColabFold path writes the chain's aligned.pqt as the pair a3m's rows then those single rows, each with a
+  source (`query`, `uniref90` for a UniRef header, else `bfd_uniclust`). Its reader (parse_aligned_pqt_to_msa_context)
+  groups by source -- pandas groupby: groups in source-NAME order, each its first quota-1 rows -- and then sorts by
+  source PRIORITY with sort_values' default quicksort, which is not stable: rows sharing a source come out scrambled,
+  differently for every row count. pair_and_merge_msas then puts each chain's leftover rows side by side IN THAT ORDER,
+  so which rows of two chains share an MSA row -- what the outer product reads -- is that scramble. numpy 1.26's sort
+  (chai-lab's pin; on a CPU without AVX-512 it takes the generic introsort ported above), index for index.
+  """
+  from alphafold3.data import parsers
+  def rows(a3m):
+    seqs, descs = parsers.parse_fasta(a3m or '')
+    return [(d, r) for r, d in zip(seqs, descs) if r]
+  paired = [(d, r) for d, r in rows(chain.paired_msa) if set(r) != {'-'}]
+  single = rows(chain.unpaired_msa)
+  if not paired:
+    paired = single[:1]
+  in_paired = {r for _, r in paired}
+  singles = [i for i, (_, r) in enumerate(single) if i > 0 and r not in in_paired]
+  heads = [d for d, _ in paired] + [single[i][0] for i in singles]
+  src = ['query'] + ['uniref90' if h.startswith('UniRef') else 'bfd_uniclust' for h in heads[1:]]
+  quota = {'uniref90': 10000, 'bfd_uniclust': 1000000, 'query': 1000000}
+  priority = {'query': -1, 'uniref90': 0, 'bfd_uniclust': 2}
+  grouped = []
+  for name in sorted(set(src)):
+    grouped += [i for i, x in enumerate(src) if x == name][:quota[name] - 1]
+  order = [grouped[k] for k in _np126_argsort([priority[src[i]] for i in grouped])]
+  first_single = len(paired)
+  return [i - first_single for i in order if i >= first_single]
+
+
 def _chai_msa(batch, fold_input):
   """chai-1's MSA inputs where AF3's differ, once any chain has an alignment.
 
@@ -572,6 +699,29 @@ def _chai_msa(batch, fold_input):
       mask[1:, lig] = False
     profile[lig] = np.eye(profile.shape[-1], dtype=np.float32)[vocab.index(residue_names.UNK)]   # its 1-row context
     batch['profile'] = profile.astype(np.asarray(batch['profile']).dtype)
+  # each chain's unpaired rows in chai's order (_chai_unpaired_order), when two or more chains have them: the rows
+  # past the paired block are the chains' unpaired rows side by side, in a3m order
+  n_paired = int(np.asarray(batch.get('num_paired_alignments', 1)))
+  n_rows = int(np.asarray(batch.get('num_alignments', msa.shape[0])))
+  per_chain = []
+  for index, chain in enumerate(fold_input.chains):
+    sel = np.flatnonzero(asym == index + 1)
+    if isinstance(chain, fi.ProteinChain) and sel.size and mask[n_paired:n_rows][:, sel].any():
+      per_chain.append((sel, chain))
+  if len(per_chain) > 1:
+    for sel, chain in per_chain:
+      order = _chai_unpaired_order(chain)
+      live = len(order)
+      # past its own rows a chain's block is gap padding (AF3 pads the shorter chains); our rows must be chai's
+      pad = (msa[n_paired + live:n_rows][:, sel] == residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP.index(
+          residue_names.GAP)).all()
+      if n_paired + live > n_rows or not pad:
+        continue                      # not chai's rows (a quota or dedupe edge): leave the a3m order
+      src_rows = n_paired + np.asarray(order)
+      dst_rows = n_paired + np.arange(live)
+      for arr in (msa, mask, dele):
+        block = arr[src_rows][:, sel].copy()
+        arr[np.ix_(dst_rows, sel)] = block
   source[0] = 4                       # MSADataSource.QUERY, as create_msa_feat reads row 0 anyway
   # chai drops token-identical rows of the joined MSA (AF3 keeps the paired and the unpaired query, and duplicates)
   live = np.flatnonzero(mask.any(-1))

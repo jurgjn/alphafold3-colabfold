@@ -104,7 +104,7 @@ def _has_msa(out_dir):
              'pairedMsa' in e.get('proteinChain', {}) for e in job['sequences'])
 
 
-def _configs(model, out_dir, dtype='fp32', n_cycle=None):
+def _configs(model, out_dir, dtype='fp32', n_cycle=None, n_sample=None):
   from opendde.config.inference import build_inference_config
   # --use_msa follows the INPUT, as `opendde pred` would run it. With no
   # alignment anywhere, OpenDDE's single-sequence mode is --use_msa false:
@@ -135,6 +135,8 @@ def _configs(model, out_dir, dtype='fp32', n_cycle=None):
   # config the runner builds the model from -- set through the CLI key.
   if n_cycle is not None:
     args += ' --model.N_cycle %d' % n_cycle
+  if n_sample is not None:
+    args += ' --sample_diffusion.N_sample %d' % n_sample
   return build_inference_config(arg_str=args, fill_required_with_null=True)
 
 
@@ -261,6 +263,64 @@ def forward(model, out_dir, in_npz, out_npz):
                        for k, v in out.items()})
 
 
+def trajectory(model, out_dir, in_npz, out_npz):
+  """OpenDDE's REAL sampler (generator.sample_diffusion, 200 steps, the last
+  sigma 0), one sample, every random draw the harness's (vendor_native_parity
+  --trajectory): its torch.randn calls (initial positions, per-step noise; they
+  take OpenDDE's private generator) and centre_random_augmentation (scipy
+  rotation from its numpy rng, applied R @ x -- the replacement applies the
+  harness's x @ R)."""
+  import torch
+  from opendde.utils.seed import seed_everything
+  from runner.inference import InferenceRunner, update_inference_configs
+  from opendde.model import generator as G
+  z = np.load(in_npz)
+  c = _configs(model, out_dir, 'fp32', n_cycle=int(z['recycling_steps']) + 1, n_sample=1)
+  runner = InferenceRunner(c)
+  c = runner.configs
+  seed_everything(seed=1, deterministic=c.deterministic)
+  data, _ = _batch(c)
+  data['input_feature_dict']['inference_seed'] = torch.tensor(1, dtype=torch.long)
+  runner.update_model_configs(update_inference_configs(c, data['N_token'].item()))
+  net = runner.model
+  x0 = torch.tensor(z['traj_x0'], dtype=torch.float32)
+  eps = torch.tensor(z['traj_eps'], dtype=torch.float32)
+  rot = torch.tensor(z['traj_rot'], dtype=torch.float32)
+  trans = torch.tensor(z['traj_trans'], dtype=torch.float32)
+  n = {'randn': 0, 'aug': 0}
+  got = {}
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def randn(self, size=None, device=None, dtype=None, generator=None, **kw):
+      k = n['randn']
+      n['randn'] += 1
+      v = x0 if k == 0 else eps[k - 1]
+      return v.reshape(size).to(device=device, dtype=dtype or torch.float32)
+
+  def aug(x_input_coords, N_sample=1, s_trans=1.0, centre_only=False, mask=None, eps=1e-12,
+          torch_generator=None, numpy_rng=None, **kw):
+    assert N_sample == 1 and not centre_only and mask is None
+    k = n['aug']
+    n['aug'] += 1
+    x = x_input_coords - x_input_coords.mean(dim=-2, keepdim=True)
+    return (x @ rot[k].to(x) + s_trans * trans[k].to(x))[..., None, :, :]
+
+  G.torch, G.centre_random_augmentation = _Torch(), aug
+  orig = net.sample_diffusion
+
+  def sample_diffusion(*a, **kw):
+    got['sigmas'] = kw['noise_schedule'].detach().float().cpu().numpy()
+    out = orig(*a, **kw)
+    got.setdefault('final', out.detach().float().cpu().numpy().reshape(-1, 3))
+    return out
+  net.sample_diffusion = sample_diffusion
+  runner.predict(data)
+  np.savez(out_npz, sigmas=got['sigmas'], steps=n['aug'], final=got['final'])
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)

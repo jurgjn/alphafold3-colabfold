@@ -86,10 +86,16 @@ def _stp_msa():
   return json.load(open(HOME + '/1stp_msa.json'))['sequences'][0]['protein']['unpairedMsa']
 
 
-def _synthetic_a3m(seq, n_rows, seed, gap=0.05, sub=0.2, ins=0.03):
+def _synthetic_a3m(seq, n_rows, seed, gap=0.05, sub=0.2, ins=0.03, species=False):
   """A deterministic homolog-like a3m for a sequence: the query, then n_rows
   rows with substitutions, gaps and lower-case insertions. Parity needs every
-  MSA code path fed the SAME rows on both sides, not real homologs."""
+  MSA code path fed the SAME rows on both sides, not real homologs.
+
+  species=True (a pairedMsa): row r's header is a UniProt TrEMBL entry whose
+  species is `P<r>`, the same in every chain's pair a3m. Vendors pair a
+  pairedMsa two ways -- AF3/protenix by the species parsed from the header,
+  ColabFold-path chai/boltz by row index -- and with one species per row the
+  two give the SAME pairs."""
   import numpy as np
   rng = np.random.default_rng(seed)
   aa = 'ACDEFGHIKLMNPQRSTVWY'
@@ -101,7 +107,8 @@ def _synthetic_a3m(seq, n_rows, seed, gap=0.05, sub=0.2, ins=0.03):
       out.append('-' if u < gap else (aa[rng.integers(20)] if u < gap + sub else c))
       if rng.random() < ins:
         out.append(aa[rng.integers(20)].lower())
-    rows += ['>hit%d_%d' % (seed, r), ''.join(out)]
+    rows += ['>tr|A%d%04dX|SYN_P%d' % (seed, r, r) if species else '>hit%d_%d' % (seed, r),
+             ''.join(out)]
   return '\n'.join(rows) + '\n'
 
 
@@ -169,8 +176,8 @@ def cases():
       # a real MSA deeper than 1024 rows: subsampling and depth crops
       'deep_msa': [_prot('A', _stp_seq(), msa=_stp_msa())],
       # paired MSAs across a heterodimer (every case above has pairedMsa '')
-      'paired_msa': [_prot('A', P6MRR, msa=_synthetic_a3m(P6MRR, 48, 1), paired=_synthetic_a3m(P6MRR, 24, 2)),
-                     _prot('B', UBQ, msa=_synthetic_a3m(UBQ, 40, 3), paired=_synthetic_a3m(UBQ, 24, 4))],
+      'paired_msa': [_prot('A', P6MRR, msa=_synthetic_a3m(P6MRR, 48, 1), paired=_synthetic_a3m(P6MRR, 24, 2, species=True)),
+                     _prot('B', UBQ, msa=_synthetic_a3m(UBQ, 40, 3), paired=_synthetic_a3m(UBQ, 24, 4, species=True))],
       # a long chain: atom windows and token edges at length
       'long_chain': [_prot('A', _long_chain())],
       # two templates on one chain, the second a sub-range

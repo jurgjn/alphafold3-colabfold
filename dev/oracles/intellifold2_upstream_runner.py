@@ -41,6 +41,21 @@ CACHE = os.path.expanduser(os.environ.get('IF2_CACHE', '~/if2_cache'))
 SEED = 1
 
 
+def _boltz_csv(paired, unpaired):
+  """A pairedMsa + unpairedMsa as ONE boltz MSA csv, exactly as `boltz
+  predict`'s compute_msa writes the ColabFold server's pair: the pair a3m's
+  rows keyed by row index (all-gap rows dropped), then the unpaired rows past
+  their query keyed -1. boltz pairs across chains on that key."""
+  pr = [l.strip() for l in paired.strip().splitlines()[1::2]]
+  keys = [i for i, s in enumerate(pr) if s != '-' * len(s)]
+  pr = [s for s in pr if s != '-' * len(s)]
+  ur = [l.strip() for l in unpaired.strip().splitlines()[1::2]] if unpaired.strip() else []
+  if pr:
+    ur = ur[1:]
+  return '\n'.join(['key,sequence'] + ['%s,%s' % (k, q) for k, q in
+                                        zip(keys + [-1] * len(ur), pr + ur)])
+
+
 def _yaml_from_af3(j, msa_dir):
   """AF3 fold-input JSON -> IntelliFold YAML (docs/input_yaml_format.md, the
   boltz schema). A chain whose alignment is only its own query runs the
@@ -56,7 +71,12 @@ def _yaml_from_af3(j, msa_dir):
       if e.get('cyclic'):
         d['cyclic'] = True
       msa = e.get('unpairedMsa')
-      if (not msa) or msa.strip() == '>q\n%s' % e['sequence']:
+      if len((e.get('pairedMsa') or '').splitlines()) > 2:
+        p = os.path.join(msa_dir, '%s.csv' % ids[0])
+        with open(p, 'w') as f:
+          f.write(_boltz_csv(e['pairedMsa'], msa or ''))
+        d['msa'] = p
+      elif (not msa) or msa.strip() == '>q\n%s' % e['sequence']:
         d['msa'] = 'empty'
       else:
         p = os.path.join(msa_dir, '%s.a3m' % ids[0])
@@ -301,6 +321,74 @@ def forward(model_name, out_dir, in_npz, out_npz):
                        for k, v in res.items()})
 
 
+def trajectory(model_name, out_dir, in_npz, out_npz):
+  """IntelliFold's REAL sample_diffusion at its CLI default (200 steps), one
+  sample, every random draw the harness's (vendor_native_parity --trajectory):
+  its two `torch.empty_like(...).normal_(generator=)` draws (initial positions,
+  per-step noise) and its centre_random_augmentation's rotation and
+  translation. IntelliFold rotates as x @ R^T; the replacement applies the
+  harness's x @ R, keeping IntelliFold's masked centring and mask multiplies."""
+  import torch
+  from accelerate.utils import set_seed
+  import intellifold.openfold.model.model as M
+  _setup()
+  z = np.load(in_npz)
+  net, f, acc = _pipeline(out_dir, _args(int(z['recycling_steps']), 'no'),
+                          load_weights=True)
+  dev = acc.device
+  set_seed(SEED)
+  base = net.module if hasattr(net, 'module') else net
+  base.generator.manual_seed(SEED)
+  x0 = torch.tensor(z['traj_x0'], dtype=torch.float32, device=dev)
+  eps = torch.tensor(z['traj_eps'], dtype=torch.float32, device=dev)
+  rot = torch.tensor(z['traj_rot'], dtype=torch.float32, device=dev)
+  trans = torch.tensor(z['traj_trans'], dtype=torch.float32, device=dev)
+  n = {'normal': 0, 'aug': 0}
+  got = {}
+
+  class _Draw:
+    def __init__(self, like):
+      self.like = like
+
+    def normal_(self, generator=None):
+      k = n['normal']
+      n['normal'] += 1
+      v = x0 if k == 0 else eps[k - 1]
+      if v.numel() != self.like.numel():
+        raise RuntimeError('draw %d: vendor shape %s, harness %s'
+                           % (k, tuple(self.like.shape), tuple(v.shape)))
+      return v.reshape(self.like.shape).to(self.like)
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def empty_like(self, x, **kw):
+      return _Draw(x)
+
+  def aug(x, mask, generator=None):
+    k = n['aug']
+    n['aug'] += 1
+    m = mask.unsqueeze(-1)
+    mean = (x * m).sum(-2, keepdim=True) / mask.float().sum(-1, keepdim=True).unsqueeze(-1).clamp(min=1.)
+    x = (x - mean) * m
+    return (x @ rot[k] + trans[k]) * m
+
+  M.torch = _Torch()
+  base.centre_random_augmentation.forward = aug   # a submodule: replace its forward
+  got['sigmas'] = base.noise_schedule(device=dev).float().cpu().numpy()
+  orig = base.sample_diffusion
+
+  def sample_diffusion(*a, **kw):
+    out = orig(*a, **kw)
+    got.setdefault('final', out.detach().float().cpu().numpy().reshape(-1, 3))
+    return out
+  base.sample_diffusion = sample_diffusion
+  with torch.no_grad():
+    net(f, diffusion_batch_size=1)
+  np.savez(out_npz, sigmas=got['sigmas'], steps=n['aug'], final=got['final'])
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)

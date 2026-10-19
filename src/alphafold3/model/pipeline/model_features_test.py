@@ -247,5 +247,23 @@ class EmptyTemplateGapTest(absltest.TestCase):
     np.testing.assert_array_equal(batches[0]['template_aatype'], batches[1]['template_aatype'])
 
 
+class ChaiRowOrderTest(absltest.TestCase):
+
+  def test_np126_argsort_matches_numpy_126(self):
+    # numpy 1.26.4 (chai-lab's venv, a CPU without AVX-512): argsort of 72
+    # bfd_uniclust priorities and the query's, the order chai read a 73-row
+    # aligned.pqt in (vendor_native_parity chai1 paired_msa)
+    order = model_features._np126_argsort([2] * 72 + [-1])
+    self.assertEqual(order[:12], [72, 51, 50, 49, 48, 47, 46, 52, 45, 43, 42, 41])
+    self.assertEqual(sorted(order), list(range(73)))
+
+  def test_np126_argsort_sorts(self):
+    rng = np.random.default_rng(0)
+    for n in (1, 2, 15, 16, 17, 100, 1000):
+      v = rng.integers(-1, 4, size=n)
+      order = model_features._np126_argsort(v.tolist())
+      np.testing.assert_array_equal(v[order], np.sort(v))
+
+
 if __name__ == '__main__':
   absltest.main()
