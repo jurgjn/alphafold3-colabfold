@@ -170,6 +170,37 @@ def _names(chars):
                   ).reshape(chars.shape[:-1])
 
 
+def _tower_rows(model, j, hidden):
+  """OUR language-model tower against the vendor's, on the same sequences (all
+  chains proteins only -- the tower's input layout for anything else is the
+  featuriser's business, graded by the fold rows). The vendor tower runs fp32
+  under ESM_TOWER_FP32=1; otherwise it is stock bf16 and the row is INFO."""
+  kinds = [k for entry in j['sequences'] for k in entry]
+  if set(kinds) != {'protein'} or any(entry['protein'].get('modifications') for entry in j['sequences']):
+    return []
+  from alphafold3.model import esm, model_registry
+  from alphafold3.model import weights as weights_lib
+  tower = model_registry.ESMFOLD2_VARIANTS[model]['esmc']
+  d = weights_lib.default_dir(tower)
+  if not os.path.isdir(d):
+    return [('lm', 'tower %s: our blob not at %s' % (tower, d), 'INFO')]
+  seqs = []
+  for entry in j['sequences']:
+    e = entry['protein']
+    seqs += [e['sequence']] * (len(e['id']) if isinstance(e['id'], list) else 1)
+  ours = np.asarray(esm.embed(seqs, d, 'esmc', tower), np.float32)
+  ref = np.load(hidden)['lm_hidden'].astype(np.float32)
+  if ours.shape != ref.shape:
+    return [('lm', 'tower hidden shape ours %s vendor %s' % (ours.shape, ref.shape), 'BAD')]
+  rows = []
+  for label, a, r in (('tower hidden, last layer', ours[:, -1], ref[:, -1]),
+                      ('tower hidden, all layers', ours, ref)):
+    c, ratio = P.compare(a, r)
+    rows.append(('lm', '%s corr %.6f max|d|/rms %.2e' % (label, c, ratio),
+                 P.grade(c, ratio) if os.environ.get('ESM_TOWER_FP32') else 'INFO'))
+  return rows
+
+
 def featurise_ours(model, j, recycles, bf16):
   import fold_check
   from alphafold3.common import folding_input
@@ -345,6 +376,7 @@ def run_case(model, name, j, recycles, bf16):
     hidden = os.path.join(bdir, 'esmc_hidden.npz')
     if os.path.exists(hidden):
       os.environ['ESMC_HIDDEN'] = hidden
+      rows += _tower_rows(model, j, hidden)
     batch, raw, cfg, model_dir = featurise_ours(model, j, recycles, bf16)
     idx, arows = align(raw, lay)
     rows += arows

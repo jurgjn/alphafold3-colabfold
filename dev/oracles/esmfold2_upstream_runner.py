@@ -238,6 +238,12 @@ def _fp32_atom_attention(L=None):
   L.SWA3DRoPEAttention.forward = forward
 
 
+def _tower_precision():
+  # the stock tower runs bf16; ESM_TOWER_FP32=1 runs it fp32, so the harness can
+  # grade OUR tower against it (the fold itself takes these states either way)
+  return 'fp32' if os.environ.get('ESM_TOWER_FP32') else 'bf16'
+
+
 def _model(model_name):
   if model_name in _LOADED:
     return _LOADED[model_name]
@@ -248,10 +254,11 @@ def _model(model_name):
     # as Synthyra's README loads it (fp32 folding model, bf16 ESM++ tower)
     from transformers import AutoModel
     m = AutoModel.from_pretrained(_SYNTHYRA[model_name], trust_remote_code=True, dtype=torch.float32,
-                                  device_map=_dev(), esmc_precision='bf16', attn_implementation='sdpa').eval()
+                                  device_map=_dev(), esmc_precision=_tower_precision(),
+                                  attn_implementation='sdpa').eval()
   else:
     from esm.models.esmfold2 import EsmFold2Model
-    m = EsmFold2Model.from_pretrained(_REPO[model_name]).to(_dev()).eval()
+    m = EsmFold2Model.from_pretrained(_REPO[model_name], esmc_precision=_tower_precision()).to(_dev()).eval()
   _LOADED[model_name] = m
   return m
 
