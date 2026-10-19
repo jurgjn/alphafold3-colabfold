@@ -48,6 +48,10 @@ VENDORS = {
                   'protenix_upstream_runner.py'),
     'protenix1': (_H + '/venv_protenix/bin/python', _H + '/protenix',
                   'protenix_upstream_runner.py'),
+    # OpenDDE v1.1.0 in protenix's venv: every pin in its pyproject (torch
+    # 2.7.1, numpy 2.4.1, rdkit 2025.9.3, biotite 1.4.0, ...) is met exactly.
+    'opendde': (_H + '/venv_protenix/bin/python', _H + '/OpenDDE',
+                'opendde_upstream_runner.py'),
 }
 
 
@@ -267,6 +271,29 @@ def run_case(model, name, j, recycles, bf16):
                  'draw): max within-residue distance diff %.2f A' % geo, 'INFO'))
     rp[idx[ok, 0], idx[ok, 1]] = b_ref[ok]
     batch = dict(batch, ref_pos=jnp.asarray(rp))
+    # OPENDDE DIFFUSES ON STRUCTURAL TOKENS: our batch carries a second,
+    # structural-token copy of the atom features under 'struct/' (the diffusion
+    # module's atom encoder reads struct/ref_pos), and the sampler's positions
+    # and the denoiser's output live in that (struct token, slot) layout. The
+    # atoms are the same ones; residue_atom_gather[r, j] is the flat struct
+    # index of residue atom (r, j). So the injected draw goes into both copies,
+    # and positions cross between layouts through the gather -- a bijection on
+    # real atoms, checked here.
+    gather = batch.get('structbook/residue_atom_gather')
+    if gather is not None:
+      gather = np.asarray(gather)
+      gv = gather >= 0
+      if not (np.array_equal(gv, np.asarray(raw['pred_dense_atom_mask']).astype(bool))
+              and len(np.unique(gather[gv])) == gv.sum()):
+        rows.append(('align', 'structural gather is not a bijection on real '
+                     'atoms', 'BAD'))
+      s_shape = np.shape(batch['struct/pred_dense_atom_mask'])
+
+      def to_struct(x):
+        out = np.zeros((s_shape[0] * s_shape[1],) + x.shape[2:], x.dtype)
+        out[gather[gv]] = x[gv]
+        return out.reshape(s_shape + x.shape[2:])
+      batch = dict(batch, **{'struct/ref_pos': jnp.asarray(to_struct(rp))})
 
     rng = np.random.default_rng(int(os.environ.get('INJECT_SEED', 0)))
     dmask = np.asarray(raw['pred_dense_atom_mask']).astype(np.float32)[..., None]
@@ -290,7 +317,15 @@ def run_case(model, name, j, recycles, bf16):
       np.savez(os.path.join(keep, 'ours_raw.npz'), **{
           k: np.asarray(v) for k, v in raw.items()
           if np.asarray(v).dtype.kind != 'O'})
-  ours = forward_ours(batch, cfg, model_dir, pos, noisy, sigma)
+  if gather is not None:
+    ours = forward_ours(batch, cfg, model_dir, to_struct(pos), to_struct(noisy),
+                        sigma)
+    den = np.asarray(ours['diffusion_samples/denoised'])
+    flat = den.reshape(den.shape[0], -1, 3)
+    ours['diffusion_samples/denoised'] = np.where(
+        gv[None, :, :, None], flat[:, np.where(gv, gather, 0)], 0.0)
+  else:
+    ours = forward_ours(batch, cfg, model_dir, pos, noisy, sigma)
 
   n = int(lay['token_pad'].sum())
   pairs = [
