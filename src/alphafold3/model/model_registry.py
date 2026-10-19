@@ -882,6 +882,12 @@ for _m in ('openfold3', 'openbind0'):
   if not os.environ.get('AF3_NO_OF3_MSA_ROWS'):
     _FEATURISE.setdefault(_m, {}).update(
         of3_msa_rows=True, modified_restype='protein_unknown')
+# Synthyra's lm-tier ESMFold2 (the experimental line) is configured disable_msa_features: its forward replaces the
+# profile and deletion mean with zeros (modeling_esmfold2_experimental.py). Stock-Synthyra protein case: the profile
+# block was the whole s_inputs gap (ours one-hot, theirs zero).
+for _m in ('esmfold2_lm600m', 'esmfold2_lm300m'):
+  _FEATURISE.setdefault(_m, {})['zero_profile'] = not os.environ.get('AF3_NO_ESM_ZERO_PROFILE')
+
 # chai-1 too builds an unknown amino acid from the CCD UNK (6 atoms per X on unk_residues, ours 4), as do protenix,
 # opendde and rf3 (their natives' UNK carry CB and CG); boltz's const.ref_atoms["UNK"] is N CA C O CB
 if not os.environ.get('AF3_NO_CCD_UNK'):

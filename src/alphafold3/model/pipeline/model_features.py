@@ -1668,6 +1668,12 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _complex_msa_profile(batch)
   if knobs.get('esm_deletion_mean'):
     _esm_deletion_mean(batch)
+  if knobs.get('zero_profile'):
+    # AFTER complex_msa_profile / esm_deletion_mean, which rebuild both. The experimental ESMFold2 line with disable_msa_features (Synthyra's lm-tier pair): the model zeroes the
+    # profile and deletion mean inside its forward, so they reach the inputs embedder as zeros whatever the input
+    for key in ('profile', 'deletion_mean'):
+      if key in batch:
+        batch[key] = np.zeros_like(np.asarray(batch[key]))
   if knobs.get('full_msa') or knobs.get('native_rng'):
     _crop_msa_padding(batch)
   if knobs.get('native_rng') and seed is not None and fold_input is not None:

@@ -90,6 +90,10 @@ VENDORS = {
     # against the cached biohub checkpoints.
     'esmfold2': (_H + '/venv_esm341/bin/python', None, 'esmfold2_upstream_runner.py'),
     'esmfold2_fast': (_H + '/venv_esm341/bin/python', None, 'esmfold2_upstream_runner.py'),
+    # the lm-tier pair: Synthyra's releases on Synthyra's own code (FastPLMs,
+    # trust_remote_code), in ~/venv_synthyra built from their requirements.txt
+    'esmfold2_lm600m': (_H + '/venv_synthyra/bin/python', None, 'esmfold2_upstream_runner.py'),
+    'esmfold2_lm300m': (_H + '/venv_synthyra/bin/python', None, 'esmfold2_upstream_runner.py'),
 }
 
 
@@ -430,11 +434,14 @@ def run_case(model, name, j, recycles, bf16):
   n = int(lay['token_pad'].sum())
   # ours may be padded past the vendor's tokens (OURS_BUCKET): compare the real ones
   for key in ('target_feat', 'single_embeddings'):
-    ours[key] = np.asarray(ours[key])[:n]
+    if key in ours:
+      ours[key] = np.asarray(ours[key])[:n]
   for key in ('pair_embeddings', 'distogram/distogram'):
-    ours[key] = np.asarray(ours[key])[:n, :n]
+    if key in ours:
+      ours[key] = np.asarray(ours[key])[:n, :n]
   for key in ('full_pae', 'full_pde'):
-    ours[key] = np.asarray(ours[key])[:, :n, :n]
+    if key in ours:     # a model with no PDE head emits no full_pde
+      ours[key] = np.asarray(ours[key])[:, :n, :n]
   pairs = [
       ('s_inputs (target_feat)', ours['target_feat'],
        _s_inputs_to_ours(model, b['s_inputs'][:n])),
@@ -444,7 +451,8 @@ def run_case(model, name, j, recycles, bf16):
        b['distogram_logits'][:n, :n].reshape(n, n, -1)
        if 'distogram_logits' in b else None),
       ('pae', ours['full_pae'][0], b['pae'][:n, :n]),
-      ('pde', ours['full_pde'][0], b['pde'][:n, :n]),
+      ('pde', ours['full_pde'][0] if 'full_pde' in ours else None,
+       b['pde'][:n, :n] if 'pde' in b else None),
   ]
   # Atom-level outputs, through the alignment.
   den_o = ours['diffusion_samples/denoised'][0][idx[ok, 0], idx[ok, 1]]
@@ -464,6 +472,9 @@ def run_case(model, name, j, recycles, bf16):
   for label, a, r in pairs:
     if r is None:   # the stock vendor has no such output (chai: no distogram)
       rows.append(('model', '%s: not produced by the stock vendor' % label, 'INFO'))
+      continue
+    if a is None:   # nor do we (a model with no such head)
+      rows.append(('model', '%s: not produced by ours' % label, 'BAD'))
       continue
     a, r = np.asarray(a, np.float32), np.asarray(r, np.float32)
     if a.shape != r.shape:

@@ -1,4 +1,5 @@
-"""The STOCK ESMFold2 half of vendor_native_parity.py (esmfold2, esmfold2_fast).
+"""The STOCK ESMFold2 half of vendor_native_parity.py (esmfold2, esmfold2_fast,
+esmfold2_lm600m, esmfold2_lm300m).
 
   python esmfold2_upstream_runner.py featurise MODEL CASE.json OUT_DIR
   python esmfold2_upstream_runner.py forward   MODEL OUT_DIR IN.npz OUT.npz
@@ -19,6 +20,15 @@ Overrides, all of them random draws or the sampler:
     0.1) are fresh random masks, which ours does not draw.
 The ESM-C hidden states are computed here, by esm's own tower, and handed to
 ours (ESMC_HIDDEN): the language model is its own model with its own gate.
+
+The lm-tier pair (esmfold2_lm600m / lm300m) are Synthyra's releases and run
+Synthyra's OWN code: the repo snapshot under ~/esmfold2_variants/synthyra
+(FastPLMs, trust_remote_code) in ~/venv_synthyra (its requirements.txt), with
+its ESM++ tower. The same overrides apply where the code has them (its
+experimental loop starts from zeros: no pair-state draw). Its atom attention
+defaults to DENSE (every atom attends to every atom, "as the official model does
+without flash-attn"); ours, like the official model WITH flash-attn, uses the
++/-64 window, which is what this runner reproduces (fp32, windowed).
 """
 import json
 import os
@@ -37,9 +47,25 @@ _REPO = {
 }
 
 
-def _structure_input(j, bonds=None):
-  from esm.models.esmfold2 import (DNAInput, LigandInput, MSA, Modification, ProteinInput, RNAInput,
-                                   StructurePredictionInput)
+_SYNTHYRA = {
+    'esmfold2_lm600m': os.path.expanduser('~/esmfold2_variants/synthyra/ESMFold2-600'),
+    'esmfold2_lm300m': os.path.expanduser('~/esmfold2_variants/synthyra/ESMFold2-300'),
+}
+_LOADED = {}
+
+
+def _types(model):
+  """The input dataclasses: esm's, or the Synthyra model's own (same names)."""
+  if model in _SYNTHYRA:
+    return _model(model).input_types
+  import esm.models.esmfold2 as T
+  return T
+
+
+def _structure_input(j, bonds=None, model='esmfold2'):
+  T = _types(model)
+  DNAInput, LigandInput, MSA, Modification, ProteinInput, RNAInput, StructurePredictionInput = (
+      T.DNAInput, T.LigandInput, T.MSA, T.Modification, T.ProteinInput, T.RNAInput, T.StructurePredictionInput)
   seqs = []
   for entry in j['sequences']:
     (kind, e), = entry.items()
@@ -65,11 +91,28 @@ def _structure_input(j, bonds=None):
   return StructurePredictionInput(sequences=seqs, covalent_bonds=bonds)
 
 
-def _features(j, seed=1):
+def _features(j, seed=1, model='esmfold2'):
   """esm's own featurisation; a declared bond's atom names become esm's per-residue atom indices."""
-  from esm.models.esmfold2 import CovalentBond, ESMFold2InputBuilder
-  builder = ESMFold2InputBuilder()
-  feats, chains = builder.prepare_input(_structure_input(j), seed=seed)
+  if model in _SYNTHYRA:
+    builder = _model(model).input_builder
+  else:
+    from esm.models.esmfold2 import ESMFold2InputBuilder
+    builder = ESMFold2InputBuilder()
+  CovalentBond = _types(model).CovalentBond
+
+  def prepare(inp):
+    if model not in _SYNTHYRA:
+      return builder.prepare_input(inp, seed=seed)
+    # Synthyra's fold() path: prepare_model_input enforces the checkpoint's MSA
+    # contract (msa_conditioning false: an explicit MSA is refused, MSA features dropped)
+    try:
+      return builder.prepare_model_input(_model(model), inp, seed=seed)
+    except ValueError as e:
+      if 'without MSA conditioning' in str(e):
+        print('VENDOR_NA: %s' % e, file=sys.stderr)
+        sys.exit(3)
+      raise
+  feats, chains = prepare(_structure_input(j, model=model))
   pairs = j.get('bondedAtomPairs') or ()
   if not pairs:
     return feats, chains
@@ -89,7 +132,7 @@ def _features(j, seed=1):
       idx.append([names[i] for i in sel].index(atom))
     bonds.append(CovalentBond(chain_id1=a[0], res_idx1=a[1] - 1, atom_idx1=idx[0],
                               chain_id2=b[0], res_idx2=b[1] - 1, atom_idx2=idx[1]))
-  return builder.prepare_input(_structure_input(j, bonds), seed=seed)
+  return prepare(_structure_input(j, bonds, model=model))
 
 
 def _atom_names(feats):
@@ -134,7 +177,7 @@ def _fp32_autocast():
   torch.amp.autocast, torch.autocast = off(orig_amp), off(orig_top)
 
 
-def _fp32_atom_attention():
+def _fp32_atom_attention(L=None):
   """esm's atom attention is bf16 by construction, not by autocast:
   build_3d_rope returns cos/sin `.to(torch.bfloat16)` and
   SWA3DRoPEAttention.forward casts fp32 q/k/v to bf16 before attending (~1e-3
@@ -148,7 +191,8 @@ def _fp32_atom_attention():
     return
   import torch
   import torch.nn.functional as F
-  from esm.models.esmfold2 import layers as L
+  if L is None:
+    from esm.models.esmfold2 import layers as L
   orig_rope = L.build_3d_rope
 
   def rope_fp32(ref_pos, ref_space_uid, head_dim, n_spatial_per_axis=4, n_uid_pairs=2,
@@ -192,12 +236,29 @@ def _fp32_atom_attention():
 
 
 def _model(model_name):
+  if model_name in _LOADED:
+    return _LOADED[model_name]
   import torch
-  from esm.models.esmfold2 import EsmFold2Model
   torch.backends.cuda.matmul.allow_tf32 = False
   torch.backends.cudnn.allow_tf32 = False
-  m = EsmFold2Model.from_pretrained(_REPO[model_name]).to(_dev()).eval()
+  if model_name in _SYNTHYRA:
+    # as Synthyra's README loads it (fp32 folding model, bf16 ESM++ tower)
+    from transformers import AutoModel
+    m = AutoModel.from_pretrained(_SYNTHYRA[model_name], trust_remote_code=True, dtype=torch.float32,
+                                  device_map=_dev(), esmc_precision='bf16', attn_implementation='sdpa').eval()
+  else:
+    from esm.models.esmfold2 import EsmFold2Model
+    m = EsmFold2Model.from_pretrained(_REPO[model_name]).to(_dev()).eval()
+  _LOADED[model_name] = m
   return m
+
+
+def _attention_module(m):
+  """The module that defines the model's SWA3DRoPEAttention (esm's layers, or FastPLMs' common)."""
+  for mod in m.modules():
+    if type(mod).__name__ == 'SWA3DRoPEAttention':
+      return sys.modules[type(mod).__module__]
+  return None
 
 
 def featurise(model, case_json, out_dir):
@@ -207,7 +268,7 @@ def featurise(model, case_json, out_dir):
   shutil.copy(case_json, os.path.join(out_dir, 'case.json'))
   with open(case_json) as f:
     j = json.load(f)
-  feats, _ = _features(j)
+  feats, _ = _features(j, model=model)
   np.savez(os.path.join(out_dir, 'layout.npz'), **_layout(feats))
   m = _model(model)
   with torch.no_grad():
@@ -225,21 +286,25 @@ def forward(model, out_dir, in_npz, out_npz):
   slot = lay['atom_slot']
   with open(os.path.join(out_dir, 'case.json')) as f:
     j = json.load(f)
-  feats, _ = _features(j)
+  feats, _ = _features(j, model=model)
   now = feats['ref_pos'][0].numpy()[slot]
   if not np.array_equal(now, lay['feat.ref_pos']):
     raise RuntimeError('esm re-drew a different reference conformer (max |d| %.3g)'
                        % np.abs(now - lay['feat.ref_pos']).max())
   _fp32_autocast()
-  _fp32_atom_attention()
   m = _model(model)
+  _fp32_atom_attention(_attention_module(m))
   # The checkpoint's own LM dropout (lm_encoder.lm_dropout 0.25, per_loop) is
   # applied by _run_one_loop with training=True in ANY forward, not only under
   # fold(): a fresh random mask every loop. Ours turns it off for the harness,
   # so the vendor does too.
   lm_cfg = getattr(m.config, 'lm_encoder', None)
-  if lm_cfg is not None:
+  if lm_cfg is not None and not isinstance(lm_cfg, dict):
     lm_cfg.lm_dropout = 0.0
+  if hasattr(m.config, 'force_lm_dropout_during_inference'):
+    # the experimental line's top-level switch (0.0 / False in Synthyra's config)
+    m.config.lm_dropout = 0.0
+    m.config.force_lm_dropout_during_inference = False
   got = {}
   n_atoms = feats['ref_pos'].shape[1]
 
@@ -248,13 +313,14 @@ def forward(model, out_dir, in_npz, out_npz):
     out[slot] = x
     return torch.tensor(out, device=_dev())[None]
 
-  orig_init = m._init_pair_state
+  if hasattr(m, '_init_pair_state'):
+    orig_init = m._init_pair_state
 
-  def init_pair_state(ref):
-    s = orig_init(ref)
-    got['pair_state0'] = s[0].float().cpu().numpy()
-    return s
-  m._init_pair_state = init_pair_state
+    def init_pair_state(ref):
+      s = orig_init(ref)
+      got['pair_state0'] = s[0].float().cpu().numpy()
+      return s
+    m._init_pair_state = init_pair_state
   if os.environ.get('ESM_VENDOR_TAPS'):
     # every top-level module's output, per call, for a stage-by-stage diff
     calls = {}
@@ -292,16 +358,24 @@ def forward(model, out_dir, in_npz, out_npz):
   tok = feats['token_attention_mask'][0].numpy().astype(bool)
   with torch.no_grad():
     h = torch.tensor(hidden, device=_dev())[None]
-    out = m(**f, lm_hidden_states=h, num_loops=int(z['recycling_steps']), num_diffusion_samples=1,
-            lm_mask_pct=0.0, msa_column_mask_rate=0.0)
+    import inspect
+    accepted = inspect.signature(m.forward).parameters
+    extra = {k: v for k, v in dict(lm_mask_pct=0.0, msa_column_mask_rate=0.0).items() if k in accepted}
+    out = m(**{k: v for k, v in f.items() if k in accepted}, lm_hidden_states=h,
+            num_loops=int(z['recycling_steps']), num_diffusion_samples=1, **extra)
   n = int(tok.sum())
-  np.savez(out_npz, s_inputs=got['s_inputs'][:n], z=got['z'][:n, :n],
-           distogram_logits=out['distogram_logits'][0].float().cpu().numpy()[:n, :n],
-           pae=out['pae'][0].float().cpu().numpy()[:n, :n], pde=out['pde'][0].float().cpu().numpy()[:n, :n],
-           plddt=out['plddt_per_atom'][0].float().cpu().numpy()[slot] if 'plddt_per_atom' in out
-           else out['plddt'][0].float().cpu().numpy(),
-           denoised=got['denoised'][slot], pair_state0=got['pair_state0'][:n, :n],
-           **{k: v for k, v in got.items() if k.startswith('tap.')})
+  res = dict(s_inputs=got['s_inputs'][:n], z=got['z'][:n, :n],
+             distogram_logits=out['distogram_logits'][0].float().cpu().numpy()[:n, :n],
+             pae=out['pae'][0].float().cpu().numpy()[:n, :n],
+             plddt=out['plddt_per_atom'][0].float().cpu().numpy()[slot] if 'plddt_per_atom' in out
+             else out['plddt'][0].float().cpu().numpy(),
+             denoised=got['denoised'][slot],
+             **{k: v for k, v in got.items() if k.startswith('tap.')})
+  if 'pde' in out:      # the lm-tier releases have no PDE head
+    res['pde'] = out['pde'][0].float().cpu().numpy()[:n, :n]
+  if 'pair_state0' in got:
+    res['pair_state0'] = got['pair_state0'][:n, :n]
+  np.savez(out_npz, **res)
 
 
 if __name__ == '__main__':
