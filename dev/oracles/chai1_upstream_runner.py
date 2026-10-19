@@ -83,14 +83,14 @@ def _case_inputs(j, d):
           lines += ['>ligand|name=%s' % cid, e['smiles']]
         else:
           (code,) = e['ccdCodes']
-          if code not in ('MG',):
-            # chai takes a ligand ONLY as SMILES; a multi-atom CCD ligand then
-            # gets chai's SMILES atom order and names, where ours builds it from
-            # the CCD -- no stock equivalent of the input (ligand_smiles is the
-            # test of chai's ligand path). A single-atom ion has no order.
-            print('VENDOR_NA: chai1 has no CCD-ligand input (SMILES only); see ligand_smiles',
-                  file=sys.stderr)
-            sys.exit(3)
+          # chai takes a ligand ONLY as SMILES, so a CCD ligand gets chai's
+          # SMILES atom order and names where ours builds it from the CCD -- no
+          # stock equivalent of the input. Even a single-atom ion differs: its
+          # atom NAME is an input feature (ion case: s_inputs off at the MG token
+          # alone). ligand_smiles is the test of chai's ligand path.
+          print('VENDOR_NA: chai1 has no CCD-ligand input (SMILES only); see ligand_smiles',
+                file=sys.stderr)
+          sys.exit(3)
           lines += ['>ligand|name=%s' % cid, _CCD_SMILES[code]]
   for k, (a, b) in enumerate(j.get('bondedAtomPairs') or ()):
     def ref(x):
