@@ -117,9 +117,14 @@ class StructuralTokenExpander(hk.Module):
         dtype=jnp.float32, init=hk.initializers.Constant(0.0))
     role_pair_idx = role[:, None] * N_ROLES + role[None, :]  # (S, S)
 
+    # a protein uses 4 of the 49 role pairs; the absent ones would only add exact zeros
+    present = jnp.zeros((N_ROLES * N_ROLES,), bool).at[role_pair_idx].set(True)
+
     def _accum(k, delta):
-      zk = jnp.where((role_pair_idx == k)[..., None], z_parent, 0.0)
-      return delta + jnp.einsum('ijc,cd->ijd', zk, W[k])
+      def project(delta):
+        zk = jnp.where((role_pair_idx == k)[..., None], z_parent, 0.0)
+        return delta + jnp.einsum('ijc,cd->ijd', zk, W[k])
+      return jax.lax.cond(present[k], project, lambda d: d, delta)
 
     delta = jax.lax.fori_loop(
         0, N_ROLES * N_ROLES, _accum, jnp.zeros_like(z_parent))

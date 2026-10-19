@@ -125,16 +125,8 @@ def files_for(model: str, root: pathlib.Path, precisions=('fp32',)):
   # ESM-C's 81 hidden states into the pair representation its trunk reads; it is
   # 3.7 MB, it is converted from the same checkpoint as the blob, and without it
   # the esmc weights are unusable -- which would leave the published model
-  # single-sequence-or-MSA only. Unlike chai's std_conformers.npz (below) there
-  # is no licence question: it is ours from a checkpoint we already redistribute.
+  # single-sequence-or-MSA only.
   wanted.extend(_COMPANIONS.get(model, ()))
-  # chai-1's std_conformers.npz is deliberately NOT published. It is derived from
-  # chai's own RDKit cache rather than from anything we converted, and chai's
-  # weights licence is not established, so redistributing it is a claim we have
-  # not earned. Without it chai falls back to the CCD ideal conformers every
-  # other model uses -- measured at 1.776 A vs 1.698 A on 6MRR, i.e. 0.08 A, and
-  # ligands are unaffected either way because chai center_random_augments those.
-  # featurise_chai1(ref_conformers=...) still takes them if a user has the file.
   # The repo groups by family; a local directory is flat and named after the
   # model, so the two differ by exactly this prefix.
   prefix = _folder(model, registry)

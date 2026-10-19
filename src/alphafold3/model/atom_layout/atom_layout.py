@@ -776,6 +776,7 @@ def make_flat_atom_layout(
     skip_unk_residues: bool = True,
     drop_ligand_leaving_atoms: bool = False,
     fix_standalone_glycans: bool = False,
+    ccd_leaving: Mapping[tuple[str, int], set[str]] | None = None,
 ) -> AtomLayout:
   """Make a flat atom layout for given residues.
 
@@ -800,6 +801,11 @@ def make_flat_atom_layout(
       undesirable behavior, but moves away from the regime where AlphaFold 3 was
       trained and evaluated. This has only an effect if
       drop_ligand_leaving_atoms is True.
+    ccd_leaving: the leaving atoms as protenix removes them, by the CCD's own
+      flags: a linked residue keeps an OXT the CCD does not mark leaving (the
+      free alpha-carboxyl of a side-chain-linked IAS or FGA), and drops the atom
+      names given per (chain_id, res_id), the leaving groups at declared bonds.
+      None is AlphaFold 3's rule.
 
   Returns:
     an `AtomLayout` object
@@ -876,6 +882,12 @@ def make_flat_atom_layout(
         drop_ligand_leaving_atoms=drop_ligand_leaving_atoms,
         fix_standalone_glycans=fix_standalone_glycans,
     )
+
+    if ccd_leaving is not None:
+      entry = ccd.get(residues.res_name[idx]) or {}
+      flags = dict(zip(entry.get('_chem_comp_atom.atom_id', ()), entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ())))
+      drop_atoms -= {n for n in ('OXT', 'HXT') if flags.get(n, 'Y') != 'Y'}
+      drop_atoms |= ccd_leaving.get((str(residues.chain_id[idx]), int(residues.res_id[idx])), set())
 
     # If deprotonation info is available, remove the specific atoms.
     if residues.deprotonation is not None:

@@ -53,6 +53,7 @@ def featurise_input(
     resolve_msa_overlaps: bool = True,
     fix_standalone_glycans: bool = False,
     flatten_non_standard_residues: bool = True,
+    ccd_leaving_atoms: bool = False,
     verbose: bool = False,
 ) -> Sequence[features.BatchDict]:
   """Featurise the folding input.
@@ -87,6 +88,8 @@ def featurise_input(
       token per atom (AlphaFold 3's convention) or a single token holding all of
       them. Boltz-2 is trained on the latter; handing it ten single-atom tokens
       where it wants one ten-atom token inflates the residue about 2.4x.
+    ccd_leaving_atoms: Leaving atoms as protenix removes them: by the CCD's own
+      flags, the groups at the declared bonds dropped before tokenising.
     verbose: Whether to print progress messages.
 
   Returns:
@@ -103,6 +106,7 @@ def featurise_input(
           resolve_msa_overlaps=resolve_msa_overlaps,
           fix_standalone_glycans=fix_standalone_glycans,
           flatten_non_standard_residues=flatten_non_standard_residues,
+          ccd_leaving_atoms=ccd_leaving_atoms,
       ),
   )
 

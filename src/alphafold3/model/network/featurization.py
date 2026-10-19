@@ -30,6 +30,18 @@ import jax
 import jax.numpy as jnp
 
 
+def widen_to_esm_classes(block):
+  """An AF3 31-class restype or profile block [..., 31] in ESMFold2's 33 classes, for a layer that keeps their width.
+
+  ESM: 0 unused, 1 the gap, 2..22 the residues and UNK, 23..26 A G C U, 27 N, 28..31 DA DG DC DT, 32 DN. AF3 puts the
+  gap at 21 and N last, after the DNA (converters.esmfold2.esm_class_of_af3 is the same table for weight rows);
+  DN is not in AF3's 31 classes.
+  """
+  zero = jnp.zeros_like(block[..., :1])
+  return jnp.concatenate([zero, block[..., 21:22], block[..., :21], block[..., 22:26], block[..., 30:31],
+                          block[..., 26:30], zero], axis=-1)
+
+
 def _grid_keys(key, shape):
   """Generate a grid of rng keys that is consistent with different padding.
 
@@ -320,7 +332,7 @@ def profile_mode(mode: str):
 
 def create_msa_feat(msa: features.MSA, soft_seq=None,
                     design_mask=None, chai1=False, is_ligand=None,
-                    asym_id=None) -> jax.Array:
+                    asym_id=None, deletion_scale=2.0 / jnp.pi) -> jax.Array:
   """Create and concatenate MSA features."""
   rows = msa.rows
   if chai1 and is_ligand is not None:
@@ -342,7 +354,7 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
   msa_1hot = _msa_blend(msa_1hot, soft_seq, design_mask, channel='msa')
   deletion_matrix = msa.deletion_matrix
   has_deletion = jnp.clip(deletion_matrix, 0.0, 1.0)[..., None]
-  deletion_value = (jnp.arctan(deletion_matrix / 3.0) * (2.0 / jnp.pi))[
+  deletion_value = (jnp.arctan(deletion_matrix / 3.0) * deletion_scale)[
       ..., None
   ]
 
@@ -364,26 +376,26 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
     # permutes chai's 33 weight columns onto it, so the vocab mapping lives in
     # one place (converters.chai1.CHAI1_RESTYPE_PERM) instead of two.
     #
-    # Two features we cannot reproduce faithfully:
-    #  * IsPairedMSA marks rows paired ACROSS CHAINS. Derived here rather than
-    #    carried: a row is paired exactly when it covers tokens of more than one
-    #    chain, which is what pairing means. chai's own single-chain run has it 0
-    #    throughout, and so does this for a monomer -- but a COMPLEX with a
-    #    paired alignment needs it, and hardcoding 0 silently threw that signal
-    #    away.
+    # Two features derived rather than carried:
+    #  * IsPairedMSA is chai's pairing key matching the row's first token's, on tokens with a real row: 1 only on the
+    #    paired block's homolog rows (not its query) and only where both that token's chain and the first token's
+    #    chain have a hit. AF3 lays unpaired rows side by side too, so "covers more than one chain" marked every row
+    #    of every complex paired where native has none (tetr_dimer_dna: 30464/30464 cells wrong).
     #  * MSADataSource labels which database a row came from. chai's run uses
     #    4 for the query row and mostly 2 for the rest, so that is what we
     #    emit. Rows from a third source (0) are not distinguishable to us.
     n_row = msa_1hot.shape[0]
-    if asym_id is not None:
+    is_paired = jnp.zeros(msa_1hot.shape[:2], msa_1hot.dtype)
+    if asym_id is not None and msa.num_paired is not None:
       n_ch = 16          # bound: more chains than any complex this runs on
       oh = jax.nn.one_hot(jnp.clip(asym_id, 0, n_ch - 1), n_ch)
-      covers = jnp.einsum('rt,tc->rc', msa.mask.astype(jnp.float32), oh) > 0
-      row_paired = (covers.sum(-1) > 1).astype(msa_1hot.dtype)
-      is_paired = jnp.broadcast_to(row_paired[:, None, None],
-                                  msa_1hot.shape[:2] + (1,))
-    else:
-      is_paired = jnp.zeros(msa_1hot.shape[:2] + (1,), msa_1hot.dtype)
+      hit = (msa.rows != residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP.index(residue_names.GAP)) & msa.mask.astype(bool)
+      chain_hit = jnp.einsum('rt,tc->rc', hit.astype(jnp.float32), oh) > 0
+      tok_hit = jnp.einsum('rc,tc->rt', chain_hit.astype(jnp.float32), oh) > 0
+      r = jnp.arange(n_row)[:, None]
+      paired = (r > 0) & (r < msa.num_paired) & tok_hit & tok_hit[:, :1] & msa.mask.astype(bool)
+      is_paired = paired.astype(msa_1hot.dtype)
+    is_paired = is_paired[..., None]
     src = jnp.where(jnp.arange(n_row) == 0, 4, 2)
     src = jax.nn.one_hot(src, 6, dtype=msa_1hot.dtype)
     src = jnp.broadcast_to(src[:, None, :], msa_1hot.shape[:2] + (6,))

@@ -205,8 +205,15 @@ def _drop_atoms_by_name(batch, names):
           for a in range(n_atoms_per_token)
           if ref_mask[t, a] and decode(chars[t, a]) in names
           and n_real[t] > 1 and not modified[t]}
+  return _mask_atoms(batch, drop)
+
+
+def _mask_atoms(batch, drop):
+  """Mask (token, atom slot) pairs out of every atom gather and compact the layouts; see _drop_atoms_by_name."""
   if not drop:
     return 0
+  ref_mask = np.array(batch['ref_mask'])
+  n_atoms_per_token = ref_mask.shape[1]
   flat = {t * n_atoms_per_token + a for t, a in drop}
   for t, a in drop:
     ref_mask[t, a] = False
@@ -343,7 +350,7 @@ def _remove_dropped_atoms_from_layouts(batch, drop):
 
 
 
-def _override_ref_conformers(batch, conformers):
+def _override_ref_conformers(batch, conformers, tokens=None):
   """Replace ref_pos with another model's reference conformers, by atom name.
 
   AF3 (and so featurise_spec) takes reference coordinates from the CCD ideal
@@ -397,7 +404,7 @@ def _override_ref_conformers(batch, conformers):
                                                   resi_all.tolist())])
 
   n_replaced = 0
-  for t in range(pos.shape[0]):
+  for t in range(pos.shape[0]) if tokens is None else tokens:
     if atomised[t]:
       continue
     code = names_3[int(aatype[t])] if int(aatype[t]) < len(names_3) else None
@@ -417,12 +424,16 @@ def _override_ref_conformers(batch, conformers):
   return n_replaced
 
 
-def load_chai_conformers(path):
-  """Read the standard-residue conformers exported from chai's apkl cache."""
-  z = np.load(path, allow_pickle=True)
-  codes = sorted({k.split('/')[0] for k in z.files})
-  return {c: ([str(x) for x in z[f'{c}/names']], np.asarray(z[f'{c}/pos']))
-          for c in codes}
+def _raw_last_conformer(batch):
+  """boltz2 never centres or rotates its last conformer group: give it boltz's stored conformer, raw."""
+  from alphafold3.constants import boltz2_conformers
+  uid = np.asarray(batch['ref_space_uid'])
+  mask = np.asarray(batch['ref_mask']) > 0
+  if not mask.any():
+    return 0
+  last = int(uid[mask].max())
+  tokens = np.nonzero(((uid == last) & mask).any(-1))[0].tolist()
+  return _override_ref_conformers(batch, boltz2_conformers.as_conformers(), tokens=tokens)
 
 
 def _zero_msa(batch):
@@ -436,6 +447,85 @@ def _zero_msa(batch):
   """
   for key in ('msa_mask', 'profile', 'deletion_mean'):
     batch[key] = np.zeros_like(np.asarray(batch[key]))
+  return batch
+
+
+def _chai_tokenise(rows):
+  """a3m rows -> (tokens, deletions) as chai's a3m tokeniser makes them: capitals and '-' are columns in our protein
+  classes (other capitals X), lower case counts as a deletion capped at 255, anything else is skipped."""
+  from alphafold3.constants import residue_names
+  lut = np.full(256, 20, np.int64)
+  for c, i in residue_names.PROTEIN_TYPES_ONE_LETTER_WITH_UNKNOWN_AND_GAP_TO_INT.items():
+    lut[ord(c)] = i
+  width = sum(c.isupper() or c == '-' for c in rows[0])
+  tok = np.full((len(rows), width), 21, np.int64)
+  dele = np.zeros((len(rows), width), np.int64)
+  for i, row in enumerate(rows):
+    b = np.frombuffer(row.encode(), np.uint8)
+    col = ((b >= 65) & (b <= 90)) | (b == 45)
+    low = np.cumsum((b >= 97) & (b <= 122))
+    at = np.flatnonzero(col)[:width]
+    ins = low[at]
+    tok[i, :at.size] = lut[b[at]]
+    dele[i, :at.size] = np.minimum(np.diff(ins, prepend=0), 255)
+  return tok, dele
+
+
+def _chai_msa(batch, fold_input):
+  """chai-1's MSA inputs where AF3's differ, once any chain has an alignment.
+
+  A protein chain with an alignment: chai counts the classes of its MSA rows, deduplicated by their tokens, in the
+  MSA's uint8 dtype, so each count wraps at 256 before it is normalised by their sum (MSAProfileGenerator's
+  scatter_add); its deletion mean is over the same rows. AF3's profile is the true frequency over the undeduplicated
+  unpaired rows: on mono825's 10128-row MSA the two correlate 0.44, and native's in place of ours takes s_init from
+  corr 0.952 to 0.970 against native's.
+
+  Every other polymer chain is chai's single-sequence context: its sequence string (a modification written "(CCD)")
+  through the protein a3m tokeniser, so a DNA A/C/G/T reads ALA/CYS/GLY/THR, as the query row and as a one-hot profile,
+  and no other row (masked). AF3 gives it its own classes and real gap rows. Ligands keep create_msa_feat's handling.
+  Token-identical rows are then masked, as chai drops them.
+  """
+  from alphafold3.common import folding_input as fi
+  from alphafold3.data import parsers
+
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  resi = np.asarray(batch['residue_index']).reshape(-1)
+  profile = np.array(batch['profile'], np.float32)
+  del_mean = np.array(batch['deletion_mean'], np.float32)
+  msa, mask, dele = np.array(batch['msa']), np.array(batch['msa_mask']), np.array(batch['deletion_matrix'])
+  for index, chain in enumerate(fold_input.chains):
+    sel = np.flatnonzero(asym == index + 1)
+    if isinstance(chain, fi.Ligand) or not sel.size:
+      continue
+    col = resi[sel] - 1
+    rows = []
+    if isinstance(chain, fi.ProteinChain):
+      for a3m in (chain.paired_msa, chain.unpaired_msa):
+        rows += [r for r in parsers.parse_fasta(a3m or '')[0] if r]
+    if len(rows) > 1:
+      tok, dl = _chai_tokenise([chain.sequence] + rows)
+      _, keep = np.unique(tok, axis=0, return_index=True)
+      keep = np.sort(keep)
+      tok, dl = tok[keep], dl[keep]
+      counts = np.stack([(tok == c).sum(0) for c in range(profile.shape[-1])], -1) % 256
+      profile[sel] = (counts / np.maximum(counts.sum(-1, keepdims=True), 1))[col]
+      del_mean[sel] = dl.mean(0)[col]
+      continue
+    mods = dict((pos, ccd) for ccd, pos in
+                (chain.ptms if isinstance(chain, fi.ProteinChain) else chain.modifications))
+    text = ''.join(f'({mods[i + 1]})' if i + 1 in mods else c for i, c in enumerate(chain.sequence))
+    query = _chai_tokenise([text])[0][0]
+    q = query[np.minimum(col, query.size - 1)]
+    msa[0, sel], msa[1:, sel], mask[1:, sel], dele[:, sel] = q, 31, False, 0
+    profile[sel] = np.eye(profile.shape[-1], dtype=np.float32)[q]
+    del_mean[sel] = 0
+  batch['profile'] = profile.astype(np.asarray(batch['profile']).dtype)
+  batch['deletion_mean'] = del_mean.astype(np.asarray(batch['deletion_mean']).dtype)
+  # chai drops token-identical rows of the joined MSA (AF3 keeps the paired and the unpaired query, and duplicates)
+  live = np.flatnonzero(mask.any(-1))
+  _, first = np.unique(msa[live], axis=0, return_index=True)
+  mask[np.setdiff1d(live, live[first])] = False
+  batch['msa'], batch['msa_mask'], batch['deletion_matrix'] = msa, mask, dele
   return batch
 
 
@@ -460,6 +550,9 @@ def _empty_template_gap(batch, gap_index=21, slots='first'):
     'all'    opendde -- `make_dummy_feature` fills the WHOLE (4, N) block with
              31, commented "# gap" (data/utils.py), so every slot is a gap
              template.
+    'atoms'  openfold3/openbind0 -- `create_template_feature_precursor_of3` starts every (slot, token) as GAP and
+             writes only what a template covers, so an empty slot, and a chain without templates in a complex, read
+             GAP even when another chain or slot has a real template; AF3 pads those with 0.
 
   `gap_index` is in OUR vocabulary: `template_modules._AF3_TO_OF3` maps 21 -> 31,
   which is the class the converted `a_proj` column expects.
@@ -469,6 +562,10 @@ def _empty_template_gap(batch, gap_index=21, slots='first'):
   if aatype is None or mask is None:
     return
   aatype, mask = np.asarray(aatype), np.asarray(mask)
+  if slots == 'atoms':
+    if aatype.shape[0]:
+      batch['template_aatype'] = np.where(mask.any(-1), aatype, gap_index).astype(aatype.dtype)
+    return
   if not aatype.shape[0] or mask.any():
     return                                  # no slots, or a real template
   aatype = aatype.copy()
@@ -479,7 +576,7 @@ def _empty_template_gap(batch, gap_index=21, slots='first'):
   batch['template_aatype'] = aatype
 
 
-def _dedupe_self_msa(batch):
+def _dedupe_self_msa(batch, query_once=False):
   """ESMFold2's self-MSA is the query ONCE, not the query twice.
 
   AF3 concatenates a paired and an unpaired MSA, and each one begins with the
@@ -509,6 +606,8 @@ def _dedupe_self_msa(batch):
   the opposite -- "a real alignment whose first row happens to be the query is
   left alone" -- while the code dropped it anyway.
   """
+  if 'msa' not in batch:
+    return batch                      # a partial batch, as the unit tests build
   msa = np.asarray(batch['msa'])
   mask = np.asarray(batch['msa_mask'])
   live = np.flatnonzero(mask.any(-1))
@@ -517,7 +616,8 @@ def _dedupe_self_msa(batch):
   a, b = live[0], live[1]
   if not np.array_equal(msa[a], msa[b]):
     return batch
-  if not all(np.array_equal(msa[a], msa[i]) for i in live[1:]):
+  # query_once: ESMFold2 builds its MSA from the a3m alone, so beside a real alignment too the query appears once
+  if not query_once and not all(np.array_equal(msa[a], msa[i]) for i in live[1:]):
     return batch                      # a real alignment: not a self-MSA
   m = mask.copy()
   m[b] = False
@@ -526,6 +626,65 @@ def _dedupe_self_msa(batch):
     batch['num_alignments'] = np.asarray(
         np.asarray(batch['num_alignments']) - 1, dtype=np.asarray(
             batch['num_alignments']).dtype)
+  return batch
+
+
+def _esm_deletion_mean(batch):
+  """ESMFold2's deletion_mean is the mean over MSA rows of its deletion VALUE, (pi / 2) * arctan(d / 3), not of the counts."""
+  if 'deletion_matrix' not in batch or 'deletion_mean' not in batch:
+    return batch
+  live = np.asarray(batch['msa_mask']).any(-1)
+  if not live.any():
+    return batch
+  value = (np.pi / 2) * np.arctan(np.asarray(batch['deletion_matrix'], np.float32)[live] / 3.0)
+  batch['deletion_mean'] = value.mean(0).astype(np.asarray(batch['deletion_mean']).dtype)
+  return batch
+
+
+def _complex_msa_profile(batch, unk=20):
+  """ESMFold2's profile is a mean over the whole complex MSA, where a chain without an MSA has its query (UNK on a ligand) in row 0 and gaps below."""
+  if 'msa' not in batch:
+    return batch
+  from alphafold3.cpp import msa_profile
+  msa = np.asarray(batch['msa']).copy()
+  live = np.flatnonzero(np.asarray(batch['msa_mask']).any(-1))
+  if live.size == 0:
+    return batch
+  lig = np.flatnonzero(np.asarray(batch['is_ligand']).astype(bool) & np.asarray(batch['seq_mask']).astype(bool))
+  msa[live[0], lig] = unk
+  batch['msa'] = msa.astype(np.asarray(batch['msa']).dtype)
+  if 'profile' in batch:
+    n = np.asarray(batch['profile']).shape[-1]
+    batch['profile'] = msa_profile.compute_msa_profile(msa=np.minimum(msa[live], n - 1), num_residue_types=n).astype(np.float32)
+  return batch
+
+
+def _native_nonprotein_msa(batch, unk=20, gap=21):
+  """OpenDDE's MSA on non-protein tokens: a ligand reads UNK in every row and profile, a nucleic chain's all-gap rows repeat its query."""
+  if 'msa' not in batch:
+    return
+  msa = np.asarray(batch['msa']).copy()
+  mask = np.asarray(batch['msa_mask']).copy()
+  live = np.flatnonzero(mask.any(-1))
+  lig = np.asarray(batch['is_ligand']).astype(bool)
+  nuc = (np.asarray(batch['is_rna']) | np.asarray(batch['is_dna'])).astype(bool)
+  real = np.asarray(batch['seq_mask']).astype(bool)
+  asym = np.asarray(batch['asym_id'])
+  cols = np.flatnonzero(lig & real)
+  msa[np.ix_(live, cols)] = unk
+  mask[np.ix_(live, cols)] = True
+  for a in np.unique(asym[nuc & real]):
+    c = np.flatnonzero((asym == a) & nuc & real)
+    rows = live[(msa[np.ix_(live, c)] == gap).all(-1)]
+    msa[np.ix_(rows, c)] = msa[live[0], c]
+    mask[np.ix_(rows, c)] = True
+  if 'profile' in batch:
+    profile = np.asarray(batch['profile']).copy()
+    profile[cols] = 0.0
+    profile[cols, unk] = 1.0
+    batch['profile'] = profile
+  batch['msa'] = msa.astype(np.asarray(batch['msa']).dtype)
+  batch['msa_mask'] = mask
   return batch
 
 
@@ -592,13 +751,8 @@ def _attach_lm_pair(batch, lm_pair):
   states. It has to be in the SAME token order the featuriser laid out, which is
   why it is keyed to the batch rather than to the input JSON.
 
-  ESM-C is a PROTEIN language model, so a pair rep covering only the protein
-  tokens is scattered into the full token grid with zeros elsewhere -- the same
-  thing `_attach_esm` does for chai-1's ESM2, and the only sensible reading of
-  "no language-model information about this token". Note that native ESMFold2
-  has no non-protein path at all (its featuriser takes sequences), so a ligand
-  or nucleic-acid chain is out of distribution for the model however this term
-  is filled.
+  A pair rep covering only the protein tokens is scattered into the full token grid with zeros elsewhere. Native
+  ESMFold2 instead runs its shim over every token, zero hidden states off protein; `_attach_lm_hidden` does that.
   """
   lm = np.asarray(lm_pair, np.float32)
   n = np.asarray(batch['token_index']).shape[-1]
@@ -630,6 +784,31 @@ def _attach_lm_pair(batch, lm_pair):
     full[np.ix_(idxs, idxs)] = lm[np.ix_(rows, rows)]
     lm = full
   batch['lm_pair'] = lm
+  return batch
+
+
+def _attach_lm_hidden(batch, rows, shim_params):
+  """ESMFold2's language-model pair as native builds it: ESM-C's states (residues, layers, width) on every token,
+  zeros where a token is not protein (and with no protein chain at all), then the shim over the whole token grid.
+  A protein token takes its residue's row, which covers an atomised modified residue.
+  """
+  from alphafold3.model import esm
+
+  n = np.asarray(batch['token_index']).shape[-1]
+  layers, width = np.shape(shim_params['combine'])[0], np.shape(shim_params['lm_norm/scale'])[0]
+  hidden = np.zeros((n, layers, width), np.float32)
+  idxs = np.flatnonzero(np.asarray(batch['is_protein']).astype(bool))
+  if rows is not None and len(idxs):
+    asym = np.asarray(batch['asym_id']).reshape(-1)[idxs]
+    resi = np.asarray(batch['residue_index']).reshape(-1)[idxs]
+    rank, order = {}, []
+    for key in zip(asym.tolist(), resi.tolist()):
+      order.append(rank.setdefault(key, len(rank)))
+    if len(rows) != len(rank):
+      raise ValueError(f'ESM-C has {len(rows)} rows but the batch has {len(idxs)} protein tokens spanning '
+                       f'{len(rank)} residues')
+    hidden[idxs] = np.asarray(rows, np.float32)[np.asarray(order, np.int64)]
+  batch['lm_pair'] = np.asarray(esm.shim(hidden, shim_params), np.float32)
   return batch
 
 
@@ -666,8 +845,132 @@ def _centre_conformers(batch):
   batch['ref_pos'] = flat.reshape(pos.shape)
 
 
+def _translate_conformers(batch, max_translation=1.0):
+  """Protenix's inference ref_pos augmentation after the centring: each conformer group moves by U(-1, 1) per axis."""
+  if 'ref_pos' not in batch:
+    return
+  pos = np.array(batch['ref_pos'], dtype=np.float32)
+  mask = np.asarray(batch['ref_mask']) > 0
+  uid = np.asarray(batch['ref_space_uid']).reshape(-1).astype(np.int64)
+  if not uid.size:
+    return
+  # seeded by the per-seed conformers, so every seed is reproducible; native draws from numpy's global state
+  import hashlib
+  rng = np.random.default_rng(np.frombuffer(hashlib.sha256(pos.tobytes()).digest()[:8], np.uint64)[0])
+  shift = rng.uniform(-max_translation, max_translation, size=(int(uid.max()) + 1, 3)).astype(np.float32)
+  flat = pos.reshape(-1, 3) + shift[uid] * mask.reshape(-1)[:, None]
+  batch['ref_pos'] = flat.reshape(pos.shape)
+
+
+# threads per SM by compute capability, for torch's launch grid; the SM count comes from the device
+_THREADS_PER_SM = {(7, 0): 2048, (7, 5): 1024, (8, 0): 2048, (8, 6): 1536, (8, 7): 1536, (8, 9): 1536,
+                   (9, 0): 2048, (10, 0): 2048, (10, 3): 2048, (12, 0): 1536, (12, 1): 1536}
+NATIVE_RNG_PASSES = 64
+
+
+def _device_grid_params():
+  """(SM count, max threads per SM) of the device this process runs on, for torch's dropout/randperm grids"""
+  import jax
+  dev = jax.devices()[0]
+  sms = int(getattr(dev, 'core_count', 0) or 1)
+  try:
+    cc = tuple(int(x) for x in str(getattr(dev, 'compute_capability', '8.0')).split('.')[:2])
+  except ValueError:
+    # a ROCm device reports its gfx name: no CUDA launch grid to mirror, protenix folded nowhere on AMD
+    cc = None
+  return sms, _THREADS_PER_SM.get(cc, 2048)
+
+
+def _msa_depth(batch):
+  """rows of the MSA with any real position"""
+  n_tok = int(np.asarray(batch['seq_mask']).sum())
+  return int(np.asarray(batch['msa_mask']).astype(bool)[:, :n_tok].any(-1).sum())
+
+
+def _crop_msa_padding(batch):
+  """For a model that runs every MSA row it is given: crop the padding to a power-of-two bucket over the real rows"""
+  if 'msa' not in batch:
+    return
+  rows = np.asarray(batch['msa_mask']).shape[0]
+  depth = min(rows, max(1024, 1 << max(0, _msa_depth(batch) - 1).bit_length()))
+  for key in ('msa', 'msa_mask', 'deletion_matrix'):
+    batch[key] = batch[key][:depth]
+
+
+def _native_rng(batch, seed, pair_channel, fold_input):
+  """Protenix's MC dropout and per-pass MSA subsets as native draws them for this seed -- see protenix_rng."""
+  from alphafold3.common import folding_input
+  from alphafold3.constants import chemical_components
+  from alphafold3.model.pipeline import protenix_rng
+  polymers = (folding_input.ProteinChain, folding_input.RnaChain, folding_input.DnaChain)
+  # native builds each entity once, and copies of a chain are one entity
+  entities = list(dict.fromkeys((type(c), tuple(c.to_ccd_sequence())) for c in fold_input.chains
+                                if isinstance(c, polymers)))
+  draws = protenix_rng.leaving_group_draws([codes for _, codes in entities],
+                                           chemical_components.Ccd(user_ccd=fold_input.user_ccd))
+  n_tok = int(np.asarray(batch['seq_mask']).sum())
+  n_msa = _msa_depth(batch)
+  sms, tps = _device_grid_params()
+  mc, rows, offsets = protenix_rng.replay(
+      seed, leaving_draws=draws, n_msa=n_msa, n_tokens=n_tok, pair_channel=pair_channel,
+      passes=NATIVE_RNG_PASSES, sms=sms, threads_per_sm=tps)
+  keep = np.zeros((NATIVE_RNG_PASSES, np.asarray(batch['msa_mask']).shape[0]), bool)
+  for k, r in enumerate(rows):
+    keep[k, r] = True
+  batch['px_seed'] = np.asarray(seed, np.int32)
+  batch['px_mc_dropout'] = np.asarray(mc, np.int32)
+  batch['px_msa_rows'] = keep
+  batch['px_drop_offset'] = np.asarray(offsets, np.int32)
+  batch['px_n_tokens'] = np.asarray(n_tok, np.int32)
+  batch['px_grid'] = np.asarray(protenix_rng.grid_size(n_tok * n_tok * pair_channel, sms, tps), np.int32)
+
+
+def prepare_input(fold_input, spec):
+  """The input-side conventions, applied before featurisation: a copy of `fold_input` as the model's featuriser sees it.
+
+  dedupe_unpaired_msa: the protenix featuriser deduplicates each protein chain's unpaired MSA, ignoring insertions,
+  where AF3 keeps a supplied MSA as given (msa_featurizer RawMsa, dedup=True); the paired MSA stays as given in both.
+  of3_main_msa: OpenFold3 reads the first N rows of a protein or RNA chain's main MSA (max_seq_counts colabfold_main) and
+  deduplicates them, ignoring insertions, before its profile and deletion mean; AF3 keeps every row and profiles them all.
+  ccd_unk: an unknown amino acid keeps the CCD UNK atoms (N CA C O CB CG) where AF3 builds it as GLY; process-wide, set on
+  every call so the next featurisation follows this model.
+  """
+  knobs = spec.featurise
+  from alphafold3.structure import chemical_components as struc_chem_comps
+  struc_chem_comps.UNK_AS_GLY = not knobs.get('ccd_unk')
+  cap = knobs.get('of3_main_msa')
+  if not (knobs.get('dedupe_unpaired_msa') or cap):
+    return fold_input
+  import dataclasses
+  import string
+  from alphafold3.common import folding_input
+  from alphafold3.data import parsers
+  strip = str.maketrans('', '', string.ascii_lowercase)
+
+  def dedupe(a3m):
+    seqs, descs = parsers.parse_fasta(a3m)
+    seen, lines = set(), []
+    for s, d in list(zip(seqs, descs))[:cap]:
+      if s.translate(strip) not in seen:
+        seen.add(s.translate(strip))
+        lines += [f'>{d}', s]
+    return '\n'.join(lines) + '\n'
+
+  chains = []
+  for c in fold_input.chains:
+    if isinstance(c, folding_input.ProteinChain) and c.unpaired_msa:
+      c = folding_input.ProteinChain(id=c.id, sequence=c.sequence, ptms=c.ptms, description=c.description,
+                                     unpaired_msa=dedupe(c.unpaired_msa), paired_msa=c.paired_msa,
+                                     templates=c.templates)
+    elif cap and isinstance(c, folding_input.RnaChain) and c.unpaired_msa:
+      c = folding_input.RnaChain(id=c.id, sequence=c.sequence, modifications=c.modifications,
+                                 description=c.description, unpaired_msa=dedupe(c.unpaired_msa))
+    chains.append(c)
+  return dataclasses.replace(fold_input, chains=chains)
+
+
 def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
-          has_msa=True, fold_input=None, cyclic=None, lm_pair=None):
+          has_msa=True, fold_input=None, cyclic=None, lm_pair=None, seed=None, lm_hidden=None):
   """Apply `spec`'s featurisation conventions to a featurised batch, in place.
 
   spec is a model_registry.ModelSpec; the work is driven by spec.featurise.
@@ -684,6 +987,9 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   cyclic is not a per-model convention at all -- it wraps the shared relative
   position encoding, so every family here honours it. It is applied whether or
   not the model declares anything.
+
+  lm_hidden (ESM-C rows or None, shim params) builds ESMFold2's language-model pair over every token, as native
+  does; lm_pair is a finished one.
   """
   knobs = spec.featurise
   if cyclic:
@@ -697,6 +1003,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if (knobs.get('centre_conformers')
       and not os.environ.get('AF3_NO_CENTRE_CONFORMERS')):
     _centre_conformers(batch)
+  if knobs.get('translate_conformers') and not os.environ.get('AF3_NO_TRANSLATE_CONFORMERS'):
+    _translate_conformers(batch)
   if not knobs:
     return batch
 
@@ -711,10 +1019,16 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
 
   if knobs.get('atomized_backbone_bonds'):
     _atomized_backbone_bonds(batch)
+  if knobs.get('declared_polymer_bonds'):
+    _declared_polymer_bonds(batch, fold_input, rule=knobs['declared_polymer_bonds'])
+  if knobs.get('declared_bond_feature'):
+    _declared_bond_feature(batch, fold_input)
   if knobs.get('atomized_unknown_restype'):
     from alphafold3.model.pipeline import chiral_features
     # before restype_alignment, which reads `aatype` to rewrite profile and msa.
-    chiral_features.apply_unknown_restype_on_atomized(batch)
+    mode = knobs['atomized_unknown_restype']
+    chiral_features.apply_unknown_restype_on_atomized(
+        batch, nucleic=mode == 'nucleic', nucleic_unknown=30 if mode == 'chai' else None)
   if knobs.get('atomized_element_names'):
     from alphafold3.model.pipeline import chiral_features
     chiral_features.apply_atomized_element_names(batch)
@@ -723,17 +1037,16 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     chiral_features.apply_restype_alignment_on_atomized(batch)
   if knobs.get('drop_atoms'):
     _drop_atoms_by_name(batch, knobs['drop_atoms'])
+  if knobs.get('ccd_leaving_atoms'):
+    _check_ccd_leaving(batch, fold_input)
   if knobs.get('std_conformers'):
-    if model_dir is None:
-      raise ValueError(f'{spec.name} needs model_dir to find its conformers')
-    import os
-    _override_ref_conformers(
-        batch, load_chai_conformers(
-            os.path.join(os.path.expanduser(str(model_dir)),
-                         knobs['std_conformers'])))
+    from alphafold3.constants import chai1_conformers
+    _override_ref_conformers(batch, chai1_conformers.as_conformers())
+  if knobs.get('raw_last_conformer'):
+    _raw_last_conformer(batch)
   if knobs.get('esmfold2_ref_pos'):
-    # ESMFold2's atom encoder was trained on its OWN idealised geometry
-    # (`protein_utils.PROTEIN_REF_POS`), not on the CCD ideal values AF3 uses.
+    # ESMFold2's atom encoder reads its ccd.pkl conformers (see
+    # constants/esmfold2_ref_pos.py), not the CCD ideal values AF3 uses.
     # Substituted by atom NAME through the same helper chai1's conformers use,
     # so an atom the table does not carry -- AF3's terminal OXT -- keeps the
     # coordinate it already had rather than being zeroed.
@@ -757,12 +1070,26 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     chiral_features.attach_chiral_features(batch)
   if knobs.get('zero_msa_without_alignment') and not has_msa:
     _zero_msa(batch)
+  if knobs.get('chai_msa') and has_msa and fold_input is not None:
+    _chai_msa(batch, fold_input)
   if knobs.get('dedupe_self_msa'):
-    _dedupe_self_msa(batch)
+    _dedupe_self_msa(batch, query_once=knobs['dedupe_self_msa'] == 'query_once')
+  if knobs.get('native_nonprotein_msa'):
+    _native_nonprotein_msa(batch)
+  if knobs.get('complex_msa_profile'):
+    _complex_msa_profile(batch)
+  if knobs.get('esm_deletion_mean'):
+    _esm_deletion_mean(batch)
+  if knobs.get('full_msa') or knobs.get('native_rng'):
+    _crop_msa_padding(batch)
+  if knobs.get('native_rng') and seed is not None and fold_input is not None:
+    _native_rng(batch, seed, knobs['native_rng'], fold_input)
   if knobs.get('empty_template_gap'):
     _empty_template_gap(batch, slots=knobs.get('empty_template_gap_slots',
                                                'first'))
-  if knobs.get('lm_pair') and lm_pair is not None:
+  if knobs.get('lm_pair') and lm_hidden is not None:
+    _attach_lm_hidden(batch, *lm_hidden)
+  elif knobs.get('lm_pair') and lm_pair is not None:
     _attach_lm_pair(batch, lm_pair)
   if knobs.get('esm') and esm is not None:
     _attach_esm(batch, esm)
@@ -824,9 +1151,44 @@ def _mark_modified_residues(batch, fold_input, unknown_restype=False):
   if unknown_restype and flag.any():
     unknown = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(
         residue_names.UNK)
+    sel = flag.astype(bool)
+    # genuine Boltz-2 (tokenize/boltz2.py, a modified residue tokenised at residue level): res_type is its CHAIN's
+    # unknown, get_unk_token(chain) - a nucleic chain's N (our 30; a DNA chain's DN reads 30 too and model.py adds
+    # Boltz's DN row on a DNA token). The protein unknown on a modified RNA base stretched 2'-O-methylguanosine's
+    # O2'-CM2 to 2.6-2.7 A where genuine Boltz-2 holds 1.55-1.71.
+    nucleic = (np.asarray(batch['is_rna']).astype(bool) | np.asarray(batch['is_dna']).astype(bool)).reshape(-1)
     aatype = np.array(batch['aatype'])
-    aatype[flag.astype(bool)] = unknown
+    parent = aatype.copy()
+    aatype[sel & ~nucleic] = unknown
+    aatype[sel & nucleic] = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP - 1
     batch['aatype'] = aatype
+    # ...its alignment's query reads the protein unknown there - its residue record's type (parse_ccd_residue's
+    # unk_prot_id), which the featuriser writes over the query's letter - so the query's copies, and a profile that is
+    # the query's one-hot, read UNK
+    msa = np.array(batch['msa'])
+    copies = (msa == msa[0][None]).all(-1)
+    for t in np.nonzero(sel)[0]:
+      msa[copies, t] = unknown
+    batch['msa'] = msa
+    profile = np.array(batch['profile'])
+    for t in np.nonzero(sel)[0]:
+      if profile[t, parent[t]] == 1 and profile[t].sum() == 1:
+        profile[t] = 0
+        profile[t, unknown] = 1
+    batch['profile'] = profile.astype(np.asarray(batch['profile']).dtype)
+    # ...and its representative atom is its first (parse_ccd_residue's atom_center=0, atom_disto=0)
+    key = 'token_atoms_to_pseudo_beta'
+    if f'{key}:gather_idxs' in batch:
+      idxs = np.array(batch[f'{key}:gather_idxs'])
+      mask = np.array(batch[f'{key}:gather_mask'])
+      ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+      for t in np.nonzero(sel)[0]:
+        live = np.nonzero(ref_mask[t])[0]
+        if live.size:
+          idxs[t] = t * ref_mask.shape[1] + int(live[0])
+          mask[t] = True
+      batch[f'{key}:gather_idxs'] = idxs
+      batch[f'{key}:gather_mask'] = mask
   return batch
 
 
@@ -905,10 +1267,6 @@ def _atomized_backbone_bonds(batch):
     return batch
   layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
 
-  key = 'tokens_to_ligand_ligand_bonds'
-  idxs = np.array(batch[f'{key}:gather_idxs'])
-  mask = np.array(batch[f'{key}:gather_mask'])
-  order = batch.get('ligand_ligand_bond_order')
   ref_mask = np.asarray(batch['ref_mask']).astype(bool)
   num_token, num_dense = ref_mask.shape[-2], ref_mask.shape[-1]
 
@@ -938,11 +1296,21 @@ def _atomized_backbone_bonds(batch):
       if tail in atoms_a and head in atoms_b:
         wanted.append((atoms_a[tail], atoms_b[head]))
         break
+  # a backbone link is a single bond
+  return _add_token_bonds(batch, wanted, 1)
 
+
+def _add_token_bonds(batch, pairs, order_code):
+  """Token pairs, both directions, into the free (masked-off) rows of the ligand-ligand bond gather, so the batch keeps
+  its shapes; grown if it has too few. order_code is the pairs' bond order."""
+  key = 'tokens_to_ligand_ligand_bonds'
+  idxs = np.array(batch[f'{key}:gather_idxs'])
+  mask = np.array(batch[f'{key}:gather_mask'])
+  order = batch.get('ligand_ligand_bond_order')
   present = {(int(a), int(b))
              for (a, b), ok in zip(idxs, mask.all(axis=1)) if ok}
   new = []
-  for a, b in wanted:
+  for a, b in pairs:
     for pair in ((a, b), (b, a)):
       if pair not in present:
         present.add(pair)
@@ -969,8 +1337,107 @@ def _atomized_backbone_bonds(batch):
   batch[f'{key}:gather_mask'] = mask
   if order is not None:
     order = np.array(order)
-    order[rows] = 1                          # a backbone link is a single bond
+    order[rows] = order_code
     batch['ligand_ligand_bond_order'] = order
+  return batch
+
+
+def _declared_polymer_bonds(batch, fold_input, rule='all'):
+  """bondedAtomPairs that AF3 does not featurise, as token bonds, by the vendor's own rule.
+
+  AF3 keeps a declared bond only between a STANDARD residue or a ligand and a ligand; a bond between two polymer
+  residues, or from a modified (atomised) residue to a ligand, never reaches its token bonds.
+
+    'all'            boltz-2: its tokeniser makes every bond between two tokens a token bond (type + 1). A disulfide to
+                     a D-Cys folded 21.7 A apart without it, against native's 2.4.
+    'discontinuous'  protenix and opendde: `include_discont_poly_poly_bonds=True` at inference keeps a polymer-polymer
+                     bond only between residues more than one apart or in different chains (head-to-tail ring closures,
+                     staples, lactones), and every bond of a non-standard residue to a ligand.
+    'ligand'         rf3: atomworks drops every bond between two non-atomised tokens, but keeps a modified (atomised)
+                     residue's bond to a ligand.
+  """
+  from alphafold3.model import features
+
+  pairs_in = getattr(fold_input, 'bonded_atom_pairs', None) if fold_input is not None else None
+  layout = batch.get('token_atoms_layout')
+  if not pairs_in or layout is None:
+    return batch
+  rule = 'all' if rule is True else rule
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  polymers = {c.id for c in fold_input.chains if type(c).__name__ in ('ProteinChain', 'RnaChain', 'DnaChain')}
+  standard = _standard_residue_names()
+  ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+  token_of, res_name = {}, {}
+  for t, s in zip(*np.nonzero(ref_mask)):
+    key = (str(layout.chain_id[t, s]), int(layout.res_id[t, s]), str(layout.atom_name[t, s]))
+    token_of.setdefault(key, int(t))
+    res_name[key[:2]] = str(layout.res_name[t, s])
+  pairs = []
+  for a, b in pairs_in:
+    a, b = tuple(a), tuple(b)
+    poly_a, poly_b = a[0] in polymers, b[0] in polymers
+    if poly_a and poly_b:
+      if rule == 'ligand':
+        continue
+      if rule == 'discontinuous' and a[0] == b[0] and abs(int(a[1]) - int(b[1])) <= 1:
+        continue                            # adjacent residues: protenix leaves the link to the chain
+    elif poly_a or poly_b:
+      poly = a if poly_a else b
+      if res_name.get((str(poly[0]), int(poly[1]))) in standard:
+        continue                            # AF3 featurises a standard residue's bond to a ligand itself
+    else:
+      continue                              # ligand-ligand: AF3's own
+    ta, tb = token_of.get(a), token_of.get(b)
+    if ta is not None and tb is not None and ta != tb:
+      pairs.append((ta, tb))
+  return _add_token_bonds(batch, pairs, features.BOND_ORDER_COVALENT)
+
+
+def _check_ccd_leaving(batch, fold_input):
+  """Warn if a declared bond's CCD leaving atom is still in the layout: the featuriser has to drop it before
+  tokenising (featurise_input's ccd_leaving_atoms, which an older caller does not pass)."""
+  from absl import logging
+  from alphafold3.constants import chemical_components
+  from alphafold3.model.pipeline import structure_cleaning
+
+  pairs_in = getattr(fold_input, 'bonded_atom_pairs', None) if fold_input is not None else None
+  layout = batch.get('token_atoms_layout')
+  if not pairs_in or layout is None:
+    return
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+  present, res_name = set(), {}
+  for t, a in zip(*np.nonzero(ref_mask)):
+    key = (str(layout.chain_id[t, a]), int(layout.res_id[t, a]))
+    present.add(key + (str(layout.atom_name[t, a]),))
+    res_name[key] = str(layout.res_name[t, a])
+  ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None))
+  left = sorted(k + (n,) for k, names in structure_cleaning.declared_bond_leaving_atoms(pairs_in, res_name, ccd).items()
+                for n in names if k + (n,) in present)
+  if left:
+    logging.warning('declared-bond leaving atoms still present (featurised without ccd_leaving_atoms?): %s', left[:8])
+
+
+def _declared_bond_feature(batch, fold_input):
+  """chai-1's TokenBondRestraint: a (tokens, tokens) 0/1 matrix with [left, right] = 1 for each declared bond, every
+  kind (polymer-polymer, residue-ligand, ligand-ligand), in its declared direction only; nothing else, not even a
+  ligand's own bonds. chai-lab fills it from its covalent restraints and glycan strings (chai1.py,
+  get_atom_covalent_bond_pairs_from_constraints) and projects it into both its trunk and its structure pair inputs."""
+  num = np.asarray(batch['ref_mask']).shape[0]
+  out = np.zeros((num, num), np.float32)
+  pairs_in = getattr(fold_input, 'bonded_atom_pairs', None) if fold_input is not None else None
+  layout = batch.get('token_atoms_layout')
+  if pairs_in and layout is not None:
+    layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+    ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+    token_of = {}
+    for t, s in zip(*np.nonzero(ref_mask)):
+      token_of.setdefault((str(layout.chain_id[t, s]), int(layout.res_id[t, s]), str(layout.atom_name[t, s])), int(t))
+    for a, b in pairs_in:
+      ta, tb = token_of.get(tuple(a)), token_of.get(tuple(b))
+      if ta is not None and tb is not None:
+        out[ta, tb] = 1.0
+  batch['declared_bonds'] = out
   return batch
 
 
