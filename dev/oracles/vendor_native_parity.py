@@ -52,6 +52,29 @@ VENDORS = {
     # 2.7.1, numpy 2.4.1, rdkit 2025.9.3, biotite 1.4.0, ...) is met exactly.
     'opendde': (_H + '/venv_protenix/bin/python', _H + '/OpenDDE',
                 'opendde_upstream_runner.py'),
+    # OpenFold3: ONE runner, the tree picks the release. openbind0 is v0.5.0
+    # (worktree ~/openfold-3-v050) -- main loads its tensors but runs the other
+    # triangle-attention convention (run_all_parity.sh). ~/venv_of3 serves both:
+    # the two trees' conda locks are identical (pins in
+    # ~/venv_of3/requirements-of3.txt; deepspeed/cuequivariance left out).
+    'openfold3': (_H + '/venv_of3/bin/python', _H + '/openfold-3',
+                  'openfold3_upstream_runner.py'),
+    'openbind0': (_H + '/venv_of3/bin/python', _H + '/openfold-3-v050',
+                  'openfold3_upstream_runner.py'),
+    # IntelliFold v2.0.4's native PyTorch stack. Its pyproject pins only the
+    # JAX wrapper, so ~/venv_intellifold (uv, python 3.11) carries the pins of
+    # the last wheel that shipped the torch stack (pypi/intellifold-2.0.2:
+    # torch 2.6.0, numpy 1.24.0, rdkit 2024.3.2, accelerate 1.1.1, ...) minus
+    # deepspeed, a CUDA-build kernel extra the stack only uses when asked.
+    'intellifold2': (_H + '/venv_intellifold/bin/python', _H + '/IntelliFold',
+                     'intellifold2_upstream_runner.py'),
+    # RoseTTAFold3 (foundry @ aad357b). ~/venv_rf3 (uv, python 3.12) pins
+    # foundry's pyproject deps under its own ci-constraints.txt (torch 2.7.1,
+    # rdkit 2025.3.6; atomworks 2.2.1) in ~/venv_rf3/requirements-rf3.txt,
+    # minus the `rf3` extra (cuequivariance: CUDA-build fused kernels).
+    'rosettafold3': (_H + '/venv_rf3/bin/python',
+                     _H + '/foundry_rf3/src:' + _H + '/foundry_rf3/models/rf3/src',
+                     'rosettafold3_upstream_runner.py'),
 }
 
 
@@ -84,6 +107,11 @@ def _s_inputs_to_ours(model, x):
   """
   if x.shape[-1] == 449:
     from converters.openfold3 import _AF3_TO_OF3_AATYPE as remap
+    # rosettafold3 (atomworks' alphabet) swaps G/C and DG/DC relative to OF3's
+    # (converters/rosettafold3.py) -- its own remap, or every nucleic s_inputs
+    # row reads as a disagreement.
+    if model == 'rosettafold3':
+      from converters.rosettafold3 import _AF3_TO_RF3_AATYPE as remap
     idx = np.concatenate([384 + np.asarray(remap), 416 + np.asarray(remap),
                           [448], np.arange(384)])
     return x[..., idx]
@@ -101,8 +129,11 @@ def featurise_ours(model, j, recycles, bf16):
   import fold_check
   from alphafold3.common import folding_input
   fi = folding_input.Input.from_json(json.dumps(j))
+  # MODEL_DIR (fold_check's convention): an alternative blob for the same
+  # model, e.g. intellifold2 converted with IF2_FP32_BLOB=1, to tell its bf16
+  # trunk storage policy from a port bug.
   batch, cfg, model_dir = fold_check._fold_setup(
-      model, None, chains=list(fi.chains),
+      model, None, model_dir=os.environ.get('MODEL_DIR'), chains=list(fi.chains),
       bonded_atom_pairs=fi.bonded_atom_pairs, seed=1)
   cfg.global_config.bfloat16 = bf16
   cfg.num_recycles = recycles
