@@ -883,7 +883,10 @@ for _m in ('openfold3', 'openbind0'):
 if not os.environ.get('AF3_NO_CCD_UNK'):
   for _m in ('chai1', 'protenix1', 'protenix2', 'opendde', 'rosettafold3'):
     _FEATURISE.setdefault(_m, {})['ccd_unk'] = True
-  _FEATURISE.setdefault('boltz2', {})['ccd_unk'] = 'cb'
+  # intellifold2 too: it forks boltz's featuriser, so its UNK is the same N CA C O CB
+  # (stock-IntelliFold comparison, unknown case: CB the one atom ours lacked)
+  for _m in ('boltz2', 'intellifold2'):
+    _FEATURISE.setdefault(_m, {})['ccd_unk'] = 'cb'
 
 
 # Where a converted model's weights are published. The file name is what
