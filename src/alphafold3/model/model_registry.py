@@ -779,6 +779,10 @@ _FEATURISE = {
                          declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'ligand',
                          # atomworks atomises a residue covalently bound to a ligand (covalent_modifications.py)
                          atomize_ligand_bonded=not os.environ.get('AF3_NO_RF3_ATOMIZE_BONDED'),
+                         # atomworks recharges a declared bond's atoms from their bond degree (Asn ND2 +1)
+                         declared_bond_charge=not os.environ.get('AF3_NO_RF3_BOND_CHARGE'),
+                         # atomworks atomises an unknown amino acid (X -> UNK) like any non-standard residue
+                         atomize_unknown=not os.environ.get('AF3_NO_RF3_ATOMIZE_UNK'),
                          # atomworks drops a declared bond's CCD leaving atoms too (bR: retinal O1 at the Schiff base)
                          ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                          padded_keys=True,

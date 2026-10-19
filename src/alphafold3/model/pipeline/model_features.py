@@ -991,6 +991,66 @@ def _ccd_restype(batch, fold_input):
   return batch
 
 
+# atomworks.constants.DEFAULT_VALENCE, keys as written there: the element it is
+# matched against is the CCD type_symbol, so 'CL'/'BR' never hit 'Cl'/'Br'.
+_ATOMWORKS_VALENCE = {'H': 1, 'C': 4, 'N': 3, 'O': 2, 'F': 1, 'Cl': 1, 'Br': 1, 'B': 3}
+_BOND_ORDER = {'SING': 1, 'DOUB': 2, 'TRIP': 3, 'QUAD': 4}
+
+
+def _declared_bond_charge(batch, fold_input):
+  """RF3's formal charge on an atom a declared bond forms on: bond degree minus default valence.
+
+  atomworks (io/tools/inference.py) adds each bondedAtomPairs bond, drops each bonded atom's CCD leaving group,
+  then -- hydrogens still present -- resets the charge of every atom in such a bond to the sum of its bond orders
+  minus DEFAULT_VALENCE (correct_formal_charges_for_specified_atoms). The amide nitrogen of an N-glycosylated Asn
+  keeps both hydrogens and gains the C1 bond: four bonds on a trivalent N, charge +1 where the CCD says 0. Measured
+  against stock RF3 (vendor_native_parity covalent): ND2 the one atom of 147 whose features differed.
+  """
+  from alphafold3.constants import chemical_components
+  pairs = getattr(fold_input, 'bonded_atom_pairs', None) or ()
+  layout = batch.get('token_atoms_layout')
+  if not pairs or layout is None or 'ref_charge' not in batch:
+    return batch
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None))
+  n_declared = {}
+  for pair in pairs:
+    for atom in pair:
+      key = (str(atom[0]), int(atom[1]), str(atom[2]))
+      n_declared[key] = n_declared.get(key, 0) + 1
+  amask = np.asarray(batch['ref_mask']).astype(bool)
+  charge = np.array(batch['ref_charge'], copy=True)
+  for (chain, res, atom), n_bonds in n_declared.items():
+    where = np.argwhere(amask & (layout.chain_id == chain) & (layout.res_id == res) & (layout.atom_name == atom))
+    if not len(where):
+      continue
+    t, s = where[0]
+    entry = ccd.get(str(layout.res_name[t, s])) or {}
+    names = list(entry.get('_chem_comp_atom.atom_id', ()))
+    if atom not in names:
+      continue
+    element = entry['_chem_comp_atom.type_symbol'][names.index(atom)]
+    if element not in _ATOMWORKS_VALENCE:
+      continue
+    leaving = {n for n, f in zip(names, entry['_chem_comp_atom.pdbx_leaving_atom_flag']) if f == 'Y'}
+    nbrs = {}
+    for x, y, order in zip(entry.get('_chem_comp_bond.atom_id_1', ()), entry.get('_chem_comp_bond.atom_id_2', ()),
+                           entry.get('_chem_comp_bond.value_order', ())):
+      nbrs.setdefault(x, []).append((y, order))
+      nbrs.setdefault(y, []).append((x, order))
+    # the leaving group: what disconnects with this atom's leaving neighbours (get_chem_comp_leaving_atom_names)
+    gone, todo = set(), [n for n, _ in nbrs.get(atom, ()) if n in leaving]
+    while todo:
+      n = todo.pop()
+      if n not in gone:
+        gone.add(n)
+        todo.extend(m for m, _ in nbrs.get(n, ()) if m in leaving and m != atom)
+    degree = sum(_BOND_ORDER.get(o.upper(), 1) for n, o in nbrs.get(atom, ()) if n not in gone) + n_bonds
+    charge[t, s] = degree - _ATOMWORKS_VALENCE[element]
+  batch['ref_charge'] = charge.astype(np.asarray(batch['ref_charge']).dtype)
+  return batch
+
+
 def _dedupe_self_msa(batch, query_once=False):
   """ESMFold2's self-MSA is the query ONCE, not the query twice.
 
@@ -1357,6 +1417,16 @@ def _ligand_bonded_residues(fold_input):
   return frozenset(out)
 
 
+def _unknown_residues(fold_input):
+  """(chain_id, res_id) of every unknown amino acid (X) in a protein chain."""
+  from alphafold3.common import folding_input as fi
+  out = set()
+  for chain in fold_input.chains:
+    if isinstance(chain, fi.ProteinChain):
+      out.update((str(chain.id), i + 1) for i, c in enumerate(chain.sequence) if c == 'X')
+  return frozenset(out)
+
+
 def _largest_modified_residue(fold_input):
   """Slots for the biggest modified polymer residue (CCD heavy atoms), so a model that keeps one on a single token, as
   boltz does whatever its size, never truncates or splits it; None when 24 suffice."""
@@ -1385,6 +1455,8 @@ def prepare_input(fold_input, spec):
   every call so the next featurisation follows this model.
   atomize_ligand_bonded: a polymer residue a declared bond ties to a ligand is one token per atom (atomworks'
   covalent_modifications); process-wide like ccd_unk.
+  atomize_unknown: an unknown amino acid (X, read as the CCD UNK) is one token per atom, as atomworks tokenises any
+  residue outside its standard set (stock-RF3 comparison: 6 tokens where AF3 builds 1).
   drop_inner_terminal_atoms: True -- OXT only at a chain's last residue and OP3 only at its first, also on modified
   residues (atomworks); 'leaving' -- a modified polymer residue's CCD leaving atoms unless it ends the chain (esm);
   'leaving_all' -- every non-standard polymer residue's CCD leaving atoms, ends included (of3);
@@ -1395,8 +1467,9 @@ def prepare_input(fold_input, spec):
   from alphafold3.model import features as af3_features
   from alphafold3.structure import chemical_components as struc_chem_comps
   struc_chem_comps.UNK_AS_GLY = 'ALA' if knobs.get('ccd_unk') == 'cb' else not knobs.get('ccd_unk')
-  af3_features.ATOMIZED_RESIDUES = (_ligand_bonded_residues(fold_input) if knobs.get('atomize_ligand_bonded')
-                                    else frozenset())
+  af3_features.ATOMIZED_RESIDUES = (
+      (_ligand_bonded_residues(fold_input) if knobs.get('atomize_ligand_bonded') else frozenset())
+      | (_unknown_residues(fold_input) if knobs.get('atomize_unknown') else frozenset()))
   from alphafold3.model.pipeline import pipeline as af3_pipeline
   af3_pipeline.INNER_TERMINAL_ATOMS = knobs.get('drop_inner_terminal_atoms') or False
   af3_pipeline.MAX_ATOMS_PER_TOKEN = (_largest_modified_residue(fold_input) if knobs.get('modified_as_one_token')
@@ -1579,6 +1652,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _modified_restype_protein_letter(batch, fold_input)
   if knobs.get('modified_restype') == 'protein_unknown' and fold_input is not None:
     _modified_restype_protein_unknown(batch, fold_input)
+  if knobs.get('declared_bond_charge') and fold_input is not None:
+    _declared_bond_charge(batch, fold_input)
   if knobs.get('of3_msa_rows'):
     _of3_msa_rows(batch)
   if knobs.get('native_nonprotein_msa'):

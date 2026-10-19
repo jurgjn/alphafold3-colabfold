@@ -225,7 +225,12 @@ def _layout(ex):
          'feat.ref_space_uid':
              f['ref_space_uid'].detach().cpu().numpy().copy(),
          'feat.ref_element':
-             f['ref_element'].detach().cpu().numpy().copy()})
+             f['ref_element'].detach().cpu().numpy().copy()},
+      # every other per-atom feature, for an atom-by-atom diff against ours
+      **{'atomfeat.' + k: v.detach().cpu().numpy().copy()
+         for k, v in f.items()
+         if hasattr(v, 'shape') and v.ndim >= 1 and v.shape[0] == len(aa)
+         and k not in ('ref_pos', 'ref_space_uid', 'ref_element')})
 
 
 def featurise(model, case_json, out_dir):
