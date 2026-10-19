@@ -93,7 +93,9 @@ def _case_inputs(j, d):
         if x[0] in (e['id'] if isinstance(e['id'], list) else [e['id']]):
           if kind == 'protein':
             return '%s%d@%s' % (e['sequence'][x[1] - 1], x[1], x[2])
-          return '@%s' % x[2] if kind == 'ligand' and x[0] not in glycan_chains else '%s%d@%s' % ('', x[1], x[2])
+          # a ligand or glycan side names only its atom: chai reads res_idx[0] as a
+          # one-letter residue NAME, so '1@C1' asked for residue '1' (UNK) and matched nothing
+          return '@%s' % x[2]
       raise KeyError(x)
     restraints.append(dict(restraint_id='bond%d' % k, chainA=a[0], res_idxA=ref(a), chainB=b[0], res_idxB=ref(b),
                            connection_type='covalent', confidence=1.0, min_distance_angstrom=0.0,

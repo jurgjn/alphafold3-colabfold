@@ -83,7 +83,10 @@ def _structure_input(j, bonds=None, model='esmfold2'):
     if kind == 'protein':
       seqs.append(ProteinInput(id=cid, sequence=e['sequence'], modifications=mods, msa=msa))
     elif kind == 'rna':
-      seqs.append(RNAInput(id=cid, sequence=e['sequence'], modifications=mods, msa=msa))
+      import dataclasses
+      # Synthyra's RNAInput has no msa field (esm's does)
+      kw = {'msa': msa} if 'msa' in {f.name for f in dataclasses.fields(RNAInput)} else {}
+      seqs.append(RNAInput(id=cid, sequence=e['sequence'], modifications=mods, **kw))
     elif kind == 'dna':
       seqs.append(DNAInput(id=cid, sequence=e['sequence'], modifications=mods))
     elif kind == 'ligand':
