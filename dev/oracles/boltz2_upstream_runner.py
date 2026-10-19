@@ -29,7 +29,7 @@ CACHE = os.path.expanduser('~/.boltz')
 def _yaml_from_af3(j, msa_dir):
   """AF3 fold-input JSON -> boltz YAML text (the schema boltz documents)."""
   import yaml
-  seqs = []
+  seqs, templates = [], []
   for entry in j['sequences']:
     (kind, e), = entry.items()
     ids = e['id'] if isinstance(e['id'], list) else [e['id']]
@@ -48,8 +48,17 @@ def _yaml_from_af3(j, msa_dir):
               for m in e.get('modifications', [])]
       if mods:
         d['modifications'] = mods
-      if e.get('templates'):
-        raise NotImplementedError('templates: boltz reads a cif path per chain')
+      for k, t in enumerate(e.get('templates') or ()):
+        # boltz reads a template as a CIF path per query chain and aligns it
+        # itself (schema.get_template_records_from_matching); the template
+        # chain is the CIF's first protein chain, as the AF3 case maps it
+        p = os.path.join(msa_dir, 'template_%s_%d.cif' % (ids[0], k))
+        with open(p, 'w') as f:
+          f.write(t['mmcif'])
+        import gemmi
+        tchain = next(sc for ent in gemmi.cif.read(p).sole_block().find_values('_entity_poly.pdbx_strand_id')
+                      for sc in [ent.split(',')[0].strip()])
+        templates.append({'cif': p, 'chain_id': list(ids), 'template_id': [tchain] * len(ids)})
     elif kind in ('rna', 'dna'):
       d = {'id': ids, 'sequence': e['sequence']}
       mods = [{'position': m['basePosition'], 'ccd': m['modificationType']}
@@ -67,6 +76,8 @@ def _yaml_from_af3(j, msa_dir):
       raise NotImplementedError(kind)
     seqs.append({kind: d})
   y = {'version': 1, 'sequences': seqs}
+  if templates:
+    y['templates'] = templates
   if j.get('bondedAtomPairs'):
     y['constraints'] = [{'bond': {'atom1': list(a), 'atom2': list(b)}}
                         for a, b in j['bondedAtomPairs']]

@@ -138,7 +138,20 @@ def _of3_query(j, msa_root):
             f.write(e[key])
           c[field] = [os.path.join(d, fname)]
       if e.get('templates'):
-        raise NotImplementedError('templates')
+        # OF3's query format takes template CIFs per chain (template_cif_paths,
+        # template_cif_chain_ids) and aligns them itself
+        d = os.path.join(msa_root, ids[0])
+        os.makedirs(d, exist_ok=True)
+        paths, chains = [], []
+        for k, t in enumerate(e['templates']):
+          p = os.path.join(d, 'template_%d.cif' % k)
+          with open(p, 'w') as f:
+            f.write(t['mmcif'])
+          import gemmi
+          paths.append(p)
+          chains.append(gemmi.cif.read(p).sole_block().find_value('_entity_poly.pdbx_strand_id').split(',')[0].strip())
+        c['template_cif_paths'] = paths
+        c['template_cif_chain_ids'] = chains
     elif kind == 'ligand':
       # An AF3 ligand, MG included, is a CCD (or SMILES) ligand chain; OF3's
       # query format has no separate ion type.
@@ -211,7 +224,8 @@ def _run_cli(model, out_dir, recycles, n_samples=1):
           '--inference_ckpt_path', MODELS[model][1],
           '--num_diffusion_samples', str(n_samples),
           '--runner_yaml', rp, '--use_msa_server', 'false',
-          '--use_templates', 'false',
+          '--use_templates', 'true' if '"template_cif_paths"' in open(os.path.join(out_dir, 'query.json')).read()
+          else 'false',
           '--output_dir', os.path.join(out_dir, 'of3_out')]
   # TF32: both releases' predict turn it on (torch.set_float32_matmul_precision
   # ("high")), so on a GPU every fp32 matmul rounds to a 10-bit mantissa while
