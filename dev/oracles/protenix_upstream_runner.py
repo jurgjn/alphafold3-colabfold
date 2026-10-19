@@ -103,15 +103,16 @@ def _configs(model, json_path, dump_dir, dtype):
   # Kernels are an implementation choice, not the model: torch everywhere.
   args = ('--model_name %s --input_json_path %s --dump_dir %s '
           '--load_checkpoint_dir %s --dtype %s --triangle_attention torch '
-          '--triangle_multiplicative torch --seeds 1 --use_msa true '
-          # STOCK INFERENCE IS STOCHASTIC IN THE TRUNK: with probability
-          # mc_dropout_apply_rate (0.4, configs_base.py:109) per seed, the
-          # recycling z update runs through dropout at p=0.4
-          # (protenix.py:240). A random draw like ref_pos, so off here; that
-          # our port has no such mode at all is a FIDELITY gap, recorded in
-          # PARITY.md, not something this comparison can grade.
-          '--mc_dropout_apply_rate 0'
+          '--triangle_multiplicative torch --seeds 1 --use_msa true'
           % (name, json_path, dump_dir, CKPT_DIR, dtype))
+  # STOCK INFERENCE IS STOCHASTIC IN THE TRUNK: with probability
+  # mc_dropout_apply_rate (0.4) per seed the recycled z update runs through
+  # dropout, and each pass takes a random MSA subset. Our port REPLAYS those
+  # draws from the seed (model_features._native_rng, 2136ec2), so by default
+  # they stay on and the comparison tests the replay. PROTENIX_NO_RNG=1 turns
+  # them off here; run ours with AF3_NO_PX_NATIVE_RNG=1 to match.
+  if os.environ.get('PROTENIX_NO_RNG'):
+    args += ' --mc_dropout_apply_rate 0'
   return parse_configs(configs=base, arg_str=args, fill_required_with_null=True)
 
 
@@ -155,7 +156,13 @@ def forward(model, out_dir, in_npz, out_npz):
   c = _configs(model, os.path.join(out_dir, 'protenix.json'), out_dir, dtype)
   c.model.N_cycle = int(z['recycling_steps']) + 1
   runner = InferenceRunner(c)
-  data = torch.load(os.path.join(out_dir, 'data.pt'), weights_only=False)
+  # As runner/inference.py:infer_predict does it: the model already built,
+  # seed_everything(seed), THEN featurise and predict in the same stream --
+  # which is what the replay on our side reproduces. Same seed as `featurise`,
+  # so this draw of ref_pos is the one the harness already injected into ours.
+  from protenix.utils.seed import seed_everything
+  seed_everything(seed=1, deterministic=True)
+  _, data, _ = _batch(model, out_dir, dtype)
   runner.update_model_configs(update_inference_configs(
       c, data['N_token'].item()))
   net = runner.model
