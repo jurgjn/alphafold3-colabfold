@@ -468,11 +468,17 @@ def map_confidence_head(sd, params, n_blocks=4, n_atom=24):
   s2p = C._arr(sd['single_to_pair_proj.weight'])            # (2*c_z, c_s)
   half = s2p.shape[0] // 2
   emb = f'{scope}/~_embed_features'
-  # which half is the row term and which the column: swapping them moves the
-  # head's logits by 0.0002 (pae 0.9773 vs 0.9775), so this is not load-bearing
-  # and the pair init lands at corr 0.999839 either way.
-  params[f'{emb}/left_target_feat_project'] = {'weights': s2p[:half].T}
-  params[f'{emb}/right_target_feat_project'] = {'weights': s2p[half:].T}
+  # chai: `x, x0 = chunk(single_to_pair_proj(s), 2)`, x reshaped [B, N, 1, C]
+  # (varies along i) and x0 [B, 1, N, C] (along j). Ours adds
+  # left_target_feat_project(s) as (N, C) -- broadcast along j -- and
+  # right_target_feat_project(s)[:, None] -- along i. So the FIRST half is the
+  # right projection. These were crossed, judged "not load-bearing" against
+  # chai's bf16 head, where its own noise hid it; against chai at fp32
+  # (chai1_confidence_bisect.py) the crossing was the whole of the head's gap
+  # with the trunk pair zeroed (pae corr 0.919 -> 0.99997) and 3/4 of it with
+  # the pair in place (max|d|/rms 4.3e-2 -> 1.4e-2).
+  params[f'{emb}/right_target_feat_project'] = {'weights': s2p[:half].T}
+  params[f'{emb}/left_target_feat_project'] = {'weights': s2p[half:].T}
   params[f'{emb}/distogram_feat_project'] = {
       'weights': C._arr(sd['atom_distance_bins_projection.weight']).T}
 

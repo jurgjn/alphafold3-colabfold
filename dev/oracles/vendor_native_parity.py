@@ -83,7 +83,9 @@ VENDORS = {
                      'rosettafold3_upstream_runner.py'),
     # chai-1: chai_lab 0.6.1 from PyPI in ~/venv_chai (python 3.10, torch
     # 2.6.0), isolated; its components from CHAI_DOWNLOADS_DIR.
-    'chai1': (_H + '/venv_chai/bin/python', None, 'chai1_upstream_runner.py'),
+    # CHAI_VENDOR_PY overrides the interpreter (a host whose ~/venv_chai is not this one)
+    'chai1': (os.environ.get('CHAI_VENDOR_PY', _H + '/venv_chai/bin/python'), None,
+              'chai1_upstream_runner.py'),
     # ESMFold2: esm 3.4.1 (biohub's own package) in ~/venv_esm341, offline
     # against the cached biohub checkpoints.
     'esmfold2': (_H + '/venv_esm341/bin/python', None, 'esmfold2_upstream_runner.py'),
@@ -173,7 +175,10 @@ def featurise_ours(model, j, recycles, bf16):
   # trunk storage policy from a port bug.
   batch, cfg, model_dir = fold_check._fold_setup(
       model, None, model_dir=os.environ.get('MODEL_DIR'), chains=list(fi.chains),
-      bonded_atom_pairs=fi.bonded_atom_pairs, seed=1)
+      bonded_atom_pairs=fi.bonded_atom_pairs, seed=1,
+      # OURS_BUCKET=256: pad ours to the vendor's token bucket (chai always runs
+      # at one), a probe for padding leaking into the vendor's outputs
+      **({'buckets': [int(os.environ['OURS_BUCKET'])]} if os.environ.get('OURS_BUCKET') else {}))
   cfg.global_config.bfloat16 = bf16
   cfg.num_recycles = recycles
   cfg.return_embeddings = True
@@ -385,7 +390,10 @@ def run_case(model, name, j, recycles, bf16):
 
     rng = np.random.default_rng(int(os.environ.get('INJECT_SEED', 0)))
     dmask = np.asarray(raw['pred_dense_atom_mask']).astype(np.float32)[..., None]
-    pos = (rng.normal(size=dmask.shape[:2] + (3,)) * 8 * dmask).astype(np.float32)
+    # INJECT_POS_SCALE (default 8 A): 0 puts every injected atom at the origin, so a
+    # confidence head's distance features are constant -- a bisection probe
+    scale = float(os.environ.get('INJECT_POS_SCALE', 8))
+    pos = (rng.normal(size=dmask.shape[:2] + (3,)) * scale * dmask).astype(np.float32)
     sigma = np.float32(os.environ.get('INJECT_SIGMA', 10.0))
     noisy = (pos + rng.normal(size=pos.shape) * sigma * dmask).astype(np.float32)
     to_b = lambda x: np.where(ok[:, None], x[idx[:, 0], idx[:, 1]], 0
@@ -420,6 +428,13 @@ def run_case(model, name, j, recycles, bf16):
     ours = forward_ours(batch, cfg, model_dir, pos, noisy, sigma)
 
   n = int(lay['token_pad'].sum())
+  # ours may be padded past the vendor's tokens (OURS_BUCKET): compare the real ones
+  for key in ('target_feat', 'single_embeddings'):
+    ours[key] = np.asarray(ours[key])[:n]
+  for key in ('pair_embeddings', 'distogram/distogram'):
+    ours[key] = np.asarray(ours[key])[:n, :n]
+  for key in ('full_pae', 'full_pde'):
+    ours[key] = np.asarray(ours[key])[:, :n, :n]
   pairs = [
       ('s_inputs (target_feat)', ours['target_feat'],
        _s_inputs_to_ours(model, b['s_inputs'][:n])),
