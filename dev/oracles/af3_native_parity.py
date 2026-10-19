@@ -55,7 +55,12 @@ HOME = os.path.expanduser('~')
 for _k, _v in (('JAX_COMPILATION_CACHE_DIR', HOME + '/.cache/alphafold3/jax'),
                ('JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS', '1'),
                ('JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES', '0'),
-               ('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')):
+               ('XLA_PYTHON_CLIENT_PREALLOCATE', 'false'),
+               # precision is not the model: XLA's default GPU matmul is TF32-class,
+               # which alone read every AF3 output at ~1e-2 against upstream
+               # (2026-10-19 recheck); 'highest' on both sides, as the vendor
+               # harness does (the upstream runner inherits this environment)
+               ('JAX_DEFAULT_MATMUL_PRECISION', 'highest')):
   os.environ.setdefault(_k, _v)
 UPSTREAM_PY = os.environ.get('AF3_UPSTREAM_PY', HOME + '/venv_af3/bin/python')
 MODEL_DIR = os.environ.get('AF3_MODEL_DIR', HOME + '/ported/alphafold3')
