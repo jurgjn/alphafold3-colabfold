@@ -734,8 +734,11 @@ _FEATURISE = {
                          # atomworks keeps a modified (atomised) residue's bond to a ligand, drops polymer-polymer ones
                          declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'ligand',
                          padded_keys=True,
-                         dedupe_self_msa=not os.environ.get(
-                             'AF3_NO_RF3_DEDUPE_MSA')),
+                         # 'query': atomworks keeps the a3m as given, query
+                         # once, with or without real alignments -- a 4-row a3m
+                         # is 4 rows where AF3 builds 5 (stock-RF3 comparison).
+                         dedupe_self_msa=('query' if not os.environ.get(
+                             'AF3_NO_RF3_DEDUPE_MSA') else False)),
     # chai-1's four input conventions, every one of them silent when forgotten:
     # it takes the atom key window MODULO the atom count where AF3 slides it back
     # in bounds; it numbers its atoms without the C-terminal OXT; it carries its

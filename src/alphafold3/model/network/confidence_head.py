@@ -270,12 +270,16 @@ class ConfidenceHead(hk.Module):
     dgram *= pair_mask[..., None]
 
     if self.global_config.model == 'rosettafold3':
-      # RF3 confidence embeds the predicted structure via CA-CA (representative-atom)
+      # RF3 confidence embeds the predicted structure via REPRESENTATIVE-atom
       # distances discretized to 40 bins (bucketize over 39 boundaries 3.25..50.75),
-      # NOT AF3's CB-CB dgram. positions here is the CA (pseudo_beta gather returns CB;
-      # RF3 uses the token-center CA = dense atom index 1).
-      ca = dense_atom_positions[:, 1, :]
-      d = jnp.sqrt(jnp.sum((ca[:, None] - ca[None]) ** 2, -1) + 1e-10)
+      # not AF3's dgram. The representative atom is atomworks'
+      # get_af3_token_representative_idxs -- CB, CA for glycine, C4/C2 for
+      # nucleotides -- which is exactly the pseudo-beta gather above. This read
+      # CA (dense slot 1) on the assumption that RF3 used the token centre; the
+      # stock-RF3 comparison (vendor_native_parity) read pae 0.11 / pde 0.16 on a
+      # plain protein, and forcing the vendor to CA reproduced ours to 3e-3.
+      d = jnp.sqrt(
+          jnp.sum((positions[:, None] - positions[None]) ** 2, -1) + 1e-10)
       bnd = jnp.arange(39) * ((50.75 - 3.25) / 39.0) + 3.25
       dgram = jax.nn.one_hot((d[..., None] > bnd).sum(-1), 40).astype(pair_act.dtype)
       dgram = dgram * pair_mask[..., None]
@@ -613,6 +617,18 @@ class ConfidenceHead(hk.Module):
           initializer=self.global_config.final_init,
           name='plddt_logits',
       )(self._head_norm('plddt_logits_ln', single_act))
+    # Some vendors index the per-atom heads by the atom's RANK among the token's
+    # real atoms, not by its dense slot. The two agree until a slot is empty:
+    # a nucleotide's dropped OP3 is dense slot 0, so every atom read its
+    # neighbour's logit (rna pLDDT corr 0.43 against stock RF3; 0.9996 by rank).
+    # A real slot has a non-empty name.
+    atom_rank = None
+    if (self.global_config.model in model_config.PER_ATOM_HEADS_BY_RANK
+        and atom_name_chars is not None):
+      real = jnp.any(atom_name_chars != 0, axis=-1)            # (n_token, n_atom)
+      atom_rank = jnp.clip(jnp.cumsum(real, axis=-1) - 1, 0, _n_atom - 1)
+      plddt_logits = jnp.take_along_axis(
+          plddt_logits, atom_rank[..., None], axis=1)
 
     bin_width = 1.0 / self.config.num_plddt_bins
     bin_centers = jnp.arange(0.5 * bin_width, 1.0, bin_width)
@@ -637,6 +653,9 @@ class ConfidenceHead(hk.Module):
           initializer=self.global_config.final_init,
           name='experimentally_resolved_logits',
       )(self._head_norm('experimentally_resolved_ln', single_act))
+      if atom_rank is not None:
+        experimentally_resolved_logits = jnp.take_along_axis(
+            experimentally_resolved_logits, atom_rank[..., None], axis=1)
 
     # gate on the LOGITS, which every branch either assigns or leaves None --
     # gating on the derived value read an unassigned local for every non-chai

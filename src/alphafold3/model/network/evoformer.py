@@ -716,7 +716,15 @@ class Evoformer(hk.Module):
       # whose msa_stack[..., 34] is identically zero. Setting the query to 1 here added a
       # constant bias to every MSA embedding.
       num_msa_rows = msa_feat.shape[0]
-      query_paired = 0.0 if self.global_config.model == 'rosettafold3' else 1.0
+      query_paired = 1.0
+      if self.global_config.model == 'rosettafold3':
+        # ...on its query-ONLY path. With an alignment loaded, RF3 sets the flag
+        # on the whole query row (msa_stack[0, 0, :, 34] = 1); the zero above was
+        # measured on single-sequence inputs, which is all the gate then built.
+        # Stock-RF3 comparison, ubiquitin with a 4-row a3m: our 0 there was half
+        # of a trunk pair max|d|/rms 1.73.
+        n_live = jnp.sum(jnp.any(msa_batch.mask > 0, axis=-1))
+        query_paired = jnp.where(n_live > 1, 1.0, 0.0)
       # The QUERY's row, wherever the shuffle put it -- not row 0. See
       # featurization.shuffle_msa_with_order.
       origin = jnp.arange(num_msa_rows)

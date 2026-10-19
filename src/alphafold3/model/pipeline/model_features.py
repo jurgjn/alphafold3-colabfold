@@ -218,6 +218,16 @@ def _mask_atoms(batch, drop):
   for t, a in drop:
     ref_mask[t, a] = False
   batch['ref_mask'] = ref_mask
+  # The NAME goes too, so a dropped slot is indistinguishable from an empty one.
+  # A consumer that counts a token's real atoms by name (the per-atom
+  # confidence heads by rank, PER_ATOM_HEADS_BY_RANK) otherwise counted the
+  # masked 5'-terminal OP3 that RF3's drop removes, and read every atom of that
+  # nucleotide off by one (rna pLDDT corr 0.89 against stock RF3).
+  if 'ref_atom_name_chars' in batch:
+    chars = np.array(batch['ref_atom_name_chars'])
+    for t, a in drop:
+      chars[t, a] = 0
+    batch['ref_atom_name_chars'] = chars
   if 'pred_dense_atom_mask' in batch:
     pdm = np.array(batch['pred_dense_atom_mask'])
     for t, a in drop:

@@ -131,6 +131,12 @@ ESMFOLD2_EXPERIMENTAL = tuple(m for m in ESMFOLD2_FAMILY
 # exceptions below are earned by the checkpoint, not inherited from a name.
 NO_PDE_HEAD = ('esmfold2_lm600m', 'esmfold2_lm300m')
 NO_RESOLVED_HEAD = ('chai1', 'esmfold2_lm600m', 'esmfold2_lm300m')
+
+# Models whose per-atom confidence heads (pLDDT, experimentally resolved) are
+# indexed by the atom's RANK among its token's real atoms rather than by our
+# dense slot -- RF3 fills the first n slots (AddIsRealAtom). Identical until a
+# slot is empty, e.g. a nucleotide's dropped OP3. Confirmed against stock RF3.
+PER_ATOM_HEADS_BY_RANK = ('rosettafold3',)
 # ...and the LayerNorms they do not have. boltz2 has none before ANY head;
 # ESMFold2's experimental line keeps plddt_ln but not pae_ln, so this is keyed
 # by head, not by model.

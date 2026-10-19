@@ -370,8 +370,15 @@ def apply_restype_alignment_on_atomized(batch):
   msa = batch.get('msa')
 
   if msa is not None:
-    # a token with no alignment of its own: gap in EVERY row, including the query
-    unaligned = (np.asarray(msa) == gap_idx).all(axis=0) & (aatype != gap_idx)
+    # a token with no alignment of its own: gap in every LIVE row, including the
+    # query. Padded rows hold 0, not the gap, so testing every row never fired on
+    # a padded MSA: a ligand token kept the GAP profile where stock RF3 has its
+    # restype (UNK) -- s_inputs differed at exactly the ligand tokens.
+    msa_arr = np.asarray(msa)
+    live = (np.asarray(batch['msa_mask']).any(-1) if 'msa_mask' in batch
+            else np.ones(msa_arr.shape[0], bool))
+    unaligned = ((msa_arr[live] == gap_idx).all(axis=0)
+                 & (aatype != gap_idx) & live.any())
   else:
     # no MSA to consult -- fall back to the old restype test, which is exact when
     # the alignment is the query alone (the only case reachable without `msa`)
