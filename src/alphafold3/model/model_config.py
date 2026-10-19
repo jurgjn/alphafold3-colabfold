@@ -746,7 +746,10 @@ SYMMETRIC_TOKEN_BONDS = ESMFOLD2_FAMILY
 TOKEN_LAYOUT_KEYS_REF_SPACE_UID = ('alphafold3',)
 
 
-REALIGN_SAMPLER = ESMFOLD2_FAMILY
+# boltz2 too: `boltz predict` sets alignment_reverse_diff=True
+# (Boltz2DiffusionParams), so AtomDiffusion.sample weighted-rigid-aligns the
+# noisy coordinates onto the denoised ones before every update.
+REALIGN_SAMPLER = ESMFOLD2_FAMILY + ('boltz2',)
 
 
 # Models that LayerNorm the summed per-atom reference features. AF3 sums

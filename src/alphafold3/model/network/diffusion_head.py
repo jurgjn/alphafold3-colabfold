@@ -53,10 +53,21 @@ def random_rotation(key):
   return jnp.stack([e0, e1, e2])
 
 
+# A parity harness's injected sampler draws (vendor_native_parity --trajectory):
+# None in every real run. When set, a dict of arrays -- x0 (the initial
+# standard-normal positions, dense layout), rot (steps, 3, 3), trans (steps, 3)
+# and eps (steps, dense layout, 3) -- that replace the sampler's random draws BY
+# MEANING (augmentation rotation and translation, the step's noise), so a
+# vendor's sampler and ours walk the same trajectory however each generates them.
+TRAJ_INJECT = None
+
+
 def random_augmentation(
     rng_key: jnp.ndarray,
     positions: jnp.ndarray,
     mask: jnp.ndarray,
+    rot: jnp.ndarray | None = None,
+    translation: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
   """Apply random rigid augmentation.
 
@@ -73,8 +84,10 @@ def random_augmentation(
   center = utils.mask_mean(
       mask[..., None], positions, axis=(-2, -3), keepdims=True, eps=1e-6
   )
-  rot = random_rotation(rotation_key)
-  translation = jax.random.normal(translation_key, shape=(3,))
+  if rot is None:
+    rot = random_rotation(rotation_key)
+  if translation is None:
+    translation = jax.random.normal(translation_key, shape=(3,))
 
   augmented_positions = (
       jnp.einsum(
@@ -131,11 +144,17 @@ class SampleConfig(base_config.BaseConfig):
   stepwise: bool = False
   # EDM schedule shape. AF3 hardcoded these as noise_schedule()'s defaults, which
   # silently applied AF3's sampler to every ported family; they are config fields
-  # so each model can carry the constants it was trained with (boltz2 wants rho 8,
-  # not 7). See runner._SAMPLER_CONSTANTS.
+  # so each model can carry the constants it was trained with. See
+  # model_registry._SAMPLER_CONSTANTS.
   sigma_min: float = 0.0004
   sigma_max: float = 160.0
   rho: float = 7.0
+  # boltz's schedule shape (AtomDiffusion.sample_schedule): `steps` points from
+  # sigma_max down to sigma_min, i.e. t = arange(N) / (N - 1), then a final 0
+  # appended. AF3's is the N+1 endpoints of linspace(0, 1, N + 1), ending AT
+  # sigma_min. Same step count, but every intermediate sigma differs (37 at the
+  # largest gap for 200 steps) and boltz's last step lands on sigma 0.
+  terminal_zero: bool = False
   # ESMFold2 CLIPS the schedule: it drops every sigma above max_inference_sigma
   # and starts from that value instead. With sigma_data 16 and smax 160 the EDM
   # schedule opens at 2560, so a clip at 256 is a tenfold cut in initial noise
@@ -673,7 +692,11 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai):
     # traces that work ONCE per step and broadcasts it where it meets the
     # per-sample stream. Every per-sample quantity (key split, augmentation,
     # noise, positions) is untouched.
-    noise_level, noise_level_prev = step_noise
+    injected = None
+    if len(step_noise) == 5:      # TRAJ_INJECT: this step's rot, trans, eps
+      noise_level, noise_level_prev, *injected = step_noise
+    else:
+      noise_level, noise_level_prev = step_noise
     key, positions = carry
     if config.flow:
       # The flow walk: the prediction at this level IS the next state.
@@ -682,7 +705,9 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai):
     key, key_noise, key_aug = jax.random.split(key, 3)
 
     positions = random_augmentation(
-        rng_key=key_aug, positions=positions, mask=mask  # pyrefly: ignore[bad-argument-type]
+        rng_key=key_aug, positions=positions, mask=mask,  # pyrefly: ignore[bad-argument-type]
+        rot=None if injected is None else injected[0].astype(positions.dtype),
+        translation=None if injected is None else injected[1].astype(positions.dtype),
     )
 
     # chai's churn is EDM's own parameterisation, not AF3's: a constant
@@ -706,7 +731,9 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai):
     noise_scale = config.noise_scale * jnp.sqrt(
         jnp.maximum(floor, t_hat**2 - noise_level_prev**2)
     )
-    noise = noise_scale * jax.random.normal(key_noise, positions.shape)
+    eps = (jax.random.normal(key_noise, positions.shape) if injected is None
+           else injected[2].astype(positions.dtype).reshape(positions.shape))
+    noise = noise_scale * eps
     positions_noisy = positions + noise
 
     positions_denoised = denoising_step(positions_noisy, t_hat)
@@ -767,6 +794,8 @@ def noise_schedule_for(config, chai: bool):
     # where AF3 uses the N+1 endpoints, so it never samples sigma=0 exactly and
     # every sigma sits half a step inside AF3's.
     times = np.linspace(0.0, 1.0, 2 * config.steps + 1, dtype=np.float32)[1::2]
+  elif getattr(config, 'terminal_zero', False):
+    times = np.linspace(0, 1, config.steps, dtype=np.float32)
   else:
     times = np.linspace(0, 1, config.steps + 1, dtype=np.float32)
   flow = getattr(config, 'flow', False)
@@ -774,6 +803,8 @@ def noise_schedule_for(config, chai: bool):
                                      smax=config.flow_sigma_max if flow else config.sigma_max,
                                      p=config.rho),
                       dtype=np.float32)
+  if getattr(config, 'terminal_zero', False) and not chai:
+    levels = np.concatenate([levels, np.zeros((1,), np.float32)])
   if getattr(config, 'max_sigma', 0.0) and not flow:
     levels = np.concatenate([[config.max_sigma],
                              levels[levels <= config.max_sigma]])
@@ -791,6 +822,8 @@ def sample_init(batch, key, config, global_config=None):
   noise_levels = noise_schedule_for(config, chai)
   key, noise_key = jax.random.split(key)
   positions = jax.random.normal(noise_key, (config.num_samples,) + mask.shape + (3,))
+  if TRAJ_INJECT is not None:
+    positions = jnp.broadcast_to(jnp.asarray(TRAJ_INJECT['x0'], positions.dtype), positions.shape)
   positions *= noise_levels[0]
   init = (jax.random.split(key, config.num_samples), positions)
   return init, noise_levels
@@ -855,7 +888,9 @@ def sample(
   result, (trajectory, _denoised_traj) = hk.scan(
       apply_denoising_step,
       init,
-      (noise_levels[1:], noise_levels[:-1]),
+      (noise_levels[1:], noise_levels[:-1]) if TRAJ_INJECT is None else
+      (noise_levels[1:], noise_levels[:-1], jnp.asarray(TRAJ_INJECT['rot']),
+       jnp.asarray(TRAJ_INJECT['trans']), jnp.asarray(TRAJ_INJECT['eps'])),
       unroll=1,
   )
   _, positions_out = result

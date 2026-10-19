@@ -39,7 +39,7 @@ def build_batch(model_name, seq, model_dir=None, templates=None):
 
 
 def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
-                chains=None, bonded_atom_pairs=None, buckets=None):
+                chains=None, bonded_atom_pairs=None, buckets=None, cyclic=None):
   """-> (batch, cfg, model_dir). Everything the harnesses need, done once.
 
   `chains` replaces the single protein chain built from `seq`, so the same
@@ -117,14 +117,14 @@ def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
   elif lm_npz:
     z = np.load(os.path.expanduser(lm_npz))
     lm_pair = z['lm_pair'] if hasattr(z, 'files') else z
-  if spec.featurise:
+  if spec.featurise or cyclic:
     # has_msa and seed as the CLI passes them: a constant False here
     # featurised every MSA input as MSA-less, and without the seed protenix's
-    # RNG replay never ran.
+    # RNG replay never ran. cyclic (chain ids) as run_alphafold's --cyclic.
     batch = model_features.apply(
         batch, spec, refeaturise=featurise, model_dir=model_dir, esm=esm,
         has_msa=model_features.input_has_msa(fold_input),
-        fold_input=fold_input, lm_pair=lm_pair, seed=seed)
+        fold_input=fold_input, lm_pair=lm_pair, seed=seed, cyclic=cyclic or None)
   cfg = af3_model.Model.Config()
   # XLA by default because a gate has to be comparable across cards, and it is
   # the one backend every card has. FLASH=cudnn to gate the fused kernel: it is

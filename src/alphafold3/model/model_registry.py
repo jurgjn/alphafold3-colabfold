@@ -363,15 +363,20 @@ def _widen_rosettafold3(cfg):
 # Only entries verified against the native implementation belong here; a model
 # absent from this table keeps AF3's defaults, which is the honest state for one
 # nobody has checked.
-#   boltz2: boltz.main.Boltz2DiffusionParams (BoltzDesign1/boltz2/src/boltz/main.py)
+#   boltz2: stock boltz 2.2.1, boltz.main.Boltz2DiffusionParams -- what `boltz
+#   predict` builds for the boltz2 model (main.py: step_scale 1.5 unless given).
+#   These had been Boltz-1's BoltzDiffusionParams (gamma_0 0.605, gamma_min
+#   1.107, noise_scale 0.901, step_scale 1.638, rho 8, sigma_min 4e-4); the
+#   full-trajectory parity (vendor_native_parity --trajectory) found it.
 _SAMPLER_CONSTANTS = {
     # Protenix's small models ship their OWN sampler settings and they are not
     # small differences: 5 steps against 200, no churn (gamma0 0 against 0.8) and
     # step_scale 1.0 against 1.5 (configs_model_type.py, "the default setting for
     # mini model"). Running them on AF3's constants would anneal on the wrong
     # schedule 40x too slowly -- silent, as ever; nothing errors.
-    'boltz2': dict(gamma_0=0.605, gamma_min=1.107, noise_scale=0.901,
-                   step_scale=1.638, rho=8.0, sigma_min=0.0004, sigma_max=160.0),
+    'boltz2': dict(gamma_0=0.8, gamma_min=1.0, noise_scale=1.003,
+                   step_scale=1.5, rho=7.0, sigma_min=0.0001, sigma_max=160.0,
+                   terminal_zero=True),
     # ESMFold2 samples in FOURTEEN steps, not 200, and clips the schedule at
     # sigma 256 -- the EDM schedule opens at sigma_data * smax = 2560, so
     # running AF3's constants starts the trajectory with ten times the noise the
@@ -380,7 +385,7 @@ _SAMPLER_CONSTANTS = {
     **{m: dict(steps=14, max_sigma=256.0)
        for m in model_config.ESMFOLD2_FAMILY},
     # The 600M tier does not: its config carries a different EDM schedule
-    # entirely -- and it is Boltz-2's, constant for constant (gamma_0 0.605,
+    # entirely -- and it is Boltz-1's, constant for constant (gamma_0 0.605,
     # gamma_min 1.107, noise_scale 0.901, step_scale 1.638, rho 8). Found by
     # check_release_config refusing the conversion, which is exactly the failure
     # it exists for: nothing about the wrong schedule errors, it just anneals

@@ -81,11 +81,20 @@ class RegistryTest(parameterized.TestCase):
   def test_boltz2_brings_its_own_sampler_constants(self):
     # AF3's EDM constants are not universal; running boltz2's network on them is
     # silent (nothing errors, the sampler just anneals on the wrong schedule).
+    # Stock boltz 2.2.1's Boltz2DiffusionParams: AF3's churn constants, but its
+    # own sigma_min and schedule shape (N points then a final 0).
+    import numpy as np
+    from alphafold3.model.network import diffusion_head
     config = model_registry.get('boltz2').configure(af3_model.Model.Config())
     default = af3_model.Model.Config()
-    self.assertNotEqual(config.heads.diffusion.eval.gamma_0,
-                        default.heads.diffusion.eval.gamma_0)
-    self.assertAlmostEqual(config.heads.diffusion.eval.gamma_0, 0.605)
+    ev = config.heads.diffusion.eval
+    self.assertNotEqual(ev.sigma_min, default.heads.diffusion.eval.sigma_min)
+    self.assertAlmostEqual(ev.sigma_min, 0.0001)
+    self.assertTrue(ev.terminal_zero)
+    levels = np.asarray(diffusion_head.noise_schedule_for(ev, False))
+    self.assertEqual(len(levels), ev.steps + 1)
+    self.assertEqual(levels[-1], 0.0)
+    self.assertAlmostEqual(levels[-2], 16 * 0.0001, places=6)
 
   def test_protenix_variants_appear_wherever_protenix2_does(self):
     """A Protenix model type takes every forward branch protenix2 takes.

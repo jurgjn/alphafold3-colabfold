@@ -53,6 +53,8 @@ def _yaml_from_af3(j, msa_dir):
     ids = e['id'] if isinstance(e['id'], list) else [e['id']]
     if kind == 'protein':
       d = {'id': ids, 'sequence': e['sequence']}
+      if e.get('cyclic'):
+        d['cyclic'] = True
       msa = e.get('unpairedMsa')
       if (not msa) or msa.strip() == '>q\n%s' % e['sequence']:
         d['msa'] = 'empty'

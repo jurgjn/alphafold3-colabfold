@@ -35,6 +35,8 @@ def _yaml_from_af3(j, msa_dir):
     ids = e['id'] if isinstance(e['id'], list) else [e['id']]
     if kind == 'protein':
       d = {'id': ids, 'sequence': e['sequence']}
+      if e.get('cyclic'):
+        d['cyclic'] = True
       msa = e.get('unpairedMsa')
       seq_only = (not msa) or msa.strip() == '>q\n%s' % e['sequence']
       if seq_only:
@@ -216,6 +218,76 @@ def forward(model, out_dir, in_npz, out_npz):
       for k, v in std.items()})
 
 
+def trajectory(model, out_dir, in_npz, out_npz):
+  """boltz's REAL sampler at `boltz predict`'s defaults (200 steps, one sample,
+  no steering), every random draw replaced by the harness's: the initial
+  standard-normal positions, and per step the augmentation rotation and
+  translation and the noise eps (vendor_native_parity --trajectory)."""
+  import torch
+  from dataclasses import asdict
+  from boltz.main import (Boltz2DiffusionParams, PairformerArgsV2,
+                          MSAModuleArgs, BoltzSteeringParams)
+  from boltz.model.models.boltz2 import Boltz2
+  from boltz.model.modules import diffusionv2 as D
+
+  z = np.load(in_npz)
+  dev = 'cuda' if torch.cuda.is_available() and not os.environ.get(
+      'BOLTZ_CPU') else 'cpu'
+  feats = torch.load(os.path.join(out_dir, 'feats.pt'), weights_only=False)
+  feats = {k: (v.to(dev) if hasattr(v, 'to') else v) for k, v in feats.items()}
+  steps = int(os.environ.get('BOLTZ_SAMPLING_STEPS', 200))   # boltz predict's default
+  steer = BoltzSteeringParams()
+  steer.fk_steering = steer.physical_guidance_update = False
+  model = Boltz2.load_from_checkpoint(
+      os.path.join(CACHE, 'boltz2_conf.ckpt'), strict=True,
+      predict_args={'recycling_steps': int(z['recycling_steps']),
+                    'sampling_steps': steps, 'diffusion_samples': 1,
+                    'max_parallel_samples': 1,
+                    'write_confidence_summary': True,
+                    'write_full_pae': True, 'write_full_pde': True},
+      map_location='cpu', diffusion_process_args=asdict(Boltz2DiffusionParams()),
+      ema=False, use_kernels=False, pairformer_args=asdict(PairformerArgsV2()),
+      msa_args=asdict(MSAModuleArgs(subsample_msa=False,
+                                    use_paired_feature=True)),
+      steering_args=asdict(steer))
+  model.eval().to(dev)
+
+  # the draws, in call order: torch.randn is called once for the initial
+  # positions, then once per step for eps; compute_random_augmentation once per
+  # step, before that step's eps
+  x0 = torch.tensor(z['traj_x0'], dtype=torch.float32, device=dev)
+  eps = torch.tensor(z['traj_eps'], dtype=torch.float32, device=dev)
+  rot = torch.tensor(z['traj_rot'], dtype=torch.float32, device=dev)
+  trans = torch.tensor(z['traj_trans'], dtype=torch.float32, device=dev)
+  n = {'randn': 0, 'aug': 0}
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def randn(self, shape, **kw):
+      k = n['randn']
+      n['randn'] += 1
+      v = x0 if k == 0 else eps[k - 1]
+      return v.reshape(shape).to(kw.get('dtype') or torch.float32)
+
+  def aug(multiplicity, s_trans=1.0, device=None, dtype=torch.float32):
+    k = n['aug']
+    n['aug'] += 1
+    return rot[k][None].to(dtype), (trans[k] * s_trans).reshape(1, 1, 3).to(dtype)
+
+  D.torch, D.compute_random_augmentation = _Torch(), aug
+  sm = model.structure_module
+  with torch.no_grad():
+    out = model(feats, recycling_steps=int(z['recycling_steps']),
+                num_sampling_steps=steps, diffusion_samples=1,
+                max_parallel_samples=1)
+  sig = sm.sample_schedule(steps).float().cpu().numpy()
+  np.savez(out_npz, sigmas=sig, steps=n['aug'],
+           final=out['sample_atom_coords'][0].float().cpu().numpy(),
+           plddt=out['plddt'][0].float().cpu().numpy())
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)

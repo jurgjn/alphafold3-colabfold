@@ -208,16 +208,40 @@ _SHIPPED_BUCKETS = [32, 64, 128, 256, 384, 512, 768, 1024, 1280, 1536, 2048, 256
                     3072, 3584, 4096, 4608, 5120]
 
 
+# Vendors whose input takes a cyclic polymer (boltz-schema `cyclic: true`).
+CYCLIC_VENDORS = ('boltz2', 'intellifold2')
+
+
+def _cyclic_chains(j):
+  """Chain ids of the protein entries flagged `cyclic` (a harness key, not
+  AF3's: our CLI's --cyclic, the vendors' yaml `cyclic: true`)."""
+  out = []
+  for entry in j['sequences']:
+    (kind, e), = entry.items()
+    if e.get('cyclic'):
+      out += e['id'] if isinstance(e['id'], list) else [e['id']]
+  return out
+
+
+def _strip_cyclic(j):
+  j = json.loads(json.dumps(j))
+  for entry in j['sequences']:
+    for e in entry.values():
+      e.pop('cyclic', None)
+  return j
+
+
 def featurise_ours(model, j, recycles, bf16):
   import fold_check
   from alphafold3.common import folding_input
-  fi = folding_input.Input.from_json(json.dumps(j))
+  cyclic = _cyclic_chains(j)
+  fi = folding_input.Input.from_json(json.dumps(_strip_cyclic(j)))
   # MODEL_DIR (fold_check's convention): an alternative blob for the same
   # model, e.g. intellifold2 converted with IF2_FP32_BLOB=1, to tell its bf16
   # trunk storage policy from a port bug.
   batch, cfg, model_dir = fold_check._fold_setup(
       model, None, model_dir=os.environ.get('MODEL_DIR'), chains=list(fi.chains),
-      bonded_atom_pairs=fi.bonded_atom_pairs, seed=1,
+      bonded_atom_pairs=fi.bonded_atom_pairs, seed=1, cyclic=cyclic,
       # OURS_BUCKET=256: pad ours to the vendor's token bucket (chai always runs
       # at one), a probe for padding leaking into the vendor's outputs
       **({'buckets': _SHIPPED_BUCKETS if os.environ['OURS_BUCKET'] == 'shipped'
@@ -305,7 +329,7 @@ def align(raw, lay):
   return idx, rows
 
 
-def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma):
+def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma, real_sampler=False):
   import haiku as hk
   import jax
   import jax.numpy as jnp
@@ -315,8 +339,9 @@ def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma):
   # ESMFold2's LM-pair dropout is a fresh random mask every pass at inference
   # (esm fold()'s lm_dropout 0.3); the vendor runner turns it off, so ours does
   model_config.LM_PAIR_DROPOUT = {m: 0.0 for m in model_config.LM_PAIR_DROPOUT}
-  pos, pos_noisy = jnp.asarray(pos), jnp.asarray(pos_noisy)
-  sigma = jnp.float32(sigma)
+  if not real_sampler:
+    pos, pos_noisy = jnp.asarray(pos), jnp.asarray(pos_noisy)
+    sigma = jnp.float32(sigma)
 
   class Injected(af3_model.Model):
 
@@ -342,9 +367,9 @@ def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma):
     outer[0] = jax.tree_util.tree_leaves(b)[0]._trace
     if os.environ.get('B2_KEEP'):
       with tapping(taps, outer):
-        out = Injected(cfg)(b)
+        out = (af3_model.Model if real_sampler else Injected)(cfg)(b)
       return {**out, **taps}
-    return Injected(cfg)(b)
+    return (af3_model.Model if real_sampler else Injected)(cfg)(b)
   params = afp.get_model_haiku_params(model_dir=model_dir)
   out = jax.jit(fwd.apply)(params, jax.random.PRNGKey(0), batch)
   if os.environ.get('AF3_ESM_TRUNK_TAPS'):
@@ -378,6 +403,101 @@ def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma):
     out = {**out, **jax.jit(tt.apply)(params, jax.random.PRNGKey(0), batch)}
   from af3_upstream_runner import _flatten
   return _flatten(jax.device_get(out))
+
+
+def _rotations(rng, n):
+  """n proper rotations, Gram-Schmidt on two normal vectors (our sampler's own draw)."""
+  out = np.zeros((n, 3, 3), np.float32)
+  for k in range(n):
+    v0, v1 = rng.normal(size=(2, 3))
+    e0 = v0 / np.linalg.norm(v0)
+    v1 = v1 - e0 * (v1 @ e0)
+    e1 = v1 / np.linalg.norm(v1)
+    out[k] = np.stack([e0, e1, np.cross(e0, e1)])
+  return out
+
+
+TRAJ_MAX_STEPS = 400
+
+
+def trajectory_case(model, name, j, recycles):
+  """The FULL sampler, both sides, on the same random draws (--trajectory).
+
+  The single-step rows inject one noised input; this runs each side's real
+  sampler at its OWN default settings, with every random draw replaced BY
+  MEANING: the initial standard-normal positions, and per step the augmentation
+  rotation and translation and the noise. The vendor reports the steps it took
+  and its sigma schedule; a different count, schedule, noise or step scale, or
+  augmentation convention then shows up as a different trajectory.
+  """
+  import jax.numpy as jnp
+  from alphafold3.model.network import diffusion_head as dh
+  rows = []
+  with tempfile.TemporaryDirectory() as tmp:
+    cj = os.path.join(tmp, 'case.json')
+    with open(cj, 'w') as f:
+      json.dump(j, f)
+    bdir = os.path.join(tmp, 'vendor')
+    _vendor(model, 'featurise', cj, bdir)
+    lay = dict(np.load(os.path.join(bdir, 'layout.npz')))
+    batch, raw, cfg, model_dir = featurise_ours(model, j, recycles, 'none')
+    idx, arows = align(raw, lay)
+    rows += arows
+    ok = idx[:, 0] >= 0
+    rp = np.array(batch['ref_pos'])
+    rp[idx[ok, 0], idx[ok, 1]] = lay['feat.ref_pos'][ok]
+    batch = dict(batch, ref_pos=jnp.asarray(rp))
+    rng = np.random.default_rng(int(os.environ.get('INJECT_SEED', 0)))
+    n_v = len(ok)
+    x0 = rng.normal(size=(n_v, 3)).astype(np.float32)
+    rot = _rotations(rng, TRAJ_MAX_STEPS)
+    trans = rng.normal(size=(TRAJ_MAX_STEPS, 3)).astype(np.float32)
+    eps = rng.normal(size=(TRAJ_MAX_STEPS, n_v, 3)).astype(np.float32)
+    inp = os.path.join(tmp, 'traj.npz')
+    np.savez(inp, traj_x0=x0, traj_rot=rot, traj_trans=trans, traj_eps=eps,
+             recycling_steps=recycles, precision='fp32')
+    _vendor(model, 'trajectory', bdir, inp, os.path.join(tmp, 'b.npz'))
+    b = dict(np.load(os.path.join(tmp, 'b.npz')))
+  # ours: the real sampler, XLA path, one sample, the same draws in our layout
+  ev = cfg.heads.diffusion.eval
+  ev.num_samples = 1
+  levels = np.asarray(dh.noise_schedule_for(ev, cfg.global_config.model == 'chai1'))
+  steps = len(levels) - 1
+  dense = np.asarray(raw['pred_dense_atom_mask']).shape
+
+  def to_ours(v):
+    out = np.zeros(dense + (3,), np.float32)
+    out[idx[ok, 0], idx[ok, 1]] = v[ok]
+    return out
+  dh.TRAJ_INJECT = dict(x0=to_ours(x0), rot=rot[:steps], trans=trans[:steps],
+                        eps=np.stack([to_ours(e) for e in eps[:steps]]))
+  dh.SAMPLER_OVERRIDE = None
+  try:
+    ours = forward_ours(batch, cfg, model_dir, None, None, None, real_sampler=True)
+  finally:
+    dh.TRAJ_INJECT = None
+  n = int(lay['token_pad'].sum())
+  vs = np.asarray(b['sigmas'], np.float64)
+  rows.append(('traj', 'steps ours %d vendor %d' % (steps, int(b['steps'])),
+               'PARITY' if steps == int(b['steps']) else 'BAD'))
+  if len(vs) == len(levels):
+    c, ratio = P.compare(levels, vs)
+    rows.append(('traj', 'sigma schedule max|d| %.2e' % np.abs(levels - vs).max(), P.grade(c, ratio)))
+  else:
+    rows.append(('traj', 'sigma schedule length ours %d vendor %d' % (len(levels), len(vs)), 'BAD'))
+  fin_o = np.asarray(ours['diffusion_samples/atom_positions'])[0][idx[ok, 0], idx[ok, 1]]
+  fin_v = np.asarray(b['final']).reshape(-1, 3)[ok]
+  c, ratio = P.compare(fin_o, fin_v)
+  rows.append(('traj', 'final coordinates corr %.6f max|d|/rms %.2e (max |d| %.3f A)'
+               % (c, ratio, np.abs(fin_o - fin_v).max()), P.grade(c, ratio)))
+  if 'plddt' in b:
+    pl_b = b['plddt'].reshape(-1)
+    if pl_b.shape[0] == n_v:
+      pl_o = np.asarray(ours['predicted_lddt'])[0][idx[ok, 0], idx[ok, 1]]
+      pl_b = pl_b[ok] * (100.0 if pl_o.max() > 1.5 else 1.0)
+      c, ratio = P.compare(pl_o, pl_b)
+      rows.append(('traj', 'plddt on own final corr %.6f max|d|/rms %.2e' % (c, ratio), P.grade(c, ratio)))
+  return rows
 
 
 def run_case(model, name, j, recycles, bf16, graded=False):
@@ -573,6 +693,7 @@ def main(argv):
   # --bf16-graded MODE: ours in bfloat16 MODE against the vendor at fp32, graded
   # against the vendor's OWN stock-precision error as a distribution over cases
   graded = '--bf16-graded' in argv
+  trajectory = '--trajectory' in argv
   if graded:
     bf16 = argv[argv.index('--bf16-graded') + 1]
   pos = [a for i, a in enumerate(argv) if not a.startswith('--') and not a.isdigit()
@@ -581,12 +702,21 @@ def main(argv):
   if model not in VENDORS:
     raise SystemExit('no vendor runner for %r; have %s' % (model, sorted(VENDORS)))
   allc = P.cases()
+  # a head-to-tail cyclic 13-mer (an arbitrary sequence): a harness case, not
+  # AF3's -- AF3 has no cyclic input, so af3_native_parity lacks it
+  allc['cyclic'] = {'name': 'cyclic', 'modelSeeds': [1], 'dialect': 'alphafold3', 'version': 3,
+                    'sequences': [{'protein': {'id': 'A', 'sequence': 'GKRTWPLAVYNDG', 'cyclic': True,
+                                               'modifications': [], 'unpairedMsa': '', 'pairedMsa': '',
+                                               'templates': []}}]}
   names = names or list(allc)
   failed = []
   for n in names:
     print('== %s %s' % (model, n), flush=True)
     try:
-      rows = run_case(model, n, allc[n], rec, bf16, graded=graded)
+      if _cyclic_chains(allc[n]) and model not in CYCLIC_VENDORS:
+        raise VendorNA('%s takes no cyclic polymer input' % model)
+      rows = (trajectory_case(model, n, allc[n], rec) if trajectory
+              else run_case(model, n, allc[n], rec, bf16, graded=graded))
     except VendorNA as e:   # the vendor cannot take this input: N/A, not FAIL
       print('  %s: N/A (%s)' % (n, e), flush=True)
       continue
