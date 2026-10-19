@@ -501,7 +501,7 @@ def main(argv):
   if model not in VENDORS:
     raise SystemExit('no vendor runner for %r; have %s' % (model, sorted(VENDORS)))
   allc = P.cases()
-  names = names or [n for n in allc if n != 'template']
+  names = names or list(allc)
   failed = []
   for n in names:
     print('== %s %s' % (model, n), flush=True)

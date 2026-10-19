@@ -66,11 +66,51 @@ P6MRR = 'GSWKELAAKLAKEAAEKGDPEVAKRALELAKKAAEEGDPELAKKAAELAKKA'
 DNA_F, DNA_R = 'GCGATCGCAT', 'ATGCGATCGC'
 
 
-def _prot(cid, seq, msa=None, templates=None, mods=None):
+def _prot(cid, seq, msa=None, templates=None, mods=None, paired=None):
   return {'protein': {
       'id': cid, 'sequence': seq, 'modifications': mods or [],
       'unpairedMsa': msa if msa is not None else '>q\n%s\n' % seq,
-      'pairedMsa': '', 'templates': templates or []}}
+      'pairedMsa': paired or '', 'templates': templates or []}}
+
+
+def _stp_seq():
+  return json.load(open(HOME + '/1stp_msa.json'))['sequences'][0]['protein']['sequence']
+
+
+def _stp_msa():
+  return json.load(open(HOME + '/1stp_msa.json'))['sequences'][0]['protein']['unpairedMsa']
+
+
+def _synthetic_a3m(seq, n_rows, seed, gap=0.05, sub=0.2, ins=0.03):
+  """A deterministic homolog-like a3m for a sequence: the query, then n_rows
+  rows with substitutions, gaps and lower-case insertions. Parity needs every
+  MSA code path fed the SAME rows on both sides, not real homologs."""
+  import numpy as np
+  rng = np.random.default_rng(seed)
+  aa = 'ACDEFGHIKLMNPQRSTVWY'
+  rows = ['>query', seq]
+  for r in range(n_rows):
+    out = []
+    for c in seq:
+      u = rng.random()
+      out.append('-' if u < gap else (aa[rng.integers(20)] if u < gap + sub else c))
+      if rng.random() < ins:
+        out.append(aa[rng.integers(20)].lower())
+    rows += ['>hit%d_%d' % (seed, r), ''.join(out)]
+  return '\n'.join(rows) + '\n'
+
+
+def _long_chain():
+  """One long protein chain (458 residues): 6LU7's 306 and 7BNY's 152 joined.
+  For the atom-window and edge behaviour of a long chain, not a real protein."""
+  import gemmi
+  seqs = []
+  for f in ('6LU7', '7BNY'):
+    st = gemmi.read_structure(HOME + '/%s.cif' % f)
+    st.setup_entities()
+    ent = [e for e in st.entities if e.entity_type == gemmi.EntityType.Polymer][0]
+    seqs.append(gemmi.one_letter_code(ent.full_sequence).replace('X', 'G'))
+  return ''.join(seqs)
 
 
 def _template_5k9p():
@@ -120,6 +160,23 @@ def cases():
       'covalent': [_prot('A', 'GSWKELAANLTKEAAEKG'),
                    {'ligand': {'id': 'B', 'ccdCodes': ['NAG']}}],
       'template': [_prot('A', UBQ, templates=_template_5k9p())],
+      # --- breadth (2026-10-19): what the small cases above never reach ---
+      # a real MSA deeper than 1024 rows: subsampling and depth crops
+      'deep_msa': [_prot('A', _stp_seq(), msa=_stp_msa())],
+      # paired MSAs across a heterodimer (every case above has pairedMsa '')
+      'paired_msa': [_prot('A', P6MRR, msa=_synthetic_a3m(P6MRR, 48, 1), paired=_synthetic_a3m(P6MRR, 24, 2)),
+                     _prot('B', UBQ, msa=_synthetic_a3m(UBQ, 40, 3), paired=_synthetic_a3m(UBQ, 24, 4))],
+      # a long chain: atom windows and token edges at length
+      'long_chain': [_prot('A', _long_chain())],
+      # two templates on one chain, the second a sub-range
+      'multi_template': [_prot('A', UBQ, templates=_template_5k9p() + [
+          dict(_template_5k9p()[0], queryIndices=list(range(10, 60)), templateIndices=list(range(10, 60)))])],
+      # several ligands at once: a CCD cofactor, an ion, a SMILES drug
+      'multi_ligand': [_prot('A', P6MRR), {'ligand': {'id': 'B', 'ccdCodes': ['ATP']}},
+                       {'ligand': {'id': 'C', 'ccdCodes': ['MG']}},
+                       {'ligand': {'id': 'D', 'smiles': 'CC(C)Cc1ccc(cc1)[C@@H](C)C(=O)O'}}],
+      # a two-residue N-glycan: NAG(b1-4)NAG on the Asn, both bonds declared
+      'glycan': [_prot('A', 'GSWKELAANLTKEAAEKG'), {'ligand': {'id': 'B', 'ccdCodes': ['NAG', 'NAG']}}],
   }
   out = {}
   for name, seqs in c.items():
@@ -127,6 +184,8 @@ def cases():
          'dialect': 'alphafold3', 'version': 3}
     if name == 'covalent':
       j['bondedAtomPairs'] = [[['A', 9, 'ND2'], ['B', 1, 'C1']]]
+    if name == 'glycan':
+      j['bondedAtomPairs'] = [[['A', 9, 'ND2'], ['B', 1, 'C1']], [['B', 1, 'O4'], ['B', 2, 'C1']]]
     out[name] = j
   return out
 
