@@ -720,9 +720,12 @@ _FEATURISE = {
     # windows 16 and 17 ALONE. With both, the whole encoder is exact at full
     # depth: a_token 2.33e-05, q_atom 1.23e-05, every window at the numerical
     # floor.
-    # No dedupe_self_msa and no terminal-atom drop: those were the boltz-1 training pipeline's (dummy_msa, ref_atoms
-    # without OXT/OP3). IntelliFold-v2's released inference is its vendored AF3 engine, which featurises as AF3 does;
-    # against it (gauntlet out_if2knob) keeping both moved cyclic_dl_peptide 0.27 -> 0.09 A and barnase pLDDT to native's.
+    # The reference is IntelliFold-v2's native PyTorch stack (stock v2.0.4,
+    # dev/oracles/intellifold2_upstream_runner.py), whose boltz-forked
+    # featuriser drops terminal OXT/OP3 and dedupes the self-MSA -- NOT its
+    # vendored AF3 engine, which featurises as AF3 does (b352d10 matched that
+    # one; decided 2026-10-19). AF3_NO_IF2_DEDUPE_MSA / AF3_NO_TERMINAL_DROP
+    # give the AF3-engine behaviour.
     'intellifold2': dict(qblock_keys=True,
                          # 'query', as boltz2: the featuriser IntelliFold forks
                          # keeps the a3m as given, query once, WITH alignments
