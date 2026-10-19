@@ -958,6 +958,13 @@ class TokenFeatures:
   # to None so it stays LAST and every existing caller is unaffected.
   is_modified: xnp_ndarray | None = None
 
+  # (num_tokens,) boltz-2's bond code on the token's OWN diagonal, 0 for none.
+  # Boltz's tokenizer turns every recorded bond into a token bond, and a
+  # modified residue kept as one token has all its bonds inside that token, so
+  # token_bonds[t, t] is set with the type of the LAST of them. Only boltz-2
+  # sets it (model_features._modified_self_bonds). LAST, defaulted to None.
+  self_bond_type: xnp_ndarray | None = None
+
   @classmethod
   def compute_features(
       cls,
@@ -1055,6 +1062,7 @@ class TokenFeatures:
         esm_embeddings=batch.get('esm_embeddings'),
         cyclic_period=batch.get('cyclic_period'),
         is_modified=batch.get('is_modified'),
+        self_bond_type=batch.get('self_bond_type'),
     )
 
   def as_data_dict(self) -> BatchDict:

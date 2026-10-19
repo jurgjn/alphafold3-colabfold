@@ -53,6 +53,7 @@ def featurise_input(
     resolve_msa_overlaps: bool = True,
     fix_standalone_glycans: bool = False,
     flatten_non_standard_residues: bool = True,
+    drop_ligand_leaving_atoms: bool = True,
     verbose: bool = False,
 ) -> Sequence[features.BatchDict]:
   """Featurise the folding input.
@@ -103,6 +104,7 @@ def featurise_input(
           resolve_msa_overlaps=resolve_msa_overlaps,
           fix_standalone_glycans=fix_standalone_glycans,
           flatten_non_standard_residues=flatten_non_standard_residues,
+          drop_ligand_leaving_atoms=drop_ligand_leaving_atoms,
       ),
   )
 

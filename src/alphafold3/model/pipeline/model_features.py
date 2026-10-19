@@ -479,6 +479,90 @@ def _empty_template_gap(batch, gap_index=21, slots='first'):
   batch['template_aatype'] = aatype
 
 
+def _rebuild_profile(batch):
+  """Profile and deletion mean from the MSA rows that are live, per column.
+
+  The C++ msa_profile is a plain frequency over a chain's rows; this is that,
+  over whatever rows are live after a featurisation step edited the MSA.
+  """
+  msa = np.asarray(batch['msa'])
+  mask = np.asarray(batch['msa_mask']) > 0
+  depth = np.maximum(mask.sum(0), 1)
+  if 'profile' in batch:
+    prof = np.asarray(batch['profile'])
+    oh = np.eye(prof.shape[-1], dtype=np.float32)[msa] * mask[..., None]
+    batch['profile'] = (oh.sum(0) / depth[:, None]).astype(prof.dtype)
+  if 'deletion_matrix' in batch and 'deletion_mean' in batch:
+    dm = np.asarray(batch['deletion_matrix'], np.float32) * mask
+    batch['deletion_mean'] = (dm.sum(0) / depth).astype(
+        np.asarray(batch['deletion_mean']).dtype)
+  return batch
+
+
+def _ligand_query_unk(batch):
+  """Boltz-2's MSA row for a NON-POLYMER token is protein UNK, not a gap.
+
+  AF3 writes the gap class into a ligand token's MSA column; boltz's MSA
+  encoding writes the token's res_type, which for a ligand atom is UNK. The
+  profile follows. Measured against boltz's featuriser (vendor_native_parity
+  boltz2 ion): s_inputs differed at exactly the MG token, profile {gap: 1}
+  against {UNK: 1}, msa_profile_encoding max|d| 0.40.
+  """
+  from alphafold3.constants import residue_names
+  lig = np.asarray(batch.get('is_ligand', np.zeros(0))) > 0
+  if not lig.any() or 'msa' not in batch:
+    return batch
+  unk = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(
+      residue_names.UNK)
+  msa = np.array(batch['msa'])
+  msa[0, lig] = unk
+  batch['msa'] = msa
+  return _rebuild_profile(batch)
+
+
+def _dedupe_query_row(batch):
+  """Boltz-2's MSA: the a3m as given, so the query appears ONCE.
+
+  AF3 concatenates a paired and an unpaired MSA, each beginning with the query,
+  so our batch carries the query twice; protenix does the same (see
+  _dedupe_self_msa, which must leave a real alignment alone FOR PROTENIX). Stock
+  boltz does not: its batch for a 4-row a3m is 4 rows, query first, and a chain
+  with no alignment is one row. Measured against boltz's own featuriser on
+  2026-10-18 (vendor_native_parity.py boltz2): our 5-row ubiquitin MSA read
+  trunk pair max|d|/rms 0.39, and the PSU RNA's 2 rows 2.0.
+
+  The second live row is dropped when it is the query again on every column
+  that is not a modified residue -- the query row there was set to UNK by
+  _mark_modified_residues and the unpaired copy still holds the parent. Then the
+  profile and deletion mean are rebuilt from the rows that remain, per column,
+  as the C++ msa_profile does (a plain frequency over that chain's rows).
+  """
+  msa = np.asarray(batch['msa'])
+  mask = np.asarray(batch['msa_mask']) > 0
+  live = np.flatnonzero(mask.any(-1))
+  if live.size < 2:
+    return batch
+  a, b = live[0], live[1]
+  mod = np.asarray(batch.get('is_modified', np.zeros(msa.shape[1]))) > 0
+  cols = ~mod & mask[a] & mask[b]
+  if not np.array_equal(msa[a][cols], msa[b][cols]):
+    return batch
+  # REMOVED, not masked. The row axis is free before padding, and a masked row
+  # is only equivalent to an absent one if every MSA operation honours the
+  # mask exactly -- which is a property to test, not to assume.
+  keep = np.ones(msa.shape[0], bool)
+  keep[b] = False
+  for k in ('msa', 'msa_mask', 'deletion_matrix'):
+    if k in batch:
+      batch[k] = np.asarray(batch[k])[keep]
+  msa, mask = np.asarray(batch['msa']), np.asarray(batch['msa_mask']) > 0
+  if 'num_alignments' in batch:
+    batch['num_alignments'] = np.asarray(
+        np.asarray(batch['num_alignments']) - 1,
+        dtype=np.asarray(batch['num_alignments']).dtype)
+  return _rebuild_profile(batch)
+
+
 def _dedupe_self_msa(batch):
   """ESMFold2's self-MSA is the query ONCE, not the query twice.
 
@@ -708,6 +792,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     # (flatten_non_standard_residues=False); what is left is the pair of signals
     # boltz2 reads on it.
     _mark_modified_residues(batch, fold_input, unknown_restype=True)
+    _modified_self_bonds(batch, fold_input)
 
   if knobs.get('atomized_backbone_bonds'):
     _atomized_backbone_bonds(batch)
@@ -757,7 +842,13 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     chiral_features.attach_chiral_features(batch)
   if knobs.get('zero_msa_without_alignment') and not has_msa:
     _zero_msa(batch)
-  if knobs.get('dedupe_self_msa'):
+  if knobs.get('dedupe_self_msa') == 'query':
+    _dedupe_query_row(batch)
+  if knobs.get('ligand_msa_unk'):
+    _ligand_query_unk(batch)
+  if knobs.get('smiles_atom_names') == 'boltz' and fold_input is not None:
+    _boltz_smiles_atom_names(batch, fold_input)
+  elif knobs.get('dedupe_self_msa'):
     _dedupe_self_msa(batch)
   if knobs.get('empty_template_gap'):
     _empty_template_gap(batch, slots=knobs.get('empty_template_gap_slots',
@@ -779,6 +870,134 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
       # the diffusion runs on -- both need the convention.
       _padded_key_window(batch, prefix='struct/')
   return batch
+
+
+def _modified_self_bonds(batch, fold_input):
+  """Boltz-2's token_bonds[t, t] for a modified residue held as one token.
+
+  Boltz's tokenizer (tokenize/boltz2.py) maps every recorded bond -- ligands'
+  and non-standard residues', never standard ones' -- onto tokens and writes
+  `type + 1` at each, so a single-token modified residue gets ONE self-bond
+  whose type is its LAST bond between atoms that are present. Measured against
+  boltz on SEP and PSU (vendor_native_parity ptm, rna_mod): (t, t) set with
+  code 2 (SINGLE + 1), and z_init's bond terms off by up to 7.7 at exactly
+  that pair until this.
+  """
+  from alphafold3.constants import decoded_ccd
+  ccd = decoded_ccd.get_ccd()
+  code_of = {}
+  for index, chain in enumerate(fold_input.chains):
+    mods = (getattr(chain, 'ptms', None)
+            or getattr(chain, 'modifications', None) or ())
+    for code, residue in mods:
+      code_of[(index + 1, int(residue))] = code
+  residue_index = np.asarray(batch['residue_index'])
+  asym_id = np.asarray(batch['asym_id'])
+  chars = np.asarray(batch['ref_atom_name_chars'])
+  rmask = np.asarray(batch['ref_mask']).astype(bool)
+  out = np.zeros(residue_index.shape, np.int32)
+  # boltz const.bond_type_ids: OTHER 0, SINGLE 1, DOUBLE 2, TRIPLE 3, AROMATIC 4
+  order = {'SING': 1, 'DOUB': 2, 'TRIP': 3}
+  for t in range(residue_index.shape[0]):
+    code = code_of.get((int(asym_id[t]), int(residue_index[t])))
+    c = ccd.get(code) if code else None
+    if not c:
+      continue
+    present = {''.join(chr(int(x) + 32) for x in row).strip()
+               for row, m in zip(chars[t], rmask[t]) if m}
+    arom = c.get('_chem_comp_bond.pdbx_aromatic_flag',
+                 ['N'] * len(c['_chem_comp_bond.atom_id_1']))
+    last = None
+    for a, b, o, ar in zip(c['_chem_comp_bond.atom_id_1'],
+                           c['_chem_comp_bond.atom_id_2'],
+                           c['_chem_comp_bond.value_order'], arom):
+      if a in present and b in present:
+        last = 4 if ar == 'Y' else order.get(o, 0)
+    if last is not None:
+      out[t] = last + 1
+  batch['self_bond_type'] = out
+  # And its REPRESENTATIVE ATOM is the token's first atom, not CB: boltz takes
+  # a standard residue's from its fixed table and anything else -- UNK, which a
+  # modified token is -- from atom 0 (token_to_rep_atom, r_set_to_rep_atom and
+  # token_to_center_atom all read N for SEP). The confidence head measures its
+  # distances between these, so CB left PAE/PDE/pLDDT off at max|d|/rms 0.45.
+  key = 'token_atoms_to_pseudo_beta:gather_idxs'
+  if key in batch and out.any():
+    gi = np.array(batch[key])
+    slots = rmask.shape[1]
+    flat = gi.reshape(-1)
+    for t in np.flatnonzero(out):
+      flat[t] = t * slots + int(np.argmax(rmask[t]))
+    batch[key] = flat.reshape(gi.shape)
+  return batch
+
+
+def _boltz_smiles_atom_names(batch, fold_input):
+  """Name a SMILES ligand's atoms the way boltz does: element + canonical rank.
+
+  boltz (parse/schema.py) adds hydrogens, ranks EVERY atom with RDKit's
+  CanonicalRankAtoms and names each `SYMBOL + (rank + 1)` -- ibuprofen's heavy
+  atoms become C28, C31, C29, ... where AF3's user CCD names them C1, C2, ....
+  Atom names are a model INPUT (their characters are embedded per atom), so the
+  convention is not cosmetic: s_inputs read corr 0.62 against boltz on a SMILES
+  ligand until this. One token per heavy atom, in the SMILES' own atom order.
+  """
+  from rdkit import Chem
+  from rdkit.Chem import AllChem
+  asym_id = np.asarray(batch['asym_id'])
+  chars = np.array(batch['ref_atom_name_chars'])
+  mask = np.asarray(batch['ref_mask']).astype(bool)
+  for index, chain in enumerate(fold_input.chains):
+    smiles = getattr(chain, 'smiles', None)
+    if not smiles:
+      continue
+    mol = AllChem.AddHs(Chem.MolFromSmiles(smiles))
+    rank = list(AllChem.CanonicalRankAtoms(mol))
+    names = [a.GetSymbol().upper() + str(rank[a.GetIdx()] + 1)
+             for a in mol.GetAtoms() if a.GetAtomicNum() > 1]
+    tokens = np.flatnonzero(asym_id == index + 1)
+    if len(tokens) != len(names):
+      continue      # not one token per heavy atom; leave AF3's names alone
+    for t, nm in zip(tokens, names):
+      slot = int(np.argmax(mask[t]))
+      code = [ord(c) - 32 for c in nm[:4]] + [0] * (4 - len(nm[:4]))
+      chars[t, slot] = code
+    _smiles_bond_orders(batch, tokens, Chem.MolFromSmiles(smiles))
+  batch['ref_atom_name_chars'] = chars
+  return batch
+
+
+def _smiles_bond_orders(batch, tokens, mol):
+  """Ligand-ligand bond ORDERS for a SMILES ligand, from its RDKit mol.
+
+  features._ccd_bond_orders reads a component's CCD bond table and a SMILES
+  ligand has none, so every one of its bonds was OTHER. boltz types them from
+  the sanitised mol -- SINGLE / DOUBLE / TRIPLE / AROMATIC -- which is what its
+  type_bonds embedding was trained on: 30 pairs of ibuprofen read
+  token_bonds_type max|d| 7.1 until this. `tokens` are the ligand's tokens in
+  heavy-atom order (one per atom).
+  """
+  from alphafold3.model import features
+  key = 'tokens_to_ligand_ligand_bonds:gather_idxs'
+  if key not in batch or 'ligand_ligand_bond_order' not in batch:
+    return
+  from rdkit import Chem
+  code = {Chem.BondType.SINGLE: features.BOND_ORDER_SINGLE,
+          Chem.BondType.DOUBLE: features.BOND_ORDER_DOUBLE,
+          Chem.BondType.TRIPLE: features.BOND_ORDER_TRIPLE,
+          Chem.BondType.AROMATIC: features.BOND_ORDER_AROMATIC}
+  atom_of = {int(t): i for i, t in enumerate(tokens)}
+  pairs = np.asarray(batch[key])
+  gmask = np.asarray(batch.get('tokens_to_ligand_ligand_bonds:gather_mask',
+                               np.ones_like(pairs))).astype(bool).all(-1)
+  orders = np.array(batch['ligand_ligand_bond_order'])
+  for k, (a, b) in enumerate(pairs):
+    if not gmask[k] or int(a) not in atom_of or int(b) not in atom_of:
+      continue
+    bond = mol.GetBondBetweenAtoms(atom_of[int(a)], atom_of[int(b)])
+    if bond is not None:
+      orders[k] = code.get(bond.GetBondType(), features.BOND_ORDER_OTHER)
+  batch['ligand_ligand_bond_order'] = orders
 
 
 def _modified_residue_positions(fold_input):
@@ -822,11 +1041,39 @@ def _mark_modified_residues(batch, fold_input, unknown_restype=False):
       flag[token] = 1
   batch['is_modified'] = flag
   if unknown_restype and flag.any():
-    unknown = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(
-        residue_names.UNK)
+    # The unknown of the token's OWN chain type, as boltz's tokenizer does
+    # (`unk_token` per mol type). Protein UNK for everything was wrong for a
+    # modified RNA nucleotide: boltz reads it as RNA `N`, and the whole-model
+    # gate read s_inputs corr 0.985 on PSU in RNA until this.
+    #
+    # DNA has no unknown in our 31 classes -- boltz's `DN` column is dropped
+    # by converters/boltz2.remap_restype_cols -- so a modified DNA nucleotide
+    # still cannot be featurised the way boltz does. It keeps protein UNK and
+    # the gate's `dna_mod` case reports it rather than this hiding it.
+    names = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP)
+    is_rna = np.asarray(batch.get('is_rna', np.zeros_like(flag))).astype(bool)
     aatype = np.array(batch['aatype'])
-    aatype[flag.astype(bool)] = unknown
+    sel = flag.astype(bool)
+    aatype[sel & ~is_rna] = names.index(residue_names.UNK)
+    aatype[sel & is_rna] = names.index(residue_names.UNK_RNA)
     batch['aatype'] = aatype
+    # And boltz's MSA QUERY ROW says protein UNK at a modified position whatever
+    # the chain type (its msa encoding has no per-type unknown), and the profile
+    # is computed from that row. Ours kept the parent there; for PSU in RNA the
+    # gate read s_inputs max|d|/rms 1.31 at exactly that token until this.
+    # The profile is a plain column frequency over the MSA rows, so moving the
+    # query row's weight from the parent class to UNK is the exact update.
+    unk = names.index(residue_names.UNK)
+    if 'msa' in batch and 'profile' in batch:
+      msa = np.array(batch['msa'])
+      prof = np.array(batch['profile'], np.float32)
+      mmask = np.asarray(batch.get('msa_mask', np.ones_like(msa))) > 0
+      for t in np.flatnonzero(sel):
+        rows = max(int(mmask[:, t].sum()), 1)
+        prof[t, msa[0, t]] -= 1.0 / rows
+        prof[t, unk] += 1.0 / rows
+        msa[0, t] = unk
+      batch['msa'], batch['profile'] = msa, prof
   return batch
 
 

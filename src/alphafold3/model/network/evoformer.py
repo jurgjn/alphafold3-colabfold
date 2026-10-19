@@ -143,7 +143,14 @@ def token_bond_matrix(batch, symmetrize: bool = False,
     ].set(1.0)
 
   # Because all the padded index's are 0's.
-  return contact_matrix.at[0, 0].set(0.0)
+  contact_matrix = contact_matrix.at[0, 0].set(0.0)
+  # AFTER the padding reset at (0, 0): a self-bond is real even on token 0.
+  self_bond = batch.token_features.self_bond_type
+  if self_bond is not None:
+    diag = jnp.arange(num_tokens)
+    contact_matrix = contact_matrix.at[diag, diag].max(
+        (self_bond > 0).astype(contact_matrix.dtype))
+  return contact_matrix
 
 
 def token_bond_type_matrix(batch, symmetrize: bool = False) -> jnp.ndarray:
@@ -189,7 +196,14 @@ def token_bond_type_matrix(batch, symmetrize: bool = False) -> jnp.ndarray:
         values
     )
   # Because all the padded index's are 0's.
-  return type_matrix.at[0, 0].set(0)
+  type_matrix = type_matrix.at[0, 0].set(0)
+  self_bond = batch.token_features.self_bond_type
+  if self_bond is not None:
+    diag = jnp.arange(num_tokens)
+    sb = jnp.asarray(self_bond, jnp.int32)
+    type_matrix = type_matrix.at[diag, diag].set(
+        jnp.where(sb > 0, sb, type_matrix[diag, diag]))
+  return type_matrix
 
 
 def boltz2_contact_conditioning(contact, threshold, num_channels, dtype):
@@ -646,8 +660,10 @@ class Evoformer(hk.Module):
       msa_batch, key = featurization.subsample_msa_keep_query(
           key, msa_batch, self.config.num_msa)
     else:
+      row_origin = None
       if not chai1:
-        msa_batch, key = featurization.shuffle_msa(key, msa_batch)
+        msa_batch, key, row_origin = featurization.shuffle_msa_with_order(
+            key, msa_batch)
       msa_batch = featurization.truncate_msa_batch(msa_batch,
                                                    self.config.num_msa)
     msa_feat = featurization.create_msa_feat(
@@ -670,7 +686,12 @@ class Evoformer(hk.Module):
       # constant bias to every MSA embedding.
       num_msa_rows = msa_feat.shape[0]
       query_paired = 0.0 if self.global_config.model == 'rosettafold3' else 1.0
-      is_paired = jnp.where(jnp.arange(num_msa_rows) == 0, query_paired, 0.0).astype(dtype)
+      # The QUERY's row, wherever the shuffle put it -- not row 0. See
+      # featurization.shuffle_msa_with_order.
+      origin = jnp.arange(num_msa_rows)
+      if not keep_query and row_origin is not None:
+        origin = row_origin[:num_msa_rows]
+      is_paired = jnp.where(origin == 0, query_paired, 0.0).astype(dtype)
       is_paired = jnp.broadcast_to(is_paired[:, None, None], msa_feat.shape[:2] + (1,))
       msa_feat = jnp.concatenate([msa_feat, is_paired], axis=-1)
 

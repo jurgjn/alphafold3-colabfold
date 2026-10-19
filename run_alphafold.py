@@ -1169,8 +1169,7 @@ def predict_structure(
       fold_input=fold_input,
       buckets=buckets,
       ccd=ccd,
-      flatten_non_standard_residues=not spec.featurise.get(
-          'modified_as_one_token', False),
+      **model_registry.featurise_kwargs(spec),
       ref_max_modified_date=ref_max_modified_date,
       conformer_max_iterations=conformer_max_iterations,
       resolve_msa_overlaps=resolve_msa_overlaps,

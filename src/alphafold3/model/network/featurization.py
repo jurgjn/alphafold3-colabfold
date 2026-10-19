@@ -637,12 +637,26 @@ def shuffle_msa(
   Returns:
     Protein with sampled msa.
   """
+  msa, key, _ = shuffle_msa_with_order(key, msa)
+  return msa, key
+
+
+def shuffle_msa_with_order(key, msa):
+  """`shuffle_msa`, also returning where each new row CAME FROM.
+
+  A per-row feature computed after the shuffle has to be computed from the
+  row's original index, not its new position: boltz2's is_paired marks the
+  QUERY, and assigning it to whatever landed at row 0 flagged a random homolog
+  on every fold with a real MSA (vendor_native_parity.py boltz2 msa: trunk pair
+  max|d|/rms 0.49). Boltz itself attaches the flag before its randperm.
+  Same key split and draw as shuffle_msa, so nothing else moves.
+  """
   key, sample_key = jax.random.split(key)
   # Sample uniformly among sequences with at least one non-masked position.
   logits = (jnp.clip(jnp.sum(msa.mask, axis=-1), 0.0, 1.0) - 1.0) * 1e6
   index_order = gumbel_argsort_sample_idx(sample_key, logits)
 
-  return msa.index_msa_rows(index_order), key
+  return msa.index_msa_rows(index_order), key, index_order
 
 
 def subsample_msa_keep_query(

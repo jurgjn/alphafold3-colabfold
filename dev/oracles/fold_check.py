@@ -86,8 +86,7 @@ def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
   # which is why it surfaced as a bug report against the port.
   featurise = lambda **kw: featurisation.featurise_input(
       fold_input=fold_input, ccd=ccd, buckets=buckets,
-      flatten_non_standard_residues=not spec.featurise.get(
-          'modified_as_one_token', False),
+      **model_registry.featurise_kwargs(spec),
       **kw)
   batch = featurise()[0]
   # ESMFold2 folds from ESM-C's hidden states. LM_PAIR names an npz written by

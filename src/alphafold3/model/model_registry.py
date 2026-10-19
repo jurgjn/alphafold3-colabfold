@@ -578,7 +578,20 @@ _FEATURISE = {
     'boltz2': dict(modified_as_one_token=True, padded_keys=True,
                    **({} if os.environ.get('AF3_NO_BOLTZ2_DROP_OXT')
                       else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
-                   dedupe_self_msa=not os.environ.get('AF3_NO_BOLTZ2_DEDUPE_MSA')),
+                   # 'query': boltz keeps the a3m as given, query once, with
+                   # or without real alignments (_dedupe_query_row).
+                   dedupe_self_msa=('query' if not os.environ.get(
+                       'AF3_NO_BOLTZ2_DEDUPE_MSA') else False),
+                   # a non-polymer token's MSA column is UNK, not a gap
+                   # (model_features._ligand_query_unk).
+                   ligand_msa_unk=True,
+                   # boltz keeps a ligand's leaving atoms; AF3 drops a glycan's
+                   # O1 unless O1 is the bonded atom. NAG bonded at C1 to an
+                   # Asn: boltz 15 ligand atoms, ours 14, until this.
+                   keep_ligand_leaving_atoms=True,
+                   # SMILES atoms named element + canonical rank, as boltz
+                   # names them (_boltz_smiles_atom_names).
+                   smiles_atom_names='boltz'),
     # opendde runs its diffusion on an expanded structural-token set, and pads
     # the atom key window rather than sliding it in bounds.
     # struct_num_tokens is deliberately absent: the structural-token count
@@ -1048,6 +1061,21 @@ ALIASES = {
     # is still called, and what earlier runs and notes refer to.
     'openbind': 'openbind0',
 }
+
+
+def featurise_kwargs(spec):
+  """The featurise_input arguments a family's knobs imply, in ONE place.
+
+  Every caller that featurises for a model must pass these. Two of them did,
+  each spelling out its own copy of the first knob, which is how a second knob
+  would have reached one caller and not the other.
+  """
+  knobs = getattr(spec, 'featurise', None) or {}
+  return dict(
+      flatten_non_standard_residues=not knobs.get('modified_as_one_token',
+                                                  False),
+      drop_ligand_leaving_atoms=not knobs.get('keep_ligand_leaving_atoms',
+                                              False))
 
 
 def get(name):
