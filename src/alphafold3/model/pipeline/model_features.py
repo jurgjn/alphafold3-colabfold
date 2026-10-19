@@ -2151,7 +2151,12 @@ def _atomized_backbone_bonds(batch, fold_input=None, mode=True):
     if first[0] != second[0] or second[1] != first[1] + 1:
       continue                              # different chain, or a numbering gap
     (name_a, atoms_a), (name_b, atoms_b) = residues[first], residues[second]
-    if name_a in standard and name_b in standard and first not in atomized and second not in atomized:
+    # esm counts a residue as atom-tokenised by its restype being protein UNK, so
+    # an unknown amino acid (X), one token, links to both neighbours too
+    # (compute_token_bonds is_atom_tokenized; stock-ESMFold2 unknown case)
+    std_a = name_a in standard and not (mode == 'esm' and name_a == 'UNK')
+    std_b = name_b in standard and not (mode == 'esm' and name_b == 'UNK')
+    if std_a and std_b and first not in atomized and second not in atomized:
       continue                              # AF3 does not drop this one
     if frozenset((first, second)) in linked:
       continue
