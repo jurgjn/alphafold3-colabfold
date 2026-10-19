@@ -631,7 +631,12 @@ CENTRE_REF_CONFORMERS = ('boltz2', 'openfold3', 'openbind0',
 # -- so enforcement for them rides along with the next reconversion rather than
 # forcing a second 6.5 GB upload into a window where a half-applied guard is
 # worse than none.
-MIN_BLOB_CONVENTION: dict[str, int] = {}
+MIN_BLOB_CONVENTION: dict[str, int] = {
+    # 2026-10-19: chai1's confidence head single->pair halves were crossed in every
+    # blob before convention 3 (converters/chai1.py); same names and shapes, so
+    # only this record can tell a stale cached blob from a current one.
+    'chai1': 3,
+}
 
 # Models whose outer product adds the OUTPUT BIAS AFTER the divide, i.e.
 # `Wout(outer) / n` against `Wout(outer / n)`. Algebraically the two differ by

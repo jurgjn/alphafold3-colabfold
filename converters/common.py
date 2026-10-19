@@ -40,7 +40,9 @@ from alphafold3.model.params import encode_record, read_records
 #      have gaps or nucleic acids at all.
 #   2  ESMFold2's DNA and N classes in its own order (N between U and the DNA); params.py rotates the rows of an
 #      ESMFold2 blob before this into that order on load.
-BLOB_CONVENTION = 2
+#   3  chai-1's confidence single->pair projections on the right token axes (they were crossed): a chai1 blob
+#      before this folds, silently, with a wrong confidence head.
+BLOB_CONVENTION = 3
 
 
 def write_params_blob(output_dir, filename, params, *, add_meta=True,
