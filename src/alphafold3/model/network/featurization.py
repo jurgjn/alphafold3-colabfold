@@ -20,6 +20,7 @@
 """Model-side of the input features processing."""
 
 import contextlib
+import dataclasses
 import functools
 
 from alphafold3.constants import residue_names
@@ -406,6 +407,17 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
 
 
 def truncate_msa_batch(msa: features.MSA, num_msa: int) -> features.MSA:
+  # PAD, never gather past the end. A batch shallower than num_msa used to read
+  # rows num_rows..num_msa-1 through JAX's clamped gather -- copies of the last
+  # row, mask 1 included -- so a 2-row MSA reached the trunk as 1024 live rows
+  # and the outer product mean divided by ~1024 instead of 2 (openfold3
+  # heterodimer, trunk pair max|d|/rms 2.06 against stock OF3). Padding rows
+  # are what the featuriser pads with: zeros, mask 0.
+  n = msa.rows.shape[0]
+  if n < num_msa:
+    pad = lambda x: jnp.pad(x, ((0, num_msa - n), (0, 0)))
+    msa = dataclasses.replace(msa, rows=pad(msa.rows), mask=pad(msa.mask),
+                              deletion_matrix=pad(msa.deletion_matrix))
   indices = jnp.arange(num_msa)
   return msa.index_msa_rows(indices)
 

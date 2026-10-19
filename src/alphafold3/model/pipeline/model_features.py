@@ -1271,12 +1271,24 @@ def _of3_msa_rows(batch):
   keys = [k for k in ('msa', 'msa_mask', 'deletion_matrix') if k in batch]
   arrays = {'msa': msa, 'msa_mask': mask}
   arrays.update({k: np.asarray(batch[k]) for k in keys if k not in arrays})
+  depth = msa.shape[0]
   if not aligned.any():
-    keep = live[:1]                       # one all-gap row
-    arrays = {k: v[keep] for k, v in arrays.items()}
+    rows = live[:1]                       # one all-gap row
   elif live.size == 1:                    # the dummy row AF3 deduped away
-    arrays = {k: np.concatenate([v[live], v[live]], axis=0)
-              for k, v in arrays.items()}
+    rows = np.concatenate([live, live])
+  else:
+    rows = None
+  if rows is not None:
+    # The chosen rows FIRST, then padded back to the input depth with masked
+    # zero rows. Returning only the live rows shrank the row axis below num_msa,
+    # and the trunk's truncation then gathered past its end (see
+    # featurization.truncate_msa_batch).
+    def _repad(v):
+      v = v[rows]
+      out = np.zeros((depth,) + v.shape[1:], v.dtype)
+      out[:len(rows)] = v
+      return out
+    arrays = {k: _repad(v) for k, v in arrays.items()}
   for k, v in arrays.items():
     batch[k] = v
   if 'num_alignments' in batch:

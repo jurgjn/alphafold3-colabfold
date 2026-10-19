@@ -352,6 +352,27 @@ def forward(model, out_dir, in_npz, out_npz):
       m.register_forward_hook(hook(name))
     for name, m in self.input_embedder.named_children():
       m.register_forward_hook(hook('input_embedder.' + name))
+    # OF3_DEEP_TAPS=1: every submodule of the MSA module and of pairformer
+    # block 0 too (first call only, `tap.deep.<order>.<path>.k` in call
+    # order), to place a trunk disagreement at one op.
+    if os.environ.get('OF3_DEEP_TAPS'):
+      seen = set()
+
+      def deep(name):
+        def f(_m, _i, o):
+          if name in seen:
+            return
+          seen.add(name)
+          for k, x in enumerate(o if isinstance(o, (tuple, list)) else (o,)):
+            if hasattr(x, 'float'):
+              taps['tap.deep.%04d.%s.%d' % (len(seen), name, k)] = (
+                  x.detach().float().cpu().numpy().copy())
+        return f
+      for root, mod in (('msa_module', self.msa_module),
+                        ('pairformer.0', self.pairformer_stack.blocks[0])):
+        for name, m in mod.named_modules():
+          if name:
+            m.register_forward_hook(deep(root + '.' + name))
   OpenFold3.__init__ = init
 
   orig_step = OpenFold3AllAtom.predict_step
