@@ -92,8 +92,8 @@ def _yaml_from_af3(j, msa_dir):
       if 'smiles' in e:
         d['smiles'] = e['smiles']
       else:
-        assert len(e['ccdCodes']) == 1, 'multi-component ligand'
-        d['ccd'] = e['ccdCodes'][0]
+        # boltz's `ccd` takes a list: a multi-residue ligand (a glycan), bonds as constraints
+        d['ccd'] = e['ccdCodes'] if len(e['ccdCodes']) > 1 else e['ccdCodes'][0]
     else:
       raise NotImplementedError(kind)
     seqs.append({kind: d})
@@ -129,7 +129,9 @@ def featurise(model, case_json, out_dir):
       manifest=manifest, target_dir=proc / 'structures', msa_dir=proc / 'msa',
       mol_dir=Path(CACHE) / 'mols', num_workers=0,
       constraints_dir=(proc / 'constraints') if (proc / 'constraints').exists() else None,
-      template_dir=None,
+      # where process_inputs wrote the parsed templates (main.py passes
+      # processed.template_dir); None silently loads none
+      template_dir=(proc / 'templates') if (proc / 'templates').exists() else None,
       extra_mols_dir=(proc / 'mols') if (proc / 'mols').exists() else None)
   feats = next(iter(dm.predict_dataloader()))
   torch.save(feats, os.path.join(out_dir, 'feats.pt'))

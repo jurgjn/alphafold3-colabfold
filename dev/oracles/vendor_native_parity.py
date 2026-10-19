@@ -260,6 +260,36 @@ def featurise_ours(model, j, recycles, bf16):
   return batch, fold_check.LAST_RAW_BATCH, cfg, model_dir
 
 
+def _pad_pair(x, batch):
+  """A vendor (real tokens)^2 pair array onto our token axis, which OURS_BUCKET may pad."""
+  n = np.asarray(batch['token_index']).shape[-1]
+  x = np.asarray(x)
+  if x.shape[0] == n:
+    return x
+  out = np.zeros((n, n) + x.shape[2:], x.dtype)
+  out[:x.shape[0], :x.shape[1]] = x
+  return out
+
+
+def _inject_ref_only(rp, raw, lay):
+  """The vendor's reference draw for atoms it keeps UNPLACED (layout
+  `refonly.*`: chai's leaving-atom tokens), into ours by (token, name) --
+  align() matches placed atoms only, so these kept our own conformer."""
+  if 'refonly.atom_name' not in lay or not len(lay['refonly.atom_name']):
+    return []
+  names = _names(np.asarray(raw['ref_atom_name_chars']))
+  mask = np.asarray(raw['ref_mask']).astype(bool)
+  where = {(t, names[t, s]): (t, s) for t, s in zip(*np.nonzero(mask))}
+  n = 0
+  for nm, t, p in zip(lay['refonly.atom_name'], lay['refonly.atom_token'], lay['refonly.ref_pos']):
+    ts = where.get((int(t), str(nm)))
+    if ts is not None:
+      rp[ts] = p
+      n += 1
+  return [('feat', 'reference draw injected for %d of %d unplaced vendor atom(s)'
+           % (n, len(lay['refonly.atom_name'])), 'INFO')]
+
+
 def align(raw, lay):
   """-> (ours (token, slot) for each boltz atom or (-1,-1), report rows)."""
   ours_names = _names(np.asarray(raw['ref_atom_name_chars']))
@@ -462,9 +492,20 @@ def trajectory_case(model, name, j, recycles):
              recycling_steps=recycles, precision='fp32')
     _vendor(model, 'trajectory', bdir, inp, os.path.join(tmp, 'b.npz'))
     b = dict(np.load(os.path.join(tmp, 'b.npz')))
+    floor = None
+    if os.environ.get('TRAJ_FLOOR'):
+      # the vendor against ITSELF with the initial positions nudged by 1e-4 (in
+      # units of the unit-normal draw): how far a 200-step chaotic sampler
+      # carries a difference the size of a port's per-step error. Our distance
+      # from the vendor is read against that.
+      fz = os.path.join(tmp, 'traj_floor.npz')
+      np.savez(fz, traj_x0=x0 + 1e-4 * np.random.default_rng(7).normal(size=x0.shape).astype(np.float32),
+               traj_rot=rot, traj_trans=trans, traj_eps=eps, recycling_steps=recycles, precision='fp32')
+      _vendor(model, 'trajectory', bdir, fz, os.path.join(tmp, 'b_floor.npz'))
+      floor = np.asarray(np.load(os.path.join(tmp, 'b_floor.npz'))['final']).reshape(-1, 3)
     if 'pair_state0' in b:
       # the vendor's random initial pair state (ESMFold2), injected as run_case does
-      batch = dict(batch, **{'inject/pair_state0': jnp.asarray(b['pair_state0'])})
+      batch = dict(batch, **{'inject/pair_state0': jnp.asarray(_pad_pair(b['pair_state0'], batch))})
   # ours: the real sampler, XLA path, one sample, the same draws in our layout
   ev = cfg.heads.diffusion.eval
   ev.num_samples = 1
@@ -498,6 +539,11 @@ def trajectory_case(model, name, j, recycles):
   c, ratio = P.compare(fin_o, fin_v)
   rows.append(('traj', 'final coordinates corr %.6f max|d|/rms %.2e (max |d| %.3f A)'
                % (c, ratio, np.abs(fin_o - fin_v).max()), P.grade(c, ratio)))
+  if floor is not None:
+    d_floor = np.abs(floor[ok] - fin_v).max()
+    d_ours = np.abs(fin_o - fin_v).max()
+    rows.append(('traj', 'vendor vs itself, x0 nudged 1e-4: max |d| %.3f A; ours %.3f A (x%.2f)'
+                 % (d_floor, d_ours, d_ours / max(d_floor, 1e-6)), 'INFO'))
   if 'plddt' in b:
     pl_b = b['plddt'].reshape(-1)
     if pl_b.shape[0] == n_v:
@@ -545,6 +591,7 @@ def run_case(model, name, j, recycles, bf16, graded=False):
     rows.append(('feat', 'conformer geometry (ours CCD ideal vs boltz stored '
                  'draw): max within-residue distance diff %.2f A' % geo, 'INFO'))
     rp[idx[ok, 0], idx[ok, 1]] = b_ref[ok]
+    rows += _inject_ref_only(rp, raw, lay)
     batch = dict(batch, ref_pos=jnp.asarray(rp))
     # OPENDDE DIFFUSES ON STRUCTURAL TOKENS: our batch carries a second,
     # structural-token copy of the atom features under 'struct/' (the diffusion
@@ -598,7 +645,7 @@ def run_case(model, name, j, recycles, bf16, graded=False):
     os.environ.pop('ESMC_HIDDEN', None)
     if 'pair_state0' in b:
       # the vendor's random initial pair state (ESMFold2), injected like ref_pos
-      batch = dict(batch, **{'inject/pair_state0': jnp.asarray(b['pair_state0'])})
+      batch = dict(batch, **{'inject/pair_state0': jnp.asarray(_pad_pair(b['pair_state0'], batch))})
     if os.environ.get('B2_KEEP'):
       import shutil
       keep = os.path.join(os.environ['B2_KEEP'], model, name)

@@ -54,6 +54,12 @@ _THREE = {'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS',
           'X': 'UNK'}  # an unknown amino acid is the CCD UNK, as RF3 reads X
 
 
+
+def _vendor_na(msg):
+  """The stock vendor cannot express this input: exit 3, graded N/A by the harness."""
+  print('VENDOR_NA: ' + msg, file=sys.stderr)
+  sys.exit(3)
+
 def _trivial_msa(msa, seq):
   return (not msa) or msa.strip() == '>q\n%s' % seq
 
@@ -134,7 +140,8 @@ def _rf3_json(j, msa_dir):
         d['smiles'] = e['smiles']
         names = ['L:0']
       else:
-        assert len(e['ccdCodes']) == 1, 'multi-component ligand'
+        if len(e['ccdCodes']) != 1:
+          _vendor_na('a multi-component CCD ligand: the rf3 JSON takes one ccd_code per chain')
         d['ccd_code'] = e['ccdCodes'][0]
         names = [e['ccdCodes'][0]]
       for cid in ids:

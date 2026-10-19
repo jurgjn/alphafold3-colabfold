@@ -611,54 +611,6 @@ def _chai_unpaired_order(chain):
   return [i - first_single for i in order if i >= first_single]
 
 
-# chai_lab residue_constants.standard_residue_pdb_codes: a template hit with any other residue is dropped
-_CHAI_STANDARD_CODES = frozenset((
-    'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE', 'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER',
-    'THR', 'TRP', 'TYR', 'VAL', 'UNK', 'A', 'G', 'C', 'U', 'DA', 'DG', 'DC', 'DT'))
-
-
-def _chai_drop_modified_templates(batch, fold_input):
-  """chai-1 drops every template hit whose chain carries a residue outside its standard codes
-  (data/dataset/templates/load.py: `if template_entity_data.has_modifications: continue` -- a modified residue
-  tokenises per atom and would not line up with the query), and the hits after it move up a slot. A phospho-
-  ubiquitin template (5K9P, one SEP) therefore reaches stock chai as NO template while AF3's pipeline keeps it
-  (vendor_native_parity chai1 template: trunk pair corr 0.79). MSE counts too: AF3 reads a template with
-  fix_mse_residues, so the names are read here from the raw mmCIF."""
-  from alphafold3.common import folding_input as fi
-  from alphafold3 import structure
-  if 'template_aatype' not in batch or fold_input is None:
-    return batch
-  aatype = np.array(batch['template_aatype'])
-  mask = np.array(batch['template_atom_mask'])
-  pos = np.array(batch['template_atom_positions'])
-  asym = np.asarray(batch['asym_id']).reshape(-1)
-  n_slots = aatype.shape[0]
-  changed = False
-  for index, chain in enumerate(fold_input.chains):
-    if not isinstance(chain, fi.ProteinChain) or not chain.templates:
-      continue
-    sel = np.flatnonzero(asym == index + 1)
-    keep = []
-    for t, template in enumerate(chain.templates[:n_slots]):
-      struc = structure.from_mmcif(template.mmcif, fix_mse_residues=False, fix_arginines=False,
-                                   include_bonds=False, include_water=False, include_other=True)
-      names = set(struc.filter_to_entity_type(protein=True, rna=True, dna=True, dna_rna_hybrid=True).res_name)
-      if names <= _CHAI_STANDARD_CODES:
-        keep.append(t)
-    if len(keep) == min(len(chain.templates), n_slots):
-      continue
-    changed = True
-    for arr in (aatype, mask, pos):
-      block = arr[:, sel].copy()
-      arr[:, sel] = 0
-      arr[:len(keep), sel] = block[keep]
-  if changed:
-    batch['template_aatype'] = aatype.astype(np.asarray(batch['template_aatype']).dtype)
-    batch['template_atom_mask'] = mask.astype(np.asarray(batch['template_atom_mask']).dtype)
-    batch['template_atom_positions'] = pos.astype(np.asarray(batch['template_atom_positions']).dtype)
-  return batch
-
-
 def _chai_msa(batch, fold_input):
   """chai-1's MSA inputs where AF3's differ, once any chain has an alignment.
 
@@ -976,6 +928,37 @@ _BOLTZ_MAX_MSA_SEQS = 8192    # `boltz predict --max_msa_seqs`: parse_csv keeps 
 _BOLTZ_MAX_PAIRS, _BOLTZ_MAX_TOTAL = 8192, 16384    # construct_paired_msa; inference max_seqs is const.max_msa_seqs
 
 
+def _boltz_surviving_deletions(per_seq):
+  """The deletions stock boltz's featuriser keeps, per sequence index -> per-residue counts.
+
+  featurizerv2.construct_paired_msa maps deletions with
+
+      for sequence in chain_msa.sequences:
+          chain_deletions = chain_deletions[del_start:del_end]   # reassigns the array it slices
+          for deletion_data in chain_deletions: deletions[(chain, seq_idx, res_idx)] = ...
+
+  so after the first sequence the array is that sequence's slice, and every later slice indexes into it. The first
+  sequence is the query, which has no insertions: the array empties and NO row keeps a deletion. Stock boltz-2 runs
+  with zero deletion values and deletion mean (vendor_native_parity boltz2 deep_msa: deletion_mean 0.22 apart before
+  this). Emulated literally, entries landing on the CURRENT sequence's index, not their owner's, as boltz keys them.
+  """
+  entries, bounds = [], []
+  for k, d in enumerate(per_seq):
+    nz = np.flatnonzero(d)
+    bounds.append((len(entries), len(entries) + nz.size))
+    entries += [(int(r), d[r]) for r in nz]
+  arr, kept = entries, {}
+  for k, (start, end) in enumerate(bounds):
+    arr = arr[start:end]
+    if arr:
+      out = np.zeros_like(per_seq[k])
+      for r, v in arr:
+        if r < out.size:
+          out[r] = v
+      kept[k] = out
+  return kept
+
+
 def _boltz_msa(batch, fold_input):
   """Boltz-2's MSA as `boltz predict` builds it from a chain's key,sequence CSV (query, paired rows keyed 1.., then
   the unpaired rows): parse_csv drops repeats of a sequence (gaps removed, insertions upper-cased) and stops at 8192
@@ -983,7 +966,8 @@ def _boltz_msa(batch, fold_input):
   the other chains of a paired row and then the unpaired rows from each chain's remaining sequences, to 16384. Its
   `visited` set never matches, so a paired sequence comes round again in the unpaired block, as in AF3. A chain
   without an MSA (ligand, nucleic, protein without alignments) has its query (UNK on a ligand) and then gaps. Profile
-  and deletion mean are over every row, the latter of the deletion value (pi / 2) * arctan(d / 3)."""
+  and deletion mean are over every row, the latter of the deletion value (pi / 2) * arctan(d / 3) -- of the deletions
+  boltz's mapping keeps, which is none (_boltz_surviving_deletions)."""
   import collections
   from alphafold3.common import folding_input as fi
   from alphafold3.constants import residue_names
@@ -1011,7 +995,11 @@ def _boltz_msa(batch, fold_input):
     seen, rows = set(), []
     # the CSV's query row is the chain sequence as typed (a modified position keeps its letter)
     typed = getattr(c, '_sequence', c.sequence)
-    for key, line in [(None, typed)] + [(k + 1, r) for k, r in enumerate(paired)] + [(None, r) for r in unpaired]:
+    # with a pair a3m, boltz's compute_msa keys the CSV's query 0 too (`keys = [idx for idx, s in enumerate(paired)]`),
+    # so the query pairs across chains as a row of its own after row 0 (vendor_native_parity boltz2 paired_msa: 26
+    # paired rows, ours 25 without it)
+    for key, line in ([(0 if paired else None, typed)] + [(k + 1, r) for k, r in enumerate(paired)]
+                      + [(None, r) for r in unpaired]):
       line = line.strip()
       flat = line.replace('-', '').upper()
       if not line or flat in seen:
@@ -1063,10 +1051,14 @@ def _boltz_msa(batch, fold_input):
       continue
     col = resi[sel] - 1
     idx = np.asarray([p[i] for p in pairing])
-    for r in np.flatnonzero(idx > 0):
+    kept = _boltz_surviving_deletions([parse(q)[1] for _, q in seqs[i]])
+    # every row past the first that holds one of this chain's sequences -- the query too, which a keyed query pairs
+    # into a row of its own
+    for r in np.flatnonzero(idx >= 0)[np.flatnonzero(idx >= 0) > 0]:
       tok, d = parse(seqs[i][idx[r]][1])
       if tok.size > col.max():          # boltz indexes by residue; a row shorter than its chain is malformed, skip it
-        msa[r, sel], dele[r, sel] = tok[col], d[col]
+        msa[r, sel] = tok[col]
+        dele[r, sel] = kept.get(int(idx[r]), np.zeros_like(d))[col]
   n_cls = np.asarray(batch['profile']).shape[-1]
   counts = np.bincount((np.arange(n_tok) * n_cls + np.minimum(msa, n_cls - 1)).ravel(),
                        minlength=n_tok * n_cls).reshape(n_tok, n_cls).astype(np.float32)
@@ -1467,6 +1459,13 @@ def _attach_lm_pair(batch, lm_pair):
   """
   lm = np.asarray(lm_pair, np.float32)
   n = np.asarray(batch['token_index']).shape[-1]
+  real = int(np.asarray(batch.get('seq_mask', np.ones(n))).astype(bool).sum())
+  if lm.shape[:2] == (real, real) and real < n:
+    # every REAL token's pair rep (the harness's vendor states cover ligands too), the batch padded to a bucket:
+    # the real tokens lead, the padding stays zero
+    full = np.zeros((n, n, lm.shape[-1]), np.float32)
+    full[:real, :real] = lm
+    lm = full
   if lm.shape[:2] != (n, n):
     is_protein = np.asarray(batch['is_protein']).astype(bool)
     idxs = np.flatnonzero(is_protein)
@@ -1710,6 +1709,10 @@ def prepare_input(fold_input, spec):
   af3_pipeline.INNER_TERMINAL_ATOMS = knobs.get('drop_inner_terminal_atoms') or False
   af3_pipeline.MAX_ATOMS_PER_TOKEN = (_largest_modified_residue(fold_input) if knobs.get('modified_as_one_token')
                                       else None)
+  if knobs.get('templates'):
+    # how this model reads its templates (altloc, modified residues, alignment, prefilter): template_policy
+    from alphafold3.model.pipeline import template_policy
+    fold_input = template_policy.apply(fold_input, knobs['templates'])
   cap = knobs.get('of3_main_msa')
   if not (knobs.get('dedupe_unpaired_msa') or cap or knobs.get('pair_as_unpair')):
     return fold_input
@@ -1876,15 +1879,16 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _zero_msa(batch)
   if knobs.get('chai_msa') and has_msa and fold_input is not None:
     _chai_msa(batch, fold_input)
-  if knobs.get('chai_template_filter') and fold_input is not None:
-    _chai_drop_modified_templates(batch, fold_input)
   if knobs.get('dna_gap_msa'):
     _dna_gap_msa(batch)
   if knobs.get('boltz_msa') and fold_input is not None and 'msa' in batch:
     _boltz_msa(batch, fold_input)
   if knobs.get('rf3_msa') and fold_input is not None and 'msa' in batch:
     _rf3_msa(batch, fold_input)
-  if knobs.get('dedupe_self_msa') == 'query':
+  boltz_built = bool(knobs.get('boltz_msa') and fold_input is not None and 'msa' in batch)
+  if knobs.get('dedupe_self_msa') == 'query' and not boltz_built:
+    # (_boltz_msa writes boltz's rows itself, the query once -- or twice when a keyed query pairs into a row of its
+    # own, which this would drop)
     _dedupe_query_row(batch)
   elif knobs.get('dedupe_self_msa'):
     _dedupe_self_msa(batch, query_once=knobs['dedupe_self_msa'] == 'query_once')

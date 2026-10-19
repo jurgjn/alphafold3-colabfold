@@ -409,7 +409,21 @@ def _layout(inputs):
          'feat.ref_space_uid': _np(inputs['atom_ref_space_uid'])[0][real],
          'feat.ref_element': np.eye(128, dtype=np.int64)[_np(inputs['atom_ref_element'])[0][real]],
          'atomfeat.ref_charge': _np(inputs['atom_ref_charge'])[0][real],
-         'atomfeat.ref_name_chars': _np(inputs['atom_ref_name_chars'])[0][real]})
+         'atomfeat.ref_name_chars': _np(inputs['atom_ref_name_chars'])[0][real]},
+      # atoms chai keeps but does not place (a ligand's declared-bond leaving
+      # atom: reference features, atom_exists false): their reference draw, so
+      # the harness can inject it into ours as it does for placed atoms
+      **_ref_only(inputs, real))
+
+
+def _ref_only(inputs, real):
+  if 'atom_ref_mask' not in inputs:
+    return {}
+  ref = _np(inputs['atom_ref_mask'])[0].astype(bool) & ~real
+  names = inputs['atom_ref_name'][0] if isinstance(inputs['atom_ref_name'][0], list) else inputs['atom_ref_name']
+  return {'refonly.atom_name': np.array([str(n) for n, r in zip(names, ref) if r]),
+          'refonly.atom_token': _np(inputs['atom_token_index'])[0][ref],
+          'refonly.ref_pos': _np(inputs['atom_ref_pos'])[0][ref]}
 
 
 def featurise(model, case_json, out_dir):

@@ -442,7 +442,6 @@ def trajectory(model, out_dir, in_npz, out_npz):
   rotates as x @ R, as the harness means it), translation and noise. esm
   samples over its padded atom axis: the draws go to the real atom slots."""
   import torch
-  from esm.models.esmfold2 import layers as Lmod
   z = np.load(in_npz)
   lay = np.load(os.path.join(out_dir, 'layout.npz'))
   slot = lay['atom_slot']
@@ -498,6 +497,9 @@ def trajectory(model, out_dir, in_npz, out_npz):
       return padded(eps[k], x.shape, x.device).to(x.dtype)
 
   sh = m.structure_head
+  # the module that defines the head's sample loop: esm's layers, or the
+  # fastplms runtime Synthyra's releases bundle (the same API)
+  Lmod = sys.modules[type(sh).__module__]
 
   def rotations(bsz, dtype, device):
     k = n['aug']

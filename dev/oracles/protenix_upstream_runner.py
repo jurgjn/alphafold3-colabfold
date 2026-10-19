@@ -26,6 +26,54 @@ CKPT_DIR = os.path.expanduser(os.environ.get('PROTENIX_CKPT_DIR', '~/protenix_we
 NAMES = {'protenix2': 'protenix-v2', 'protenix1': 'protenix_base_default_v1.0.0'}
 
 
+
+def _vendor_na(msg):
+  """The stock vendor cannot express this input: exit 3, graded N/A by the harness."""
+  print('VENDOR_NA: ' + msg, file=sys.stderr)
+  sys.exit(3)
+
+
+def _template_dir(out_dir):
+  return os.path.join(out_dir, 'templates')
+
+
+def _template_a3m(e, cid, out_dir):
+  """The case's AF3 templates as protenix's template search output (templatesPath, an hmmsearch a3m:
+  `>pdbid_chain/start-end mol:protein length:N`, the hit aligned to the query), with each template's mmCIF
+  pre-placed in an offline mmcif dir (<pdbid>.cif, fetch_remote off) and its release date in a release-dates
+  file, as protenix's downloaded caches would hold them. The hit line follows the case's query->template map;
+  protenix itself then re-aligns the query to the template chain's full SEQRES with kalign
+  (TemplateHitProcessor._align_query_to_hit_index_mapping) and prefilters the hit (TemplateHitFilter)."""
+  import re
+  from protenix.data.template.template_parser import TemplateParser
+  tdir = _template_dir(out_dir)
+  os.makedirs(os.path.join(tdir, 'mmcif'), exist_ok=True)
+  dates_path = os.path.join(tdir, 'release_dates.json')
+  dates = json.load(open(dates_path)) if os.path.exists(dates_path) else {}
+  q = e['sequence']
+  lines = []
+  for t in e['templates']:
+    cif = t['mmcif']
+    pdb_id = re.search(r'_entry\.id\s+(\S+)', cif).group(1).lower()
+    with open(os.path.join(tdir, 'mmcif', '%s.cif' % pdb_id), 'w') as f:
+      f.write(cif)
+    chain = re.search(r'_entity_poly\.pdbx_strand_id\s+(\S+)', cif)
+    chain = (chain.group(1).split(',')[0] if chain else 'A').strip("'\"")
+    res = TemplateParser.parse(file_id=pdb_id, mmcif_string=cif, auth_chain_id=chain)
+    seqres = res.mmcif_object.chain_to_seqres[chain]
+    dates[pdb_id] = {'release_date': res.mmcif_object.header['release_date']}
+    qmap = dict(zip(t['queryIndices'], t['templateIndices']))
+    aligned = ''.join(seqres[qmap[i]] if i in qmap else '-' for i in range(len(q)))
+    ts = sorted(qmap.values())
+    lines += ['>%s_%s/%d-%d [subseq from] mol:protein length:%d  case template'
+              % (pdb_id, chain, ts[0] + 1, ts[-1] + 1, len(seqres)), aligned]
+  with open(dates_path, 'w') as f:
+    json.dump(dates, f)
+  path = os.path.join(tdir, '%s.a3m' % cid)
+  with open(path, 'w') as f:
+    f.write('\n'.join(lines) + '\n')
+  return path
+
 def _protenix_json(j, msa_root):
   """AF3 fold-input JSON -> protenix's input JSON (a one-element list)."""
   seqs, entity_of = [], {}
@@ -54,7 +102,7 @@ def _protenix_json(j, msa_root):
           f.write(paired if has_pair else '>query\n%s\n' % e['sequence'])
         d['msa'] = {'precomputed_msa_dir': md, 'pairing_db': 'uniref100'}
       if e.get('templates'):
-        raise NotImplementedError('templates')
+        d['templatesPath'] = _template_a3m(e, ids[0], os.path.dirname(msa_root))
       seqs.append({'proteinChain': d})
     elif kind in ('rna', 'dna'):
       d = {'sequence': e['sequence'], 'count': len(ids)}
@@ -125,7 +173,18 @@ def _configs(model, json_path, dump_dir, dtype):
     args += ' --enable_tf32 false'
   if os.environ.get('PROTENIX_NO_RNG'):
     args += ' --mc_dropout_apply_rate 0'
-  return parse_configs(configs=base, arg_str=args, fill_required_with_null=True)
+  c = parse_configs(configs=base, arg_str=args, fill_required_with_null=True)
+  tdir = _template_dir(dump_dir)
+  if os.path.isdir(tdir):
+    # the CLI's `--use_template true` with offline caches (runner/batch_inference.py): kalign from PATH
+    import shutil
+    c.use_template = True
+    c.data.template.prot_template_mmcif_dir = os.path.join(tdir, 'mmcif')
+    c.data.template.release_dates_path = os.path.join(tdir, 'release_dates.json')
+    c.data.template.obsolete_pdbs_path = os.path.join(tdir, 'obsolete.json')
+    c.data.template.kalign_binary_path = shutil.which('kalign') or os.path.expanduser('~/.local/bin/kalign')
+    c.data.template.fetch_remote = False
+  return c
 
 
 def _batch(model, out_dir, dtype='fp32'):
@@ -157,7 +216,10 @@ def featurise(model, case_json, out_dir):
            atom_pad=np.ones(len(names), bool),
            token_pad=np.ones(f['residue_index'].shape[-1], bool),
            **{'feat.ref_pos': f['ref_pos'].numpy(),
-              'feat.ref_space_uid': f['ref_space_uid'].numpy()})
+              'feat.ref_space_uid': f['ref_space_uid'].numpy()},
+           # the template features protenix built (for a field-by-field diff against ours)
+           **{'feat.' + k: np.asarray(v) for k, v in f.items()
+              if k.startswith('template') and hasattr(v, 'shape')})
 
 
 def forward(model, out_dir, in_npz, out_npz):

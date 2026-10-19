@@ -531,6 +531,13 @@ class Boltz2TemplateEmbedding(hk.Module):
     e3 = jnp.cross(e1, e2)
     rot = jnp.stack([e1, e2, e3], axis=-1)                             # (N,3,3), columns e1,e2,e3
     t = ca                                                             # (N,3)
+    # A covered UNK is boltz's ATOMISED template residue (a modified amino acid; model_features.
+    # _boltz_template_mmcif): its token has no frame -- mask 0, frame_rot identity, frame_t 0 -- and boltz does not
+    # mask the unit vector by the frame mask, so R_j = I, t_j = 0 still enter it. Its CA/CB are its one atom (N).
+    atomised = covered & (aatype == 20)
+    frame_mask = jnp.where(atomised, 0.0, frame_mask)
+    rot = jnp.where(atomised[:, None, None], jnp.eye(3, dtype=rot.dtype), rot)
+    t = jnp.where(atomised[:, None], 0.0, t)
     # distogram (38) over CB-CB
     cb_d = jnp.sqrt(jnp.sum((cb[:, None] - cb[None]) ** 2, -1) + 1e-10)
     bnd = jnp.linspace(3.25, 50.75, 37)

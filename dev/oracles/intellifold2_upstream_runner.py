@@ -41,6 +41,54 @@ CACHE = os.path.expanduser(os.environ.get('IF2_CACHE', '~/if2_cache'))
 SEED = 1
 
 
+
+def _vendor_na(msg):
+  """The stock vendor cannot express this input: exit 3, graded N/A by the harness."""
+  print('VENDOR_NA: ' + msg, file=sys.stderr)
+  sys.exit(3)
+
+
+def _template_dir(out_dir):
+  return os.path.join(out_dir, 'templates_in')
+
+
+def _template_a3m(e, cid, out_dir):
+  """The case's AF3 templates as IntelliFold's template search output (the yaml `template:` path, an hmmsearch
+  a3m `>pdbid_chain/start-end mol:protein length:N`, the hit aligned to the query), each mmCIF pre-placed in an
+  offline mmcif dir with its release date (construct_template_featurizer's INTELLIFOLD_CACHE layout). IntelliFold's
+  template code is protenix's: it re-aligns the query to the chain's full SEQRES with kalign and prefilters the hit
+  (intellifold/data/template/template_utils.py)."""
+  import re
+  from intellifold.data.template.template_parser import TemplateParser
+  tdir = _template_dir(out_dir)
+  os.makedirs(os.path.join(tdir, 'mmcif'), exist_ok=True)
+  os.makedirs(os.path.join(tdir, 'common'), exist_ok=True)
+  dates_path = os.path.join(tdir, 'common', 'release_date_cache.json')
+  dates = json.load(open(dates_path)) if os.path.exists(dates_path) else {}
+  q = e['sequence']
+  lines = []
+  for t in e['templates']:
+    cif = t['mmcif']
+    pdb_id = re.search(r'_entry\.id\s+(\S+)', cif).group(1).lower()
+    with open(os.path.join(tdir, 'mmcif', '%s.cif' % pdb_id), 'w') as f:
+      f.write(cif)
+    chain = re.search(r'_entity_poly\.pdbx_strand_id\s+(\S+)', cif)
+    chain = (chain.group(1).split(',')[0] if chain else 'A').strip("'\"")
+    res = TemplateParser.parse(file_id=pdb_id, mmcif_string=cif, auth_chain_id=chain)
+    seqres = res.mmcif_object.chain_to_seqres[chain]
+    dates[pdb_id] = {'release_date': res.mmcif_object.header['release_date']}
+    qmap = dict(zip(t['queryIndices'], t['templateIndices']))
+    aligned = ''.join(seqres[qmap[i]] if i in qmap else '-' for i in range(len(q)))
+    ts = sorted(qmap.values())
+    lines += ['>%s_%s/%d-%d [subseq from] mol:protein length:%d  case template'
+              % (pdb_id, chain, ts[0] + 1, ts[-1] + 1, len(seqres)), aligned]
+  with open(dates_path, 'w') as f:
+    json.dump(dates, f)
+  path = os.path.join(tdir, '%s_hmmsearch.a3m' % cid)
+  with open(path, 'w') as f:
+    f.write('\n'.join(lines) + '\n')
+  return path
+
 def _boltz_csv(paired, unpaired):
   """A pairedMsa + unpairedMsa as ONE boltz MSA csv, exactly as `boltz
   predict`'s compute_msa writes the ColabFold server's pair: the pair a3m's
@@ -76,8 +124,16 @@ def _yaml_from_af3(j, msa_dir):
         with open(p, 'w') as f:
           f.write(_boltz_csv(e['pairedMsa'], msa or ''))
         d['msa'] = p
-      elif (not msa) or msa.strip() == '>q\n%s' % e['sequence']:
+      elif ((not msa) or msa.strip() == '>q\n%s' % e['sequence']) and not e.get('templates'):
         d['msa'] = 'empty'
+      elif (not msa) or msa.strip() == '>q\n%s' % e['sequence']:
+        # a template is only reachable beside a parsed MSA (data_tools.process_inputs copies chain i's template
+        # to processed/templates as templates[msa_idx]; with `msa: empty` its templatesPath points at nothing),
+        # so a templated chain without alignments gets its query as a one-row a3m
+        p = os.path.join(msa_dir, '%s.a3m' % ids[0])
+        with open(p, 'w') as f:
+          f.write('>query\n%s\n' % e['sequence'])
+        d['msa'] = p
       else:
         p = os.path.join(msa_dir, '%s.a3m' % ids[0])
         with open(p, 'w') as f:
@@ -88,8 +144,7 @@ def _yaml_from_af3(j, msa_dir):
       if mods:
         d['modifications'] = mods
       if e.get('templates'):
-        raise NotImplementedError('templates: IntelliFold reads a template '
-                                  'search file per chain')
+        d['template'] = _template_a3m(e, ids[0], msa_dir)
     elif kind in ('rna', 'dna'):
       d = {'id': ids, 'sequence': e['sequence']}
       mods = [{'position': m['basePosition'], 'ccd': m['modificationType']}
@@ -101,7 +156,10 @@ def _yaml_from_af3(j, msa_dir):
       if 'smiles' in e:
         d['smiles'] = e['smiles']
       else:
-        assert len(e['ccdCodes']) == 1, 'multi-component ligand'
+        if len(e['ccdCodes']) > 1:   # the boltz schema's ccd list: a multi-residue ligand
+          d['ccd'] = e['ccdCodes']
+          seqs.append({kind: d})
+          continue
         d['ccd'] = e['ccdCodes'][0]
     else:
       raise NotImplementedError(kind)
@@ -167,27 +225,47 @@ def _pipeline(out_dir, args, load_weights):
   from intellifold.data.inference.params import BoltzProcessedInput
   from intellifold.data.inference.data_tools import check_inputs, process_inputs
 
+  out = Path(out_dir)
+  use_template = os.path.isdir(_template_dir(out_dir))
+  if use_template:
+    # `--use_template` with offline caches: the featuriser built as construct_template_featurizer builds it,
+    # pointed at the case's mmcif dir and release dates instead of $INTELLIFOLD_CACHE (kalign from PATH)
+    import shutil
+    import intellifold.data.module.inference as ifi
+    from intellifold.data.template.template_utils import TemplateHitFeaturizer
+    tdir = _template_dir(out_dir)
+
+    def construct_template_featurizer():
+      return TemplateHitFeaturizer(
+          mmcif_dir=os.path.join(tdir, 'mmcif'), template_cache_dir='', max_hits=4,
+          kalign_binary_path=shutil.which('kalign') or os.path.expanduser('~/.local/bin/kalign'),
+          max_template_date='2021-09-30',
+          release_dates_path=os.path.join(tdir, 'common', 'release_date_cache.json'),
+          obsolete_pdbs_path=os.path.join(tdir, 'common', 'obsolete_to_successor.json'),
+          _shuffle_top_k_prefiltered=None, _max_template_candidates_num=20)
+    ifi.construct_template_featurizer = construct_template_featurizer
+    args.use_template = True
   set_seed(SEED)
   accelerator = Accelerator(mixed_precision=args.precision,
                             step_scheduler_with_optimizer=False)
-  out = Path(out_dir)
   data = check_inputs(out / 'case.yaml')
   process_inputs(args, data=data, out_dir=out,
                  ccd_path=Path(CACHE) / 'ccd_v2.pkl', use_msa_server=False,
                  msa_server_url=args.msa_server_url,
                  msa_pairing_strategy=args.msa_pairing_strategy,
                  max_msa_seqs=16384, use_pairing=not args.no_pairing,
-                 use_template=False)
+                 use_template=use_template)
   proc = out / 'processed'
   processed = BoltzProcessedInput(
       manifest=Manifest.load(proc / 'manifest.json'),
-      targets_dir=proc / 'structures', msa_dir=proc / 'msa', template_dir=None,
+      targets_dir=proc / 'structures', msa_dir=proc / 'msa',
+      template_dir=(proc / 'templates') if use_template else None,
       constraints_dir=(proc / 'constraints')
       if (proc / 'constraints').exists() else None)
   loader = get_inference_dataloader(
       args=args, manifest=processed.manifest,
       target_dir=processed.targets_dir, msa_dir=processed.msa_dir,
-      template_dir=None, constraints_dir=processed.constraints_dir)
+      template_dir=processed.template_dir, constraints_dir=processed.constraints_dir)
   config = get_model_config(args)
   generator = torch.Generator(device=accelerator.device)
   generator.manual_seed(SEED)
@@ -201,7 +279,11 @@ def _pipeline(out_dir, args, load_weights):
   record = f.pop('record')[0]
   f.pop('structure')
   f['msa'] = F.one_hot(f['msa'].long(), num_classes=32).float()
-  f.update(construct_empty_template_features(f, device=accelerator.device))
+  if use_template:
+    # run_intellifold.py: the template aatype one-hot, else the empty template features
+    f['template_aatype'] = F.one_hot(f['template_aatype'].long(), num_classes=31).float()
+  else:
+    f.update(construct_empty_template_features(f, device=accelerator.device))
   return model, f, accelerator
 
 
@@ -230,7 +312,10 @@ def featurise(model_name, case_json, out_dir):
            **{'feat.ref_pos': flat('ref_pos'),
               'feat.ref_space_uid': flat('ref_space_uid'),
               'feat.ref_element': flat('ref_element'),
-              'feat.ref_charge': flat('ref_charge')})
+              'feat.ref_charge': flat('ref_charge')},
+           # the template features IntelliFold built (for a field-by-field diff against ours)
+           **{'feat.' + k: f[k][0].float().cpu().numpy() for k in f
+              if k.startswith('template') and hasattr(f[k], 'shape')})
 
 
 def forward(model_name, out_dir, in_npz, out_npz):

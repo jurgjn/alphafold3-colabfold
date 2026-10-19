@@ -357,6 +357,24 @@ def _widen_rosettafold3(cfg):
     setattr(node, parts[-1], value)
 
 
+# How each model reads its templates (model_features.prepare_input -> pipeline/template_policy.py): one policy per
+# model along five axes -- altloc, modified residues, alignment, prefilter, the prefilter's letter for a modified
+# residue. A model absent here reads templates as AF3 does. Each value was read off the vendor's code and checked
+# against its featuriser on 5K9P (vendor_native_parity template / template_std / multi_template).
+TEMPLATE_POLICIES = {
+    # boltz: gemmi keeps the first altloc; a modified residue is atomised (its N stands for it); the YAML takes a whole
+    # chain and boltz aligns the query to it
+    'boltz2': dict(altloc='first', modified='unk_n', realign='whole_chain'),
+    # protenix's template featuriser (OpenDDE copies it): prefilter, kalign to the whole SEQRES, a modified residue UNK
+    **{m: dict(modified='unk_n', realign='whole_chain', prefilter=True, hit_letter='X')
+       for m in ('protenix1', 'protenix2', 'opendde')},
+    # IntelliFold: protenix's prefilter, but it re-aligns within the hit's range and maps a modified residue to its parent
+    'intellifold2': dict(prefilter=True, hit_letter='parent'),
+    # chai: a hit carrying any residue outside its standard codes (SEP, MSE, ...) is dropped
+    'chai1': dict(modified='drop_hit'),
+}
+
+
 # EDM sampler constants per model family. AF3's values are NOT universal -- each
 # family trained its own, and running boltz2's network under AF3's constants was a
 # silent mismatch (nothing errors; the sampler just anneals on the wrong schedule).
@@ -608,6 +626,7 @@ _FEATURISE = {
     # already use.
     # declared_polymer_bonds: boltz's `bond` constraint between two tokens is a token bond, polymer-polymer included
     'boltz2': dict(modified_as_one_token=True, padded_keys=True, declared_polymer_bonds=True,
+                   templates=TEMPLATE_POLICIES['boltz2'],
                    **({} if os.environ.get('AF3_NO_BOLTZ2_DROP_OXT')
                       else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
                    # 'query': boltz keeps the a3m as given, query once, with
@@ -655,7 +674,7 @@ _FEATURISE = {
     # dev/oracles/featurisation_diff.py existing.
     # dedupe_self_msa: a protenix fork, and its featuriser too emits a depth-1 self MSA; the duplicate query row
     # moved a single-sequence protein+RNA trunk to another basin (u1a pair rel 0.35 -> 0.06 against native)
-    'opendde': dict(opendde=True, padded_keys=True,
+    'opendde': dict(opendde=True, padded_keys=True, templates=TEMPLATE_POLICIES['opendde'],
                     # a protenix fork: same include_discont_poly_poly_bonds=True rule for declared bonds
                     declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
                     # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
@@ -703,6 +722,7 @@ _FEATURISE = {
     # native_nonprotein_msa: the same msa_featurizer as opendde's -- ligands UNK, nucleic all-gap rows filled with the query
     **{m: dict(padded_keys=True,
                empty_template_gap=not os.environ.get('AF3_NO_PX_TEMPLATE_GAP'),
+               templates=TEMPLATE_POLICIES[m],
                dedupe_self_msa=not os.environ.get('AF3_NO_PX_DEDUPE_MSA'),
                native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'),
                dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
@@ -744,6 +764,7 @@ _FEATURISE = {
     # one; decided 2026-10-19). AF3_NO_IF2_DEDUPE_MSA / AF3_NO_TERMINAL_DROP
     # give the AF3-engine behaviour.
     'intellifold2': dict(qblock_keys=True,
+                         templates=TEMPLATE_POLICIES['intellifold2'],
                          # 'query', as boltz2: the featuriser IntelliFold forks
                          # keeps the a3m as given, query once, WITH alignments
                          # too -- a 4-row a3m is 4 rows where AF3 builds 5
@@ -827,8 +848,7 @@ _FEATURISE = {
     'chai1': dict(circular_keys=True, drop_atoms=('OXT', 'OP3'),
                   zero_msa_without_alignment=True, esm=True, full_msa=True,
                   atomized_unknown_restype='chai', chai_msa=True,
-                  # chai drops a template hit with a modified residue (SEP, MSE, ...): _chai_drop_modified_templates
-                  chai_template_filter=True,
+                  templates=TEMPLATE_POLICIES['chai1'],
                   # its TokenBondRestraint: every declared bond, directed, into both pair inputs
                   declared_bond_feature=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                   std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS'),
