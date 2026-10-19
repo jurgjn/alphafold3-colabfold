@@ -611,6 +611,54 @@ def _chai_unpaired_order(chain):
   return [i - first_single for i in order if i >= first_single]
 
 
+# chai_lab residue_constants.standard_residue_pdb_codes: a template hit with any other residue is dropped
+_CHAI_STANDARD_CODES = frozenset((
+    'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE', 'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER',
+    'THR', 'TRP', 'TYR', 'VAL', 'UNK', 'A', 'G', 'C', 'U', 'DA', 'DG', 'DC', 'DT'))
+
+
+def _chai_drop_modified_templates(batch, fold_input):
+  """chai-1 drops every template hit whose chain carries a residue outside its standard codes
+  (data/dataset/templates/load.py: `if template_entity_data.has_modifications: continue` -- a modified residue
+  tokenises per atom and would not line up with the query), and the hits after it move up a slot. A phospho-
+  ubiquitin template (5K9P, one SEP) therefore reaches stock chai as NO template while AF3's pipeline keeps it
+  (vendor_native_parity chai1 template: trunk pair corr 0.79). MSE counts too: AF3 reads a template with
+  fix_mse_residues, so the names are read here from the raw mmCIF."""
+  from alphafold3.common import folding_input as fi
+  from alphafold3 import structure
+  if 'template_aatype' not in batch or fold_input is None:
+    return batch
+  aatype = np.array(batch['template_aatype'])
+  mask = np.array(batch['template_atom_mask'])
+  pos = np.array(batch['template_atom_positions'])
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  n_slots = aatype.shape[0]
+  changed = False
+  for index, chain in enumerate(fold_input.chains):
+    if not isinstance(chain, fi.ProteinChain) or not chain.templates:
+      continue
+    sel = np.flatnonzero(asym == index + 1)
+    keep = []
+    for t, template in enumerate(chain.templates[:n_slots]):
+      struc = structure.from_mmcif(template.mmcif, fix_mse_residues=False, fix_arginines=False,
+                                   include_bonds=False, include_water=False, include_other=True)
+      names = set(struc.filter_to_entity_type(protein=True, rna=True, dna=True, dna_rna_hybrid=True).res_name)
+      if names <= _CHAI_STANDARD_CODES:
+        keep.append(t)
+    if len(keep) == min(len(chain.templates), n_slots):
+      continue
+    changed = True
+    for arr in (aatype, mask, pos):
+      block = arr[:, sel].copy()
+      arr[:, sel] = 0
+      arr[:len(keep), sel] = block[keep]
+  if changed:
+    batch['template_aatype'] = aatype.astype(np.asarray(batch['template_aatype']).dtype)
+    batch['template_atom_mask'] = mask.astype(np.asarray(batch['template_atom_mask']).dtype)
+    batch['template_atom_positions'] = pos.astype(np.asarray(batch['template_atom_positions']).dtype)
+  return batch
+
+
 def _chai_msa(batch, fold_input):
   """chai-1's MSA inputs where AF3's differ, once any chain has an alignment.
 
@@ -722,6 +770,12 @@ def _chai_msa(batch, fold_input):
       for arr in (msa, mask, dele):
         block = arr[src_rows][:, sel].copy()
         arr[np.ix_(dst_rows, sel)] = block
+      # a chain with fewer unpaired rows than the deepest: chai pads its cells (MSAContext.pad) -- the pad
+      # class, masked, no deletion -- where AF3 writes live gap cells
+      pad_rows = np.arange(n_paired + live, n_rows)
+      msa[np.ix_(pad_rows, sel)] = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP
+      mask[np.ix_(pad_rows, sel)] = False
+      dele[np.ix_(pad_rows, sel)] = 0
   source[0] = 4                       # MSADataSource.QUERY, as create_msa_feat reads row 0 anyway
   # chai drops token-identical rows of the joined MSA (AF3 keeps the paired and the unpaired query, and duplicates)
   live = np.flatnonzero(mask.any(-1))
@@ -1822,6 +1876,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _zero_msa(batch)
   if knobs.get('chai_msa') and has_msa and fold_input is not None:
     _chai_msa(batch, fold_input)
+  if knobs.get('chai_template_filter') and fold_input is not None:
+    _chai_drop_modified_templates(batch, fold_input)
   if knobs.get('dna_gap_msa'):
     _dna_gap_msa(batch)
   if knobs.get('boltz_msa') and fold_input is not None and 'msa' in batch:

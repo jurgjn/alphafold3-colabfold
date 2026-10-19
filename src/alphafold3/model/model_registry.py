@@ -827,6 +827,8 @@ _FEATURISE = {
     'chai1': dict(circular_keys=True, drop_atoms=('OXT', 'OP3'),
                   zero_msa_without_alignment=True, esm=True, full_msa=True,
                   atomized_unknown_restype='chai', chai_msa=True,
+                  # chai drops a template hit with a modified residue (SEP, MSE, ...): _chai_drop_modified_templates
+                  chai_template_filter=True,
                   # its TokenBondRestraint: every declared bond, directed, into both pair inputs
                   declared_bond_feature=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                   std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS'),

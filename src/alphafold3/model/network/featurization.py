@@ -406,8 +406,11 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
       is_paired = (paired | query).astype(msa_1hot.dtype)
     is_paired = is_paired[..., None]
     src = jnp.where(jnp.arange(n_row) == 0, 4, 2 if msa.source is None else msa.source)
+    # a PADDED cell (masked: a shorter chain's rows past its depth, a chain in single-sequence context) carries
+    # chai's pad source, 4 -- MSAContext.pad fills sequence_source with it; read off stock chai's MSADataSource
+    # (vendor_native_parity chai1 paired_msa)
+    src = jnp.where(msa.mask.astype(bool), src[:, None], 4)
     src = jax.nn.one_hot(src, 6, dtype=msa_1hot.dtype)
-    src = jnp.broadcast_to(src[:, None, :], msa_1hot.shape[:2] + (6,))
     return jnp.concatenate(
         [is_paired, src, deletion_value, has_deletion, msa_1hot], axis=-1)
 

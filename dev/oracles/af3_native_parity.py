@@ -134,6 +134,22 @@ def _template_5k9p():
            'templateIndices': list(range(76))}]
 
 
+def _template_5k9p_std():
+  """5K9P with its phosphoserine as SERINE (the phosphate's P/O1P/O2P/O3P
+  dropped, the rows ATOM): the same template with only standard residues.
+  chai drops any template hit carrying a modified residue (and AF3 keeps it),
+  so on 5K9P itself stock chai runs template-less; this one it reads."""
+  import re
+  out = []
+  for line in _template_5k9p()[0]['mmcif'].splitlines():
+    if re.match(r'(ATOM|HETATM)\s', line) and ' SEP ' in line:
+      if line.split()[3] in ('P', 'O1P', 'O2P', 'O3P'):
+        continue
+      line = 'ATOM' + line[len('HETATM'):] if line.startswith('HETATM') else line
+    out.append(line.replace(' SEP ', ' SER ').replace('(SEP)', 'S'))
+  return [dict(_template_5k9p()[0], mmcif='\n'.join(out) + '\n')]
+
+
 def cases():
   """name -> AF3 JSON. Small on purpose: parity, not accuracy, so every
   modality fits in one fp32 fold on a 23 GB card."""
@@ -172,6 +188,8 @@ def cases():
       'covalent': [_prot('A', 'GSWKELAANLTKEAAEKG'),
                    {'ligand': {'id': 'B', 'ccdCodes': ['NAG']}}],
       'template': [_prot('A', UBQ, templates=_template_5k9p())],
+      # the same template with only standard residues (see _template_5k9p_std)
+      'template_std': [_prot('A', UBQ, templates=_template_5k9p_std())],
       # --- breadth (2026-10-19): what the small cases above never reach ---
       # a real MSA deeper than 1024 rows: subsampling and depth crops
       'deep_msa': [_prot('A', _stp_seq(), msa=_stp_msa())],

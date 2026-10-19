@@ -117,15 +117,23 @@ def _layer_norm(x, scale, offset=0.0, eps=1e-5):
   return out.astype(dtype)
 
 
-def _rope(x, pos, base=10000.0):
+def _rope(x, pos, base=10000.0, half_inv_freq=False):
   """x [L, H, D]; RotaryEmbedding(head_dim), split-halves convention.
 
   Both towers use it identically: ESM-C's RotaryEmbedding and ESM2's rot_emb
   both build inv_freq as base**(-i/(D/2)) and rotate halves, which is why the
   checkpoint's own `rot_emb.inv_freq` reproduces to [1, 0.75, 0.5625, ...].
+
+  half_inv_freq: the frequencies rounded to float16, as chai's ESM2 trace stores
+  them (rot_emb.inv_freq is an fp16 BUFFER of traced_sdpa_esm2_t36_3B_UR50D_fp16,
+  so even cast to fp32 it rotates by fp16-rounded angles). Exact frequencies read
+  1e-2 max|d|/rms against that trace on a 458-residue chain, growing with
+  position; rounded, 2e-5 (esm2_tower_parity.py).
   """
   d = x.shape[-1]
   inv = 1.0 / (base ** (np.arange(0, d, 2, dtype=np.float32) / d))
+  if half_inv_freq:
+    inv = inv.astype(np.float16).astype(np.float32)
   fr = pos[:, None] * inv[None, :]
   # cast to x's dtype: the angles are computed in float32 (they must be -- the
   # position index is exact there and not in bfloat16), but leaving them float32
@@ -182,7 +190,7 @@ _UNSET = object()
 _ATTN_IMPL = _UNSET
 
 
-def _attend(q, k, v, pos, heads, head_dim):
+def _attend(q, k, v, pos, heads, head_dim, half_inv_freq=False):
   """Rotary attention over one sequence, on the SHARED kernel.
 
   This used to materialise the full (heads, i, j) logits matrix and softmax it
@@ -198,8 +206,8 @@ def _attend(q, k, v, pos, heads, head_dim):
   from alphafold3.model.components.attention import dot_product_attention
 
   n_len = q.shape[0]
-  q = _rope(q.reshape(n_len, heads, head_dim), pos)
-  k = _rope(k.reshape(n_len, heads, head_dim), pos)
+  q = _rope(q.reshape(n_len, heads, head_dim), pos, half_inv_freq=half_inv_freq)
+  k = _rope(k.reshape(n_len, heads, head_dim), pos, half_inv_freq=half_inv_freq)
   v = v.reshape(n_len, heads, head_dim)
   out = dot_product_attention(
       q, k, v, scale=head_dim ** -0.5,
@@ -225,7 +233,7 @@ def _esm2_forward_block(x, w, pos, heads, head_dim, scale, dtype):
   q = h @ _deq(w, 'q/weights', dtype) + w['q/bias'].astype(dtype)
   k = h @ _deq(w, 'k/weights', dtype) + w['k/bias'].astype(dtype)
   v = h @ _deq(w, 'v/weights', dtype) + w['v/bias'].astype(dtype)
-  ctx = _attend(q, k, v, pos, heads, head_dim)
+  ctx = _attend(q, k, v, pos, heads, head_dim, half_inv_freq=True)   # chai's trace: see _rope
   x = x + ctx @ _deq(w, 'attn_out/weights', dtype) + w['attn_out/bias'].astype(dtype)
   h = _layer_norm(x, w['ffn_norm/scale'], w['ffn_norm/offset'])
   h = jax.nn.gelu(h @ _deq(w, 'fc1/weights', dtype) + w['fc1/bias'].astype(dtype), approximate=False)
