@@ -378,9 +378,9 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
     # one place (converters.chai1.CHAI1_RESTYPE_PERM) instead of two.
     #
     # Two features derived rather than carried:
-    #  * IsPairedMSA is chai's pairing key matching the row's first token's, on tokens with a real row: 1 only on the
-    #    paired block's homolog rows (not its query) and only where both that token's chain and the first token's
-    #    chain have a hit. AF3 lays unpaired rows side by side too, so "covers more than one chain" marked every row
+    #  * IsPairedMSA is chai's pairing key matching the row's first token's, on tokens with a real row: 1 on the
+    #    paired block's homolog rows, and on the query row as chai's ColabFold path keys it (see below), only where
+    #    both that token's chain and the first token's chain have a hit. AF3 lays unpaired rows side by side too, so "covers more than one chain" marked every row
     #    of every complex paired where native has none (tetr_dimer_dna: 30464/30464 cells wrong).
     #  * MSADataSource labels which database a row came from: 4 for the query row, and per row what chai's colabfold
     #    reader synthesises from the a3m header (UniRef* -> UNIREF90 2, anything else -> BFD_UNICLUST 0) when the
@@ -395,7 +395,15 @@ def create_msa_feat(msa: features.MSA, soft_seq=None,
       tok_hit = jnp.einsum('rc,tc->rt', chain_hit.astype(jnp.float32), oh) > 0
       r = jnp.arange(n_row)[:, None]
       paired = (r > 0) & (r < msa.num_paired) & tok_hit & tok_hit[:, :1] & msa.mask.astype(bool)
-      is_paired = paired.astype(msa_1hot.dtype)
+      # The QUERY row too, as chai's ColabFold path writes it (the reference chosen 2026-10-19): the query is
+      # row 0 of each protein chain's pair a3m, pairing key '0', so IsPairedMSA (key == key at the row's first
+      # token, key set) marks it wherever both that token's chain and the first token's chain have a ColabFold MSA
+      # -- i.e. live homolog rows; a chain in chai's single-sequence context has none and stays unpaired.
+      # Stock chai (vendor_native_parity msa): query row paired, our IsPairedMSA column was the whole MSA-stream gap.
+      chain_msa = jnp.einsum('rt,tc->c', (hit & (r > 0)).astype(jnp.float32), oh) > 0
+      tok_msa = jnp.einsum('c,tc->t', chain_msa.astype(jnp.float32), oh) > 0
+      query = (r == 0) & tok_msa[None, :] & tok_msa[None, :1] & msa.mask.astype(bool)
+      is_paired = (paired | query).astype(msa_1hot.dtype)
     is_paired = is_paired[..., None]
     src = jnp.where(jnp.arange(n_row) == 0, 4, 2 if msa.source is None else msa.source)
     src = jax.nn.one_hot(src, 6, dtype=msa_1hot.dtype)

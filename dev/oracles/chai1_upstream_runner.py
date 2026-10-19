@@ -220,7 +220,8 @@ def _run(case_dir, recycles, on_inputs, inject=None):
         # chai's raw (pre-embedding) feature tensors, for a field-by-field diff
         np.savez(os.path.join(case_dir, 'chai_features.npz'),
                  **{k: _np(v)[0] for k, v in batch['features'].items()
-                    if hasattr(v, 'shape') and v.numel() < 5e7})
+                    if hasattr(v, 'shape') and v.numel() < 5e7},
+                 inp_msa_mask=_np(batch['inputs']['msa_mask'])[0])
       on_inputs(batch['inputs'])
       return batch
   C.Collate = Collate
@@ -260,6 +261,7 @@ def _run(case_dir, recycles, on_inputs, inject=None):
       out = self.inner.forward(**kw)
       if self.name == 'feature_embedding.pt':
         got['emb.TOKEN'] = _np(out['TOKEN'])[0]
+        got['emb.MSA'] = _np(out['MSA'][:, :8])[0]          # the first rows: live ones lead
         got['emb.ATOM'] = _np(out['ATOM'])[0]
       if self.name == 'token_embedder.pt':
         got['s_inputs'] = _np(out[0])[0]
@@ -374,7 +376,8 @@ def forward(model, out_dir, in_npz, out_npz):
            pde=expect(got['pde_logits'][:n, :n], centres(0, 32, 64)),
            plddt=pl_atoms[slot], denoised=got['denoised'][slot],
            **{'tap.emb_token': got['emb.TOKEN'][:n], 'tap.emb_atom': got['emb.ATOM'][slot],
-              'tap.z_init': got['emb.z_init'][:n, :n], 'tap.s_init': got['emb.s_init'][:n]})
+              'tap.z_init': got['emb.z_init'][:n, :n], 'tap.s_init': got['emb.s_init'][:n],
+              'tap.emb_msa': got['emb.MSA'][:, :n]})
 
 
 if __name__ == '__main__':
