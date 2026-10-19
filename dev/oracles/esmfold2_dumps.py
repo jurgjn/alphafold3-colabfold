@@ -49,6 +49,12 @@ _HUB = {
 # `model.safetensors` with flat keys; the new one is six shards, 26 GB, with
 # NESTED keys (`folding_trunk.*`, `esmc.*`, `parcae.*`). Supporting it is a port
 # question, not a path question, so this pins and says so.
+# ...but it is the SAME MODEL (checked 2026-10-19): 1561 of its 1616 non-ESM-C
+# tensors are byte-identical to the pinned ones and the rest are the same
+# values split or renamed (the old fused Wqkv == the new q|k|v concatenated),
+# with the atom RoPE settings unchanged (both configs: 2 / 10 / 20.0 / 10000).
+# So the pinned blob is biohub's current ESMFold2; only the converter's key
+# reader would need the new layout.
 #
 # Only `esmfold2` is exposed to this. The other three variants have directories
 # under ~/esmfold2_variants and never consult the cache -- which is exactly why
