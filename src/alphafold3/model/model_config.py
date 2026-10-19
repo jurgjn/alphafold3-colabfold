@@ -721,8 +721,9 @@ REALIGN_SAMPLER = ESMFOLD2_FAMILY
 # Models that LayerNorm the summed per-atom reference features. AF3 sums
 # bias-free per-feature Linears and leaves the result unnormalised.
 #: Models whose checkpoint holds TWO DIFFERENT weights under the colliding
-#: `*_single_to_pair_cond_row/_col` names, so the atom encoder's own site must
-#: be bound to the `_1` copy explicitly.
+#: `*_single_to_pair_cond_row/_col`, `*_embed_pair_offsets` and
+#: `*_embed_pair_distances` names, so the atom encoder's own site must be bound
+#: to the `_1` copy explicitly (`_embed_pair_offsets_valid` has one copy only).
 #:
 #: `_per_atom_conditioning`'s pair branch and `atom_cross_att_encoder` create
 #: Linears with the SAME name in the same scope; haiku uniquifies the second

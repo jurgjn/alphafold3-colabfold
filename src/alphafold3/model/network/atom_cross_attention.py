@@ -631,7 +631,7 @@ def atom_cross_att_encoder(
           hm.Linear(
               c.per_atom_pair_channels,
               precision='highest',
-              name=f'{name}_embed_pair_offsets',
+              name=f'{name}_embed_pair_offsets{suffix}',  # the same collision as row/col
           )(offsets)
           * offsets_valid[:, :, :, None]
       )
@@ -641,7 +641,7 @@ def atom_cross_att_encoder(
       # distogram feature above)
       sq_dists = jnp.sum(jnp.square(offsets), axis=-1)
       pair_act += (
-          hm.Linear(c.per_atom_pair_channels, name=f'{name}_embed_pair_distances')(
+          hm.Linear(c.per_atom_pair_channels, name=f'{name}_embed_pair_distances{suffix}')(
               1.0 / (1 + sq_dists[:, :, :, None])
           )
           * offsets_valid[:, :, :, None]
