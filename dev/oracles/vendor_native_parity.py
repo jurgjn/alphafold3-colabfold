@@ -34,6 +34,10 @@ import subprocess
 import sys
 import tempfile
 
+# Precision is not the model: XLA's default GPU matmul is TF32-class, which
+# alone reads the boltz2 denoise step at 2e-2 where 'highest' reads 3e-5.
+os.environ.setdefault('JAX_DEFAULT_MATMUL_PRECISION', 'highest')
+
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -448,5 +452,7 @@ def main(argv):
 
 if __name__ == '__main__':
   sys.path.insert(0, os.path.join(HERE, '..', '..', 'src'))
+  # the repo root: converters/ (fold_check's parse_ca, rf3's alphabet remap)
+  sys.path.insert(0, os.path.join(HERE, '..', '..'))
   argv, sys.argv = sys.argv[1:], sys.argv[:1]
   sys.exit(main(argv))
