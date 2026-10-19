@@ -465,7 +465,12 @@ def main(argv):
   rec = 1
   if '--recycles' in argv:
     rec = int(argv[argv.index('--recycles') + 1])
-  pos = [a for a in argv if not a.startswith('--') and not a.isdigit()]
+  # --bf16 MODE: ours in bfloat16 ('all' or 'intermediate'); the vendor side
+  # stays as it is. For measuring a vendor whose precision cannot be changed
+  # (chai's exported modules are bf16 inside) against our own bf16 floor.
+  bf16 = argv[argv.index('--bf16') + 1] if '--bf16' in argv else 'none'
+  pos = [a for i, a in enumerate(argv) if not a.startswith('--') and not a.isdigit()
+         and not (i and argv[i - 1] == '--bf16')]
   model, names = pos[0], pos[1:]
   if model not in VENDORS:
     raise SystemExit('no vendor runner for %r; have %s' % (model, sorted(VENDORS)))
@@ -475,7 +480,7 @@ def main(argv):
   for n in names:
     print('== %s %s' % (model, n), flush=True)
     try:
-      rows = run_case(model, n, allc[n], rec, 'none')
+      rows = run_case(model, n, allc[n], rec, bf16)
     except VendorNA as e:   # the vendor cannot take this input: N/A, not FAIL
       print('  %s: N/A (%s)' % (n, e), flush=True)
       continue

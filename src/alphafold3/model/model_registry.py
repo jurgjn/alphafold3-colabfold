@@ -527,6 +527,10 @@ _FEATURISE = {
     # the measurement -- it moves the trunk's MSA injection by 4.3%.
     # AF3_NO_ESM_DEDUPE_MSA=1 keeps AF3's two rows, for the A/B.
     **{m: dict(atom_keys_subset_size=192, lm_pair=True,
+               # SMILES atoms named as esm's tokenize_ligand_smiles names them --
+               # AddHs, CanonicalRankAtoms, SYMBOL + (rank + 1): boltz's rule
+               # exactly (stock-ESMFold2 ligand_smiles: s_inputs corr 0.989)
+               smiles_atom_names='boltz',
                # 'query_once': native's MSA is the a3m, query once, with or without homologs (6648 rows to our 6649)
                dedupe_self_msa=not os.environ.get('AF3_NO_ESM_DEDUPE_MSA') and 'query_once',
                # profile over the complex MSA: a nucleic chain beside a protein MSA reads ~all gap, not its own one-hot
