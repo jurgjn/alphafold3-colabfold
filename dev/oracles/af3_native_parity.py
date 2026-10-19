@@ -43,6 +43,20 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser('~')
+
+# Set before anything imports jax (vendor_native_parity imports this module
+# first, so it inherits these too). Defaults only: the caller's env wins.
+#  - a PERSISTENT compilation cache: every case is a new shape and compiles the
+#    whole model, which is most of a case's wall time (the GPU step is seconds);
+#    the same settings run_all_parity.sh gives its gates, so the two share hits.
+#  - no PREALLOCATION: JAX otherwise takes 75% of the card up front (17 GB of an
+#    A10) whatever it needs, and a vendor runner or a second job then cannot
+#    get onto the GPU at all.
+for _k, _v in (('JAX_COMPILATION_CACHE_DIR', HOME + '/.cache/alphafold3/jax'),
+               ('JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS', '1'),
+               ('JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES', '0'),
+               ('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')):
+  os.environ.setdefault(_k, _v)
 UPSTREAM_PY = os.environ.get('AF3_UPSTREAM_PY', HOME + '/venv_af3/bin/python')
 MODEL_DIR = os.environ.get('AF3_MODEL_DIR', HOME + '/ported/alphafold3')
 
