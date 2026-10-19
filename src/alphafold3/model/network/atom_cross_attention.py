@@ -549,9 +549,18 @@ def atom_cross_att_encoder(
         queries_ref_pos,
         layout_axes=(-3, -2),
     )
+    # Upstream AF3 gathers the KEYS' uid with queries_to_keys from the TOKEN
+    # layout, not from the queries layout the indices are written for. It is a
+    # misindexing, and it is what AF3 was trained with: 9ad4629 "fixed" it for
+    # every model while porting OpenFold3, and AF3's atom pair features moved
+    # (offsets_valid max|d|/rms 22.8 against upstream, found by
+    # af3_native_parity.py). The vendors of the other ports gate this site
+    # against their own code, so only AF3 keeps the upstream indexing.
     keys_ref_space_uid = atom_layout.convert(
         queries_to_keys,
-        queries_ref_space_uid,
+        batch.ref_structure.ref_space_uid
+        if global_config.model in model_config.KEYS_UID_FROM_TOKEN_LAYOUT
+        else queries_ref_space_uid,
         layout_axes=(-2, -1),
     )
 
@@ -626,7 +635,8 @@ def atom_cross_att_encoder(
           hm.Linear(
               c.per_atom_pair_channels,
               precision='highest',
-              name=f'{name}_embed_pair_offsets',
+              # The same collision as row/col above, for the same reason.
+              name=f'{name}_embed_pair_offsets{suffix}',
           )(offsets)
           * offsets_valid[:, :, :, None]
       )
@@ -636,7 +646,8 @@ def atom_cross_att_encoder(
       # distogram feature above)
       sq_dists = jnp.sum(jnp.square(offsets), axis=-1)
       pair_act += (
-          hm.Linear(c.per_atom_pair_channels, name=f'{name}_embed_pair_distances')(
+          hm.Linear(c.per_atom_pair_channels,
+                    name=f'{name}_embed_pair_distances{suffix}')(
               1.0 / (1 + sq_dists[:, :, :, None])
           )
           * offsets_valid[:, :, :, None]

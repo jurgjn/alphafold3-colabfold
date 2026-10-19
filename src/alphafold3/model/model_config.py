@@ -722,8 +722,12 @@ REALIGN_SAMPLER = ESMFOLD2_FAMILY
 # Models that LayerNorm the summed per-atom reference features. AF3 sums
 # bias-free per-feature Linears and leaves the result unnormalised.
 #: Models whose checkpoint holds TWO DIFFERENT weights under the colliding
-#: `*_single_to_pair_cond_row/_col` names, so the atom encoder's own site must
-#: be bound to the `_1` copy explicitly.
+#: `*_single_to_pair_cond_row/_col`, `*_embed_pair_offsets` and
+#: `*_embed_pair_distances` names, so the atom encoder's own site must be bound
+#: to the `_1` copy explicitly. (`_embed_pair_offsets_valid` has one copy only:
+#: the pair branch never builds it.) 435b8dc fixed row/col and left the other
+#: two reading the pair branch's matrices (corr 0.24 and -0.10 to their own);
+#: af3_native_parity.py's module taps found them.
 #:
 #: `_per_atom_conditioning`'s pair branch and `atom_cross_att_encoder` create
 #: Linears with the SAME name in the same scope; haiku uniquifies the second
@@ -737,6 +741,10 @@ REALIGN_SAMPLER = ESMFOLD2_FAMILY
 #: (boltz2, opendde, intellifold2, esmfold2) or only the base name (chai1,
 #: openfold3, protenix2, rosettafold3), and for those the binding cannot matter.
 ATOM_PAIR_COND_SPLIT = ('alphafold3',)
+
+#: Models whose atom encoder gathers the keys' `ref_space_uid` from the TOKEN
+#: layout, as upstream AlphaFold 3 does (see atom_cross_attention.py).
+KEYS_UID_FROM_TOKEN_LAYOUT = ('alphafold3',)
 
 NORMED_ATOM_FEATURES = ESMFOLD2_FAMILY
 
