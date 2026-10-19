@@ -111,6 +111,13 @@ def _configs(model, json_path, dump_dir, dtype):
   # draws from the seed (model_features._native_rng, 2136ec2), so by default
   # they stay on and the comparison tests the replay. PROTENIX_NO_RNG=1 turns
   # them off here; run ours with AF3_NO_PX_NATIVE_RNG=1 to match.
+  # TF32: protenix's INFERENCE config turns it on (configs_inference.py,
+  # enable_tf32=True -> torch.backends.cuda.matmul.allow_tf32), so on a GPU
+  # every matmul rounds to a 10-bit mantissa while ours runs at 'highest'. A
+  # precision setting, not the model: off for the strict comparison
+  # (s_inputs read 3.9e-03 with it on, 1e-06 on CPU). PROTENIX_TF32=1 keeps it.
+  if not os.environ.get('PROTENIX_TF32'):
+    args += ' --enable_tf32 false'
   if os.environ.get('PROTENIX_NO_RNG'):
     args += ' --mc_dropout_apply_rate 0'
   return parse_configs(configs=base, arg_str=args, fill_required_with_null=True)
