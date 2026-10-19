@@ -301,9 +301,14 @@ def forward(model, out_dir, in_npz, out_npz):
   if not np.array_equal(now, lay['feat.ref_pos']):
     raise RuntimeError('esm re-drew a different reference conformer (max |d| %.3g)'
                        % np.abs(now - lay['feat.ref_pos']).max())
-  _fp32_autocast()
+  # precision 'bf16' asks for the vendor's STOCK precision (bf16 grading): its
+  # autocast and the atom attention's bf16 casts stay as shipped
+  stock = str(z['precision']) == 'bf16'
+  if not stock:
+    _fp32_autocast()
   m = _model(model)
-  _fp32_atom_attention(_attention_module(m))
+  if not stock:
+    _fp32_atom_attention(_attention_module(m))
   # The checkpoint's own LM dropout (lm_encoder.lm_dropout 0.25, per_loop) is
   # applied by _run_one_loop with training=True in ANY forward, not only under
   # fold(): a fresh random mask every loop. Ours turns it off for the harness,

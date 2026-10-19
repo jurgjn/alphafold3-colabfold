@@ -376,6 +376,9 @@ def featurise(model, case_json, out_dir):
 
 def forward(model, out_dir, in_npz, out_npz):
   z = np.load(in_npz)
+  if str(z['precision']) == 'bf16':
+    # the vendor's STOCK precision (bf16 grading): chai's in-graph bf16 casts stay
+    os.environ.pop('CHAI_FP32', None)
   lay = np.load(os.path.join(out_dir, 'layout.npz'))
   slot = lay['atom_slot']
 

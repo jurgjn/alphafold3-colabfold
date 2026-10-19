@@ -305,7 +305,9 @@ def forward(model, out_dir, in_npz, out_npz):
   _prep(model, out_dir)
   z = np.load(in_npz)
   if str(z['precision']) != 'fp32':
-    raise NotImplementedError('openfold3 runner: fp32 only')
+    # the vendor's STOCK precision, for bf16 grading: OF3's predict is fp32
+    # ("32-true") with TF32 matmuls on, which the strict comparison turns off
+    os.environ['OF3_TF32'] = '1'
   lay = np.load(os.path.join(out_dir, 'layout.npz'))
   pos = torch.tensor(z['positions'], dtype=torch.float32)
   noisy = torch.tensor(z['positions_noisy'], dtype=torch.float32)

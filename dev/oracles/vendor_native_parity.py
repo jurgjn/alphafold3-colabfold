@@ -380,7 +380,7 @@ def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma):
   return _flatten(jax.device_get(out))
 
 
-def run_case(model, name, j, recycles, bf16):
+def run_case(model, name, j, recycles, bf16, graded=False):
   rows = []
   with tempfile.TemporaryDirectory() as tmp:
     cj = os.path.join(tmp, 'case.json')
@@ -455,9 +455,18 @@ def run_case(model, name, j, recycles, bf16):
     inp = os.path.join(tmp, 'in.npz')
     np.savez(inp, positions=to_b(pos), positions_noisy=to_b(noisy),
              noise_level=sigma, recycling_steps=recycles,
-             precision='bf16' if bf16 != 'none' else 'fp32')
+             precision='bf16' if bf16 != 'none' and not graded else 'fp32')
     _vendor(model, 'forward', bdir, inp, os.path.join(tmp, 'b.npz'))
     b = dict(np.load(os.path.join(tmp, 'b.npz')))
+    b_half = None
+    if graded:
+      # the vendor again at its STOCK precision: its own bf16 error against its
+      # fp32 is the yardstick for ours (graded as a distribution, see P.HALF_MEAN)
+      inp_h = os.path.join(tmp, 'in_half.npz')
+      np.savez(inp_h, positions=to_b(pos), positions_noisy=to_b(noisy),
+               noise_level=sigma, recycling_steps=recycles, precision='bf16')
+      _vendor(model, 'forward', bdir, inp_h, os.path.join(tmp, 'b_half.npz'))
+      b_half = dict(np.load(os.path.join(tmp, 'b_half.npz')))
     os.environ.pop('ESMC_HIDDEN', None)
     if 'pair_state0' in b:
       # the vendor's random initial pair state (ESMFold2), injected like ref_pos
@@ -492,30 +501,46 @@ def run_case(model, name, j, recycles, bf16):
   for key in ('full_pae', 'full_pde'):
     if key in ours:     # a model with no PDE head emits no full_pde
       ours[key] = np.asarray(ours[key])[:, :n, :n]
-  pairs = [
-      ('s_inputs (target_feat)', ours['target_feat'],
-       _s_inputs_to_ours(model, b['s_inputs'][:n])),
-      ('trunk single', ours['single_embeddings'], b['s'][:n] if 's' in b else None),
-      ('trunk pair', ours['pair_embeddings'], b['z'][:n, :n]),
-      ('distogram logits', ours['distogram/distogram'],
-       b['distogram_logits'][:n, :n].reshape(n, n, -1)
-       if 'distogram_logits' in b else None),
-      ('pae', ours['full_pae'][0], b['pae'][:n, :n]),
-      ('pde', ours['full_pde'][0] if 'full_pde' in ours else None,
-       b['pde'][:n, :n] if 'pde' in b else None),
-  ]
-  # Atom-level outputs, through the alignment.
-  den_o = ours['diffusion_samples/denoised'][0][idx[ok, 0], idx[ok, 1]]
-  pairs.append(('denoise step', den_o, b['denoised'].reshape(-1, 3)[ok]))
   # boltz2 reports pLDDT per TOKEN (token_level_confidence); ours carries the
   # token's value on each of its atoms, so read it at the first real slot.
-  pl_b = b['plddt'].reshape(-1)
-  if pl_b.shape[0] == len(ok):
-    pl_o, pl_b = ours['predicted_lddt'][0][idx[ok, 0], idx[ok, 1]], pl_b[ok]
+  per_atom = b['plddt'].reshape(-1).shape[0] == len(ok)
+  if per_atom:
+    pl_o = ours['predicted_lddt'][0][idx[ok, 0], idx[ok, 1]]
   else:
     first = np.asarray(raw['pred_dense_atom_mask']).astype(bool).argmax(1)
-    pl_o, pl_b = ours['predicted_lddt'][0][np.arange(n), first], pl_b[:n]
-  pairs.append(('plddt', pl_o, pl_b * (100.0 if pl_o.max() > 1.5 else 1.0)))
+    pl_o = ours['predicted_lddt'][0][np.arange(n), first]
+  pl_scale = 100.0 if pl_o.max() > 1.5 else 1.0
+
+  def vendor_side(bb):
+    """The vendor's arrays in pair order, from one vendor run."""
+    pl_b = bb['plddt'].reshape(-1)
+    return [
+        _s_inputs_to_ours(model, bb['s_inputs'][:n]),
+        bb['s'][:n] if 's' in bb else None,
+        bb['z'][:n, :n],
+        bb['distogram_logits'][:n, :n].reshape(n, n, -1) if 'distogram_logits' in bb else None,
+        bb['pae'][:n, :n],
+        bb['pde'][:n, :n] if 'pde' in bb else None,
+        # atom-level outputs, through the alignment
+        bb['denoised'].reshape(-1, 3)[ok],
+        (pl_b[ok] if per_atom else pl_b[:n]) * pl_scale,
+    ]
+  labels = ['s_inputs (target_feat)', 'trunk single', 'trunk pair', 'distogram logits', 'pae', 'pde',
+            'denoise step', 'plddt']
+  den_o = ours['diffusion_samples/denoised'][0][idx[ok, 0], idx[ok, 1]]
+  ours_side = [ours['target_feat'], ours['single_embeddings'], ours['pair_embeddings'],
+               ours['distogram/distogram'], ours['full_pae'][0],
+               ours['full_pde'][0] if 'full_pde' in ours else None, den_o, pl_o]
+  pairs = list(zip(labels, ours_side, vendor_side(b)))
+  if graded:
+    for (label, a, r), rh in zip(pairs, vendor_side(b_half)):
+      if a is None or r is None or rh is None or np.shape(a) != np.shape(r):
+        continue
+      eo, eu = P.rel_rms_err(a, r), P.rel_rms_err(rh, r)
+      P.HALF_STATS.setdefault(label, []).append((name, eo, eu, np.size(r)))
+      rows.append(('half', '%s: ours bf16 err %.2e, vendor stock err %.2e (x%.2f)'
+                   % (label, eo, eu, eo / eu if eu else float('inf')), 'INFO'))
+    return rows
   if os.environ.get('B2_KEEP'):
     np.savez(os.path.join(os.environ['B2_KEEP'], model, name, 'ours_out.npz'),
              **{k: np.asarray(v) for k, v in ours.items()})
@@ -545,8 +570,13 @@ def main(argv):
   # stays as it is. For measuring a vendor whose precision cannot be changed
   # (chai's exported modules are bf16 inside) against our own bf16 floor.
   bf16 = argv[argv.index('--bf16') + 1] if '--bf16' in argv else 'none'
+  # --bf16-graded MODE: ours in bfloat16 MODE against the vendor at fp32, graded
+  # against the vendor's OWN stock-precision error as a distribution over cases
+  graded = '--bf16-graded' in argv
+  if graded:
+    bf16 = argv[argv.index('--bf16-graded') + 1]
   pos = [a for i, a in enumerate(argv) if not a.startswith('--') and not a.isdigit()
-         and not (i and argv[i - 1] == '--bf16')]
+         and not (i and argv[i - 1] in ('--bf16', '--bf16-graded'))]
   model, names = pos[0], pos[1:]
   if model not in VENDORS:
     raise SystemExit('no vendor runner for %r; have %s' % (model, sorted(VENDORS)))
@@ -556,7 +586,7 @@ def main(argv):
   for n in names:
     print('== %s %s' % (model, n), flush=True)
     try:
-      rows = run_case(model, n, allc[n], rec, bf16)
+      rows = run_case(model, n, allc[n], rec, bf16, graded=graded)
     except VendorNA as e:   # the vendor cannot take this input: N/A, not FAIL
       print('  %s: N/A (%s)' % (n, e), flush=True)
       continue
@@ -573,6 +603,14 @@ def main(argv):
           flush=True)
     if bad:
       failed.append(n)
+  if graded:
+    # bf16 is graded as a DISTRIBUTION over the cases run (af3_native_parity's
+    # HALF_MEAN / HALF_MAX against the vendor's own stock-precision error)
+    print('== bf16 (%s) graded over %d case(s)' % (bf16, len(names)))
+    for stage, msg, g in P.grade_half():
+      print('  %-6s %-7s %s' % (stage, g, msg))
+      if g not in ('PARITY', 'CLOSE', 'INFO'):
+        failed.append('half:' + msg.split(' ')[0])
   print('__VERDICT %s %s' % ('FAIL' if failed else 'PASS', ' '.join(failed)))
   return 1 if failed else 0
 
