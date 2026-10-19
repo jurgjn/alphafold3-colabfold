@@ -81,6 +81,13 @@ VENDORS = {
     'rosettafold3': (_H + '/venv_rf3/bin/python',
                      _H + '/foundry_rf3/src:' + _H + '/foundry_rf3/models/rf3/src',
                      'rosettafold3_upstream_runner.py'),
+    # chai-1: chai_lab 0.6.1 from PyPI in ~/venv_chai (python 3.10, torch
+    # 2.6.0), isolated; its components from CHAI_DOWNLOADS_DIR.
+    'chai1': (_H + '/venv_chai/bin/python', None, 'chai1_upstream_runner.py'),
+    # ESMFold2: esm 3.4.1 (biohub's own package) in ~/venv_esm341, offline
+    # against the cached biohub checkpoints.
+    'esmfold2': (_H + '/venv_esm341/bin/python', None, 'esmfold2_upstream_runner.py'),
+    'esmfold2_fast': (_H + '/venv_esm341/bin/python', None, 'esmfold2_upstream_runner.py'),
 }
 
 
@@ -102,6 +109,11 @@ def _vendor(model, *args):
     env['PYTHONPATH'] = path
   if os.environ.get('VENDOR_CPU'):
     env['CUDA_VISIBLE_DEVICES'] = ''
+  if model.startswith('esmfold2'):
+    env.setdefault('HF_HUB_OFFLINE', '1')
+  if model == 'chai1':
+    env.setdefault('CHAI_DOWNLOADS_DIR', _H + '/chai1_weights')
+    env.setdefault('DISABLE_PANDERA_IMPORT_WARNING', 'True')
   r = subprocess.run(cmd + [os.path.join(HERE, runner), args[0], model,
                             *args[1:]],
                      capture_output=True, text=True, env=env,
@@ -124,6 +136,14 @@ def _s_inputs_to_ours(model, x):
   order, the deletion mean, and the 384 atom-pooled channels -- the same map
   denoise_parity and conditioning_parity build their inputs with.
   """
+  if x.shape[-1] == 451 and model.startswith('esmfold2'):
+    # ESMFold2: 384 atom channels, then 33-class restype and profile one-hots
+    # in its own alphabet (converters.esmfold2.esm_class_of_af3), then the
+    # deletion mean; ours is [restype 31 | profile 31 | deletion mean | atom].
+    from converters.esmfold2 import esm_class_of_af3
+    cls = np.asarray(esm_class_of_af3(31))
+    idx = np.concatenate([384 + cls, 417 + cls, [450], np.arange(384)])
+    return x[..., idx]
   if x.shape[-1] == 449:
     from converters.openfold3 import _AF3_TO_OF3_AATYPE as remap
     # rosettafold3 (atomworks' alphabet) swaps G/C and DG/DC relative to OF3's
@@ -233,6 +253,10 @@ def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma):
   import jax.numpy as jnp
   from alphafold3.model import model as af3_model
   from alphafold3.model import params as afp
+  from alphafold3.model import model_config
+  # ESMFold2's LM-pair dropout is a fresh random mask every pass at inference
+  # (esm fold()'s lm_dropout 0.3); the vendor runner turns it off, so ours does
+  model_config.LM_PAIR_DROPOUT = {m: 0.0 for m in model_config.LM_PAIR_DROPOUT}
   pos, pos_noisy = jnp.asarray(pos), jnp.asarray(pos_noisy)
   sigma = jnp.float32(sigma)
 
@@ -298,6 +322,11 @@ def run_case(model, name, j, recycles, bf16):
     bdir = os.path.join(tmp, 'vendor')
     _vendor(model, 'featurise', cj, bdir)
     lay = dict(np.load(os.path.join(bdir, 'layout.npz')))
+    # ESMFold2's language model is its own model with its own gate: ours folds
+    # from the hidden states the vendor's ESM-C tower produced (fold_check)
+    hidden = os.path.join(bdir, 'esmc_hidden.npz')
+    if os.path.exists(hidden):
+      os.environ['ESMC_HIDDEN'] = hidden
     batch, raw, cfg, model_dir = featurise_ours(model, j, recycles, bf16)
     idx, arows = align(raw, lay)
     rows += arows
@@ -358,6 +387,10 @@ def run_case(model, name, j, recycles, bf16):
              precision='bf16' if bf16 != 'none' else 'fp32')
     _vendor(model, 'forward', bdir, inp, os.path.join(tmp, 'b.npz'))
     b = dict(np.load(os.path.join(tmp, 'b.npz')))
+    os.environ.pop('ESMC_HIDDEN', None)
+    if 'pair_state0' in b:
+      # the vendor's random initial pair state (ESMFold2), injected like ref_pos
+      batch = dict(batch, **{'inject/pair_state0': jnp.asarray(b['pair_state0'])})
     if os.environ.get('B2_KEEP'):
       import shutil
       keep = os.path.join(os.environ['B2_KEEP'], model, name)
@@ -381,10 +414,11 @@ def run_case(model, name, j, recycles, bf16):
   pairs = [
       ('s_inputs (target_feat)', ours['target_feat'],
        _s_inputs_to_ours(model, b['s_inputs'][:n])),
-      ('trunk single', ours['single_embeddings'], b['s'][:n]),
+      ('trunk single', ours['single_embeddings'], b['s'][:n] if 's' in b else None),
       ('trunk pair', ours['pair_embeddings'], b['z'][:n, :n]),
       ('distogram logits', ours['distogram/distogram'],
-       b['distogram_logits'][:n, :n].reshape(n, n, -1)),
+       b['distogram_logits'][:n, :n].reshape(n, n, -1)
+       if 'distogram_logits' in b else None),
       ('pae', ours['full_pae'][0], b['pae'][:n, :n]),
       ('pde', ours['full_pde'][0], b['pde'][:n, :n]),
   ]
@@ -404,6 +438,9 @@ def run_case(model, name, j, recycles, bf16):
     np.savez(os.path.join(os.environ['B2_KEEP'], model, name, 'ours_out.npz'),
              **{k: np.asarray(v) for k, v in ours.items()})
   for label, a, r in pairs:
+    if r is None:   # the stock vendor has no such output (chai: no distogram)
+      rows.append(('model', '%s: not produced by the stock vendor' % label, 'INFO'))
+      continue
     a, r = np.asarray(a, np.float32), np.asarray(r, np.float32)
     if a.shape != r.shape:
       rows.append(('model', '%s shape ours %s boltz %s' % (label, a.shape,

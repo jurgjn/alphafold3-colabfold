@@ -861,6 +861,9 @@ class Model(hk.Module):
         k.startswith('structbook/') for k in _struct)
     # protenix's native randomness replayed per seed (pipeline.protenix_rng); read by the evoformer
     native_rng = {k[len('px_'):]: batch.pop(k) for k in list(batch) if k.startswith('px_')} or None
+    # A vendor's random draws, injected by a parity harness (vendor_native_parity) where ours has no draw to replay.
+    # Never present in a real batch.
+    injected = {k[len('inject/'):]: batch.pop(k) for k in list(batch) if k.startswith('inject/')}
 
     batch = feat_batch.Batch.from_data_dict(batch)
     # opt-in: masked, ours folded bacteriorhodopsin's trimer on 1 of 10 seeds where native did on 4 (unmasked, ours 7 of
@@ -969,6 +972,10 @@ class Model(hk.Module):
       embeddings['pair_pre_coda'] = jnp.zeros(
           [num_res, num_res, self.config.evoformer.pair_channel],
           dtype=jnp.float32)
+      if 'pair_state0' in injected:
+        # native draws this state, trunc_normal(std=sqrt(2 / (5 c)), +-3 std)
+        # (esm EsmFold2Model._init_pair_state); ours starts from its mean
+        embeddings['pair_pre_coda'] = jnp.asarray(injected['pair_state0'], jnp.float32)
     if self.global_config.model == 'chai1':
       # chai's diffusion conditions on z_init as well as z_trunk. The recycle
       # loop carries `embeddings` as a scan carry, so this key has to exist in
