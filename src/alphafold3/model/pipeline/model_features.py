@@ -1187,6 +1187,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _ligand_query_unk(batch)
   if knobs.get('smiles_atom_names') == 'boltz' and fold_input is not None:
     _boltz_smiles_atom_names(batch, fold_input)
+  if knobs.get('modified_restype') == 'protein_letter' and fold_input is not None:
+    _modified_restype_protein_letter(batch, fold_input)
   if knobs.get('native_nonprotein_msa'):
     _native_nonprotein_msa(batch)
   if knobs.get('complex_msa_profile'):
@@ -1218,6 +1220,45 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
       # the structural-token layout has its own atom windows, and it is the one
       # the diffusion runs on -- both need the convention.
       _padded_key_window(batch, prefix='struct/')
+  return batch
+
+
+def _modified_restype_protein_letter(batch, fold_input):
+  """IntelliFold's type for a modified residue: its CCD one-letter code read
+  through the PROTEIN letter table, else protein UNK -- for a nucleotide too.
+
+  parse_ccd_residue (schema.py:619-626) maps `_chem_comp.one_letter_code`
+  through the protein table whatever the chain, so 5CM ('C') is CYS and PSU
+  ('U', not a protein letter) is protein UNK, where we gave DC and N. The query
+  row and profile follow, as the restype writes them in its featuriser.
+  Measured against stock IntelliFold v2.0.4 (vendor_native_parity rna_mod,
+  dna_mod).
+  """
+  from alphafold3.constants import decoded_ccd
+  ccd = decoded_ccd.get_ccd()
+  letters = 'ARNDCQEGHILKMFPSTWYV'
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  resi = np.asarray(batch['residue_index']).reshape(-1)
+  aatype = np.array(batch['aatype'])
+  msa = np.array(batch['msa']) if 'msa' in batch else None
+  changed = False
+  for index, chain in enumerate(fold_input.chains):
+    mods = (getattr(chain, 'ptms', None)
+            or getattr(chain, 'modifications', None) or ())
+    for code, residue in mods:
+      entry = ccd.get(code) or {}
+      one = (entry.get('_chem_comp.one_letter_code') or ['X'])[0].upper()
+      restype = letters.index(one) if one in letters else 20   # protein UNK
+      toks = np.flatnonzero((asym == index + 1) & (resi == int(residue)))
+      aatype[toks] = restype
+      if msa is not None:
+        msa[0, toks] = restype
+      changed = changed or toks.size > 0
+  if changed:
+    batch['aatype'] = aatype
+    if msa is not None:
+      batch['msa'] = msa
+      _rebuild_profile(batch)
   return batch
 
 

@@ -654,6 +654,10 @@ def residues_from_structure(
   )
 
 
+_STANDARD_NUCLEOTIDES = frozenset(
+    {'A', 'C', 'G', 'U', 'N', 'DA', 'DC', 'DG', 'DT', 'DN'})
+
+
 def get_link_drop_atoms(
     res_name: str,
     chain_type: str,
@@ -663,6 +667,7 @@ def get_link_drop_atoms(
     bonded_atoms: set[str],
     drop_ligand_leaving_atoms: bool = False,
     fix_standalone_glycans: bool = False,
+    keep_modified_nucleotide_op3: bool = False,
 ) -> set[str]:
   """Returns set of atoms that are dropped when this res_name gets linked.
 
@@ -696,7 +701,11 @@ def get_link_drop_atoms(
       if not is_end_terminus:
         drop_atoms.update({'OXT', 'HXT'})
   elif chain_type in mmcif_names.NUCLEIC_ACID_CHAIN_TYPES:
-    if not is_start_terminus:
+    # keep_modified_nucleotide_op3: IntelliFold's parse_ccd_residue keeps every
+    # CCD heavy atom but OXT, so an INTERNAL modified nucleotide (PSU, 5CM)
+    # keeps its OP3 there; the standard bases follow its fixed atom tables.
+    standard = res_name in _STANDARD_NUCLEOTIDES
+    if not is_start_terminus and (standard or not keep_modified_nucleotide_op3):
       drop_atoms.update({'OP3'})
   elif (
       drop_ligand_leaving_atoms and chain_type in mmcif_names.LIGAND_CHAIN_TYPES
@@ -777,6 +786,7 @@ def make_flat_atom_layout(
     drop_ligand_leaving_atoms: bool = False,
     fix_standalone_glycans: bool = False,
     ccd_leaving: Mapping[tuple[str, int], set[str]] | None = None,
+    keep_modified_nucleotide_op3: bool = False,
 ) -> AtomLayout:
   """Make a flat atom layout for given residues.
 
@@ -881,6 +891,7 @@ def make_flat_atom_layout(
         bonded_atoms=bonded_atoms,
         drop_ligand_leaving_atoms=drop_ligand_leaving_atoms,
         fix_standalone_glycans=fix_standalone_glycans,
+        keep_modified_nucleotide_op3=keep_modified_nucleotide_op3,
     )
 
     if ccd_leaving is not None:

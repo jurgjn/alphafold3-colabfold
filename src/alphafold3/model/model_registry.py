@@ -702,8 +702,23 @@ _FEATURISE = {
     # terminal OXT and no 5' OP3 (`const.ref_atoms["GLU"]` ends at OE2, its "A"
     # starts at P).
     'intellifold2': dict(qblock_keys=True,
-                         dedupe_self_msa=not os.environ.get(
-                             'AF3_NO_IF2_DEDUPE_MSA'),
+                         # 'query', as boltz2: the featuriser IntelliFold forks
+                         # keeps the a3m as given, query once, WITH alignments
+                         # too -- a 4-row a3m is 4 rows where AF3 builds 5
+                         # (stock-IntelliFold comparison: trunk pair 2.73).
+                         dedupe_self_msa=('query' if not os.environ.get(
+                             'AF3_NO_IF2_DEDUPE_MSA') else False),
+                         # as its boltz-forked featuriser: a ligand's leaving
+                         # atoms kept, SMILES atoms named element + canonical
+                         # rank, an internal modified nucleotide keeps OP3, and
+                         # a modified residue's type is its CCD letter read
+                         # through the protein table (stock-IntelliFold
+                         # comparison, covalent / ligand_smiles / rna_mod /
+                         # dna_mod).
+                         keep_ligand_leaving_atoms=True,
+                         smiles_atom_names='boltz',
+                         keep_modified_nucleotide_op3=True,
+                         modified_restype='protein_letter',
                          **({} if os.environ.get('AF3_NO_TERMINAL_DROP')
                             else dict(drop_atoms=('OXT', 'OP3', 'O3P')))),
     # rf3 (atomworks) renames atomised atoms to their ELEMENT symbol, carries
@@ -1156,7 +1171,9 @@ def featurise_kwargs(spec):
       # protenix/opendde's leaving atoms by CCD flags. Declared as a knob on
       # main and passed by NO caller -- model_features warned at runtime that
       # "an older caller does not pass" it; this is where callers get it.
-      ccd_leaving_atoms=bool(knobs.get('ccd_leaving_atoms', False)))
+      ccd_leaving_atoms=bool(knobs.get('ccd_leaving_atoms', False)),
+      keep_modified_nucleotide_op3=bool(
+          knobs.get('keep_modified_nucleotide_op3', False)))
 
 
 def get(name):

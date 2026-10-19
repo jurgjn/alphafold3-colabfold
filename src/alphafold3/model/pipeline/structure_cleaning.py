@@ -300,6 +300,7 @@ def create_empty_output_struc_and_layout(
     drop_ligand_leaving_atoms: bool = False,
     fix_standalone_glycans: bool = False,
     ccd_leaving: dict[tuple[str, int], set[str]] | None = None,
+    keep_modified_nucleotide_op3: bool = False,
 ) -> tuple[structure.Structure, atom_layout.AtomLayout]:
   """Make zero-coordinate structure from all physical residues.
 
@@ -356,6 +357,7 @@ def create_empty_output_struc_and_layout(
       drop_ligand_leaving_atoms=drop_ligand_leaving_atoms,
       fix_standalone_glycans=fix_standalone_glycans,
       ccd_leaving=ccd_leaving,
+      keep_modified_nucleotide_op3=keep_modified_nucleotide_op3,
   )
 
   empty_output_struc = atom_layout.make_structure(

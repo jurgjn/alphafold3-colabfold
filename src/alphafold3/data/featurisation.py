@@ -55,6 +55,7 @@ def featurise_input(
     flatten_non_standard_residues: bool = True,
     drop_ligand_leaving_atoms: bool = True,
     ccd_leaving_atoms: bool = False,
+    keep_modified_nucleotide_op3: bool = False,
     verbose: bool = False,
 ) -> Sequence[features.BatchDict]:
   """Featurise the folding input.
@@ -109,6 +110,7 @@ def featurise_input(
           flatten_non_standard_residues=flatten_non_standard_residues,
           drop_ligand_leaving_atoms=drop_ligand_leaving_atoms,
           ccd_leaving_atoms=ccd_leaving_atoms,
+          keep_modified_nucleotide_op3=keep_modified_nucleotide_op3,
       ),
   )
 

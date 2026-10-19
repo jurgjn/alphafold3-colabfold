@@ -136,7 +136,13 @@ NO_RESOLVED_HEAD = ('chai1', 'esmfold2_lm600m', 'esmfold2_lm300m')
 # indexed by the atom's RANK among its token's real atoms rather than by our
 # dense slot -- RF3 fills the first n slots (AddIsRealAtom). Identical until a
 # slot is empty, e.g. a nucleotide's dropped OP3. Confirmed against stock RF3.
-PER_ATOM_HEADS_BY_RANK = ('rosettafold3',)
+PER_ATOM_HEADS_BY_RANK = ('rosettafold3', 'intellifold2')
+
+# Models whose token-bond matrix is SYMMETRIC but does NOT link an atomised
+# residue to its chain neighbours -- IntelliFold's featuriser fills both
+# directions of every recorded bond (66 entries on ATP where we had 33) and
+# adds no polymer links (SYMMETRIC_TOKEN_BONDS adds both).
+SYMMETRIC_UNLINKED_TOKEN_BONDS = ('intellifold2',)
 # ...and the LayerNorms they do not have. boltz2 has none before ANY head;
 # ESMFold2's experimental line keeps plddt_ln but not pae_ln, so this is keyed
 # by head, not by model.

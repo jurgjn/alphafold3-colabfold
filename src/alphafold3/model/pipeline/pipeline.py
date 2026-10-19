@@ -161,6 +161,7 @@ class WholePdbPipeline:
     resolve_msa_overlaps: bool = True
     fix_standalone_glycans: bool = False
     ccd_leaving_atoms: bool = False
+    keep_modified_nucleotide_op3: bool = False
 
   def __init__(self, *, config: Config):
     """Initializes WholePdb data pipeline.
@@ -233,6 +234,8 @@ class WholePdbPipeline:
             drop_ligand_leaving_atoms=self._config.drop_ligand_leaving_atoms,
             fix_standalone_glycans=self._config.fix_standalone_glycans,
             ccd_leaving=ccd_leaving,
+            keep_modified_nucleotide_op3=(
+                self._config.keep_modified_nucleotide_op3),
         )
     )
 

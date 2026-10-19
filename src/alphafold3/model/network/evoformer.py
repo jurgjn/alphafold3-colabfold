@@ -489,7 +489,9 @@ class Evoformer(hk.Module):
         batch,
         symmetrize=(self.global_config.model in model_config.OPENFOLD3_LINEAGE
                     or self.global_config.model
-                    in model_config.SYMMETRIC_TOKEN_BONDS),
+                    in model_config.SYMMETRIC_TOKEN_BONDS
+                    or self.global_config.model
+                    in model_config.SYMMETRIC_UNLINKED_TOKEN_BONDS),
         link_atomised_residues=(self.global_config.model
                                 in model_config.SYMMETRIC_TOKEN_BONDS),
     )
