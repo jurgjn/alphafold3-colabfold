@@ -984,6 +984,7 @@ class Evoformer(hk.Module):
           pair_activations += hm.Linear(self.config.pair_channel, use_bias=False, name='chai1_bond_trunk')(
               batch.declared_bonds[..., None].astype(pair_activations.dtype))
         pair_init = pair_activations
+        _esm_tap('chai_z_init', pair_init)
         pair_activations = _add_prev(pair_activations, pair_init)
       else:
         _esm_tap('z_before_prev', pair_activations)

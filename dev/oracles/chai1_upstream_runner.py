@@ -137,6 +137,58 @@ def _np(t):
   return t.cpu().numpy()
 
 
+def _fp32_graphs(module):
+  """Rewrite every bfloat16 dtype argument (ScalarType 15) in a TorchScript
+  module's graphs to float32 (6). chai's exported components keep fp32 weights
+  and cast to bf16 inside the graph (the trunk: 1360 aten::to casts); this is the
+  only way to run chai itself at fp32, since nothing inside can be hooked.
+  Opt-in (CHAI_FP32=1): it is a precision experiment on the vendor, not chai."""
+  import re
+  changed = 0
+
+  def walk(block, graph):
+    nonlocal changed
+    for node in block.nodes():
+      for sub in node.blocks():
+        walk(sub, graph)
+      try:
+        schema = node.schema()
+      except RuntimeError:
+        continue
+      if schema == '(no schema)':
+        continue
+      args = [a.strip().split(' ')[-1].split('=')[0] for a in
+              re.search(r'\((.*)\)', schema).group(1).split(',') if a.strip()]
+      for i, inp in enumerate(node.inputs()):
+        if i < len(args) and args[i] == 'dtype':
+          src = inp.node()
+          if src.kind() == 'prim::Constant' and src.hasAttribute('value') \
+              and src.kindOf('value') == 'i' and src.i('value') == 15:
+            with graph.insert_point_guard(node):
+              node.replaceInput(i, graph.insertConstant(6))
+            changed += 1
+
+  # the bucketed entry points chai calls (chai1.AVAILABLE_MODEL_SIZES); they are
+  # reachable by getattr but not listed by dir()
+  for size in (256, 384, 512, 768, 1024, 1536, 2048):
+    try:
+      g = getattr(module, 'forward_%d' % size).graph
+    except (AttributeError, RuntimeError):
+      continue
+    walk(g, g)
+  # ...and every submodule's own methods: a call like `(to_qkv).forward(x)` runs
+  # that module's graph, with casts of its own
+  # (no dedupe by id(): the graph wrappers are temporaries and their ids are
+  # reused, which silently skipped most submodules; a second pass finds nothing)
+  for sub in module.modules():
+    try:
+      g = sub.forward.graph
+    except (AttributeError, RuntimeError):
+      continue
+    walk(g, g)
+  return changed
+
+
 def _run(case_dir, recycles, on_inputs, inject=None):
   """chai's own featurise + fold, with every exported component wrapped."""
   from pathlib import Path
@@ -186,6 +238,23 @@ def _run(case_dir, recycles, on_inputs, inject=None):
         return out
       if self.name == 'confidence_head.pt':
         kw = dict(kw, atom_coords=torch.tensor(inject['positions'], device=kw['atom_coords'].device)[None])
+      if self.name == 'trunk.pt' and os.environ.get('CHAI_TRUNK_INIT'):
+        # chai's own trunk on SUPPLIED initial reprs (ours): how far chai's output
+        # moves for that input difference alone -- the gap a correct trunk shows
+        sub = np.load(os.environ['CHAI_TRUNK_INIT'])
+        for key, name in (('token_pair_trunk_initial_repr', 'z_init'), ('token_single_trunk_initial_repr', 's_init')):
+          t = kw[key].clone()
+          v = torch.tensor(sub[name], dtype=t.dtype, device=t.device)
+          n = v.shape[0]
+          if t.dim() == 4:
+            t[0, :n, :n] = v
+          else:
+            t[0, :n] = v
+          kw[key] = t
+          if self.calls == 1 and key == 'token_pair_trunk_initial_repr':
+            kw['token_pair_trunk_repr'] = t       # the first pass's recycled input IS the initial repr
+          if self.calls == 1 and key == 'token_single_trunk_initial_repr':
+            kw['token_single_trunk_repr'] = t
       out = self.inner.forward(**kw)
       if self.name == 'feature_embedding.pt':
         got['emb.TOKEN'] = _np(out['TOKEN'])[0]
@@ -194,12 +263,26 @@ def _run(case_dir, recycles, on_inputs, inject=None):
         got['s_inputs'] = _np(out[0])[0]
       elif self.name == 'trunk.pt':
         got['s'], got['z'] = _np(out[0])[0], _np(out[1])[0]
+        if self.calls == 1:
+          # the trunk's own inputs, for a stage split: is the gap in the
+          # embedder or in the trunk?
+          got['emb.z_init'] = _np(kw['token_pair_trunk_initial_repr'])[0]
+          got['emb.s_init'] = _np(kw['token_single_trunk_initial_repr'])[0]
+          got['emb.trunk_pass0_z'] = got['z']
+          got['emb.trunk_pass0_s'] = got['s']
       elif self.name == 'confidence_head.pt':
         got['pae_logits'], got['pde_logits'], got['plddt_logits'] = (_np(x)[0] for x in out)
       return out
 
   orig = C.load_exported
-  C.load_exported = lambda key, device: Wrap(key, orig(key, device))
+
+  def load(key, device):
+    w = orig(key, device)
+    if os.environ.get('CHAI_FP32'):
+      n = _fp32_graphs(w.jit_module)
+      print('CHAI_FP32: %s: %d bf16 dtype arguments -> fp32' % (key, n), file=sys.stderr)
+    return Wrap(key, w)
+  C.load_exported = load
   try:
     C.run_folding_on_context(ctx, output_dir=out, num_trunk_recycles=recycles + 1, num_diffn_timesteps=2,
                              num_diffn_samples=1, seed=1, device=torch.device('cuda:0'), low_memory=False)
@@ -288,7 +371,8 @@ def forward(model, out_dir, in_npz, out_npz):
            pae=expect(got['pae_logits'][:n, :n], centres(0, 32, 64)),
            pde=expect(got['pde_logits'][:n, :n], centres(0, 32, 64)),
            plddt=pl_atoms[slot], denoised=got['denoised'][slot],
-           **{'tap.emb_token': got['emb.TOKEN'][:n], 'tap.emb_atom': got['emb.ATOM'][slot]})
+           **{'tap.emb_token': got['emb.TOKEN'][:n], 'tap.emb_atom': got['emb.ATOM'][slot],
+              'tap.z_init': got['emb.z_init'][:n, :n], 'tap.s_init': got['emb.s_init'][:n]})
 
 
 if __name__ == '__main__':
