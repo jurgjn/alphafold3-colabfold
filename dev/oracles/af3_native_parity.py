@@ -112,6 +112,9 @@ def cases():
           'id': 'B', 'smiles': 'CC(C)Cc1ccc(cc1)[C@@H](C)C(=O)O'}}],
       'ion': [_prot('A', P6MRR), {'ligand': {'id': 'B', 'ccdCodes': ['MG']}}],
       'ptm': [_prot('A', UBQ, mods=[{'ptmType': 'SEP', 'ptmPosition': 20}])],
+      # An unknown amino acid (X): its atoms come from the CCD UNK in some
+      # families (main's ccd_unk) and from a fixed table in others.
+      'unknown': [_prot('A', P6MRR[:10] + 'X' + P6MRR[11:])],
       # N-glycan: NAG on Asn ND2. Exercises bondedAtomPairs and the
       # polymer-ligand bond features, which no other case reaches.
       'covalent': [_prot('A', 'GSWKELAANLTKEAAEKG'),

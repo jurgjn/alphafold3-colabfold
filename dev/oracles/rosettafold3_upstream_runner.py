@@ -50,7 +50,8 @@ SEED = 1
 _THREE = {'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS',
           'Q': 'GLN', 'E': 'GLU', 'G': 'GLY', 'H': 'HIS', 'I': 'ILE',
           'L': 'LEU', 'K': 'LYS', 'M': 'MET', 'F': 'PHE', 'P': 'PRO',
-          'S': 'SER', 'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL'}
+          'S': 'SER', 'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL',
+          'X': 'UNK'}  # an unknown amino acid is the CCD UNK, as RF3 reads X
 
 
 def _trivial_msa(msa, seq):
@@ -325,6 +326,25 @@ def forward(model, out_dir, in_npz, out_npz):
         m.register_forward_hook(hook(name))
     for name, m in net.feature_initializer.named_children():
       m.register_forward_hook(hook('feature_initializer.' + name))
+    if os.environ.get('RF3_CONF_TAPS'):
+      # the confidence head's own stages: the distance one-hot, the pair and
+      # single entering its pairformer, each pairformer block, the heads
+      ch = net.confidence_head
+      for name, m in ch.named_children():
+        if name != 'pairformer':
+          m.register_forward_hook(hook('confidence_head.' + name))
+      for i, blk in enumerate(ch.pairformer):
+        blk.register_forward_hook(hook('confidence_head.pairformer.%d' % i))
+      def pre(tag):
+        # a pre-hook's return value REPLACES the module's input: return None
+        def fn(_m, args):
+          for k, x in enumerate(args):
+            if hasattr(x, 'float'):
+              taps.setdefault('tap.confidence_head.%s.%d' % (tag, k),
+                              x.detach().float().cpu().numpy().copy())
+        return fn
+      ch.process_pred_distances.register_forward_pre_hook(pre('dist_one_hot'))
+      ch.pairformer[0].register_forward_pre_hook(pre('pairformer_in'))
 
   def on_pipeline(ex):
     ex_box['ex'] = ex

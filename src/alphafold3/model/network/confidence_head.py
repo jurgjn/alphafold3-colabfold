@@ -252,6 +252,7 @@ class ConfidenceHead(hk.Module):
       pair_mask,
       pair_act,
       target_feat,
+      target_feat_absent=None,
   ):
     out = hm.Linear(pair_act.shape[-1], name='left_target_feat_project')(
         target_feat
@@ -259,6 +260,15 @@ class ConfidenceHead(hk.Module):
     out += hm.Linear(pair_act.shape[-1], name='right_target_feat_project')(
         target_feat
     ).astype(pair_act.dtype)[:, None]
+    if target_feat_absent is not None:
+      # The vendor's input columns our target_feat does not carry, at the value
+      # its normalisation gives them (masked_global_norm absent_value): (N, k).
+      out += hm.Linear(pair_act.shape[-1],
+                       name='left_target_feat_project_absent')(
+                           target_feat_absent).astype(pair_act.dtype)
+      out += hm.Linear(pair_act.shape[-1],
+                       name='right_target_feat_project_absent')(
+                           target_feat_absent).astype(pair_act.dtype)[:, None]
     positions = atom_layout.convert(
         token_atoms_to_pseudo_beta,
         dense_atom_positions,
@@ -361,6 +371,7 @@ class ConfidenceHead(hk.Module):
         single_act = hm.LayerNorm(name='input_single_norm')(
             jnp.clip(single_act, -512.0, 512.0))
 
+      target_feat_absent = None
       if self.global_config.model == 'rosettafold3':
         # RF3 confidence applies a parameter-free LayerNorm over the WHOLE tensor
         # (layer_norm_along_feature_dimension=False) to each detached trunk input
@@ -380,8 +391,8 @@ class ConfidenceHead(hk.Module):
         single_act = masked_global_norm(single_act, seq_mask_bool)
         # RF3's s_inputs is 449 wide where our target_feat is 447; see
         # masked_global_norm on why the width is passed and what it buys.
-        target_feat = masked_global_norm(target_feat, seq_mask_bool,
-                                         width=449)
+        target_feat, target_feat_absent = masked_global_norm(
+            target_feat, seq_mask_bool, width=449, return_absent=True)
 
       num_residues = seq_mask.shape[0]
       num_pair_channels = pair_act.shape[2]
@@ -399,6 +410,7 @@ class ConfidenceHead(hk.Module):
             pair_mask,
             pair_act,
             target_feat,
+            target_feat_absent=target_feat_absent,
         )
 
       def pairformer_fn(act):
@@ -769,7 +781,7 @@ def tmscore_adjusted_pae(
   return global_apae, interface_apae
 
 
-def masked_global_norm(x, mask, width=None):
+def masked_global_norm(x, mask, width=None, return_absent=False):
   """Normalise x by the mean and variance over the REAL tokens only.
 
   RoseTTAFold3's confidence head layer-norms each detached trunk input over the
@@ -797,6 +809,14 @@ def masked_global_norm(x, mask, width=None):
   produces; it would not hold for an input our alphabet mapped INTO one of the
   dropped classes, which is why this is opt-in per call site rather than the
   default.
+
+  Matching the statistics is not the whole of it: a dropped column is zero
+  BEFORE the norm and (0 - mean) / std AFTER it, so its weight row still
+  reaches whatever reads the normalised tensor. return_absent=True also
+  returns that value, (..., width - ours), for the caller to project with the
+  vendor's rows for those columns. On rf3's confidence pair input this was the
+  remaining 6.6e-3 (of 2.3) in each s_inputs projection, and the 1e-2 PAE/PDE
+  gap on every input, protein included (stock-RF3 comparison, 2026-10-19).
   """
   xf = x.astype(jnp.float32)
   m = mask.astype(jnp.float32)[..., None]
@@ -807,4 +827,9 @@ def masked_global_norm(x, mask, width=None):
   # once per real token
   pad = (width - xf.shape[-1]) * jnp.sum(mask.astype(jnp.float32))
   var = (jnp.sum(jnp.square(xf - mean) * m) + pad * jnp.square(mean)) / n
-  return ((xf - mean) / jnp.sqrt(var + 1e-5)).astype(x.dtype)
+  inv = 1.0 / jnp.sqrt(var + 1e-5)
+  out = ((xf - mean) * inv).astype(x.dtype)
+  if not return_absent:
+    return out
+  absent = jnp.broadcast_to(-mean * inv, xf.shape[:-1] + (width - xf.shape[-1],))
+  return out, absent.astype(x.dtype)

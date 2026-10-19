@@ -288,6 +288,14 @@ def map_confidence_head(sd, params, n_layers=4, pair_H=4, pair_D=32, single_H=16
   es = f'{base}/~_embed_features'
   _set(params, f'{es}/left_target_feat_project', 'weights', _rtf(_t(_get(sd, 'confidence_head.process_s_inputs_left.weight'))))
   _set(params, f'{es}/right_target_feat_project', 'weights', _rtf(_t(_get(sd, 'confidence_head.process_s_inputs_right.weight'))))
+  # The two s_inputs rows our 447-wide target_feat drops (RF3's unknown-DNA
+  # class, restype and profile blocks). Zero BEFORE the head's whole-tensor
+  # LayerNorm, -mean/std after it, so their rows still reach the pair: kept
+  # here for the graph to add (confidence_head.masked_global_norm).
+  for side in ('left', 'right'):
+    w = _t(_get(sd, f'confidence_head.process_s_inputs_{side}.weight'))
+    _set(params, f'{es}/{side}_target_feat_project_absent', 'weights',
+         np.stack([w[384 + 30], w[416 + 30]]))
   # RF3 confidence distance feature = 40-bin (discretize CA-CA 3.25..50.75 / 39 -> one_hot 40);
   # the rf3 confidence forward branch feeds a 40-bin dgram, so keep all 40 bins.
   _set(params, f'{es}/distogram_feat_project', 'weights', _t(_get(sd, 'confidence_head.process_pred_distances.weight')))
