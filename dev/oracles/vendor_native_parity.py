@@ -57,7 +57,9 @@ VENDORS = {
     # triangle-attention convention (run_all_parity.sh). ~/venv_of3 serves both:
     # the two trees' conda locks are identical (pins in
     # ~/venv_of3/requirements-of3.txt; deepspeed/cuequivariance left out).
-    'openfold3': (_H + '/venv_of3/bin/python', _H + '/openfold-3',
+    # openfold3 = stock release 0.4.5 (a4b08032), the newest that loads the
+    # preview-2 checkpoint; origin/main (v0.5.0-155-g8090aa69) refuses it.
+    'openfold3': (_H + '/venv_of3/bin/python', _H + '/openfold-3-045',
                   'openfold3_upstream_runner.py'),
     'openbind0': (_H + '/venv_of3/bin/python', _H + '/openfold-3-v050',
                   'openfold3_upstream_runner.py'),
@@ -78,6 +80,13 @@ VENDORS = {
 }
 
 
+VENDOR_NA_EXIT = 3
+
+
+class VendorNA(Exception):
+  """The stock vendor has no way to take this input (runner exit 3)."""
+
+
 def _vendor(model, *args):
   py, path, runner = VENDORS[model]
   env = {k: v for k, v in os.environ.items()
@@ -93,6 +102,12 @@ def _vendor(model, *args):
                             *args[1:]],
                      capture_output=True, text=True, env=env,
                      cwd=tempfile.gettempdir())
+  # Exit 3 = the STOCK vendor cannot express this input at all (openfold3 has
+  # no bond input, so `covalent` is N/A there): reported as N/A, never PASS,
+  # and never confused with a crash, which stays a FAILURE.
+  if r.returncode == VENDOR_NA_EXIT:
+    raise VendorNA(r.stderr.strip().splitlines()[-1] if r.stderr.strip()
+                   else 'input not expressible in the vendor')
   if r.returncode:
     raise RuntimeError('%s %s failed:\n%s' % (model, args[0], r.stderr[-4000:]))
 
@@ -411,6 +426,9 @@ def main(argv):
     print('== %s %s' % (model, n), flush=True)
     try:
       rows = run_case(model, n, allc[n], rec, 'none')
+    except VendorNA as e:   # the vendor cannot take this input: N/A, not FAIL
+      print('  %s: N/A (%s)' % (n, e), flush=True)
+      continue
     except Exception as e:  # a crash is a FAILURE, never a skip
       import traceback
       traceback.print_exc()

@@ -3,7 +3,8 @@
   python openfold3_upstream_runner.py featurise MODEL CASE.json OUT_DIR
   python openfold3_upstream_runner.py forward   MODEL OUT_DIR IN.npz OUT.npz
 
-ONE runner, two releases: the MODEL picks the tree (VENDORS in
+ONE runner, two releases (openfold3: tag 0.4.5 in ~/openfold-3-045; openbind0:
+tag v0.5.0 in ~/openfold-3-v050): the MODEL picks the tree (VENDORS in
 vendor_native_parity.py puts exactly that tree on PYTHONPATH; this file checks
 it got the right one) and the checkpoint. openbind0 is OF3 v0.5.0 and the
 RELEASE matters: v0.5.0's end-node triangle attention transposes the pair bias
@@ -40,7 +41,15 @@ import numpy as np
 H = os.path.expanduser('~')
 # model -> (vendor tree, checkpoint). converters/sources.py names the files.
 MODELS = {
-    'openfold3': (H + '/openfold-3', os.environ.get(
+    # STOCK RELEASE 0.4.5 (`git describe`: 0.4.5, a4b08032; worktree of
+    # ~/openfold-3 at the tag). It is the newest release that loads preview-2:
+    # OF3's own registry (entry_points/parameters.py) marks of3-p2-155k
+    # ">=0.4,<0.4.4dev0" on origin/main, and origin/main (v0.5.0-155-g8090aa69,
+    # MODEL_VERSION 2.0.0) refuses it on strict load -- the diffusion
+    # transformer's layer_norm_z moved out of attention_pair_bias (measured
+    # 2026-10-19). 0.4.5 has MODEL_VERSION 1.0.0 and lists p2-155k ">=0.4".
+    # The old ~/openfold-3 checkout (c615a7f8) is 0.4.3 + 1 commit.
+    'openfold3': (H + '/openfold-3-045', os.environ.get(
         'OF3_CKPT', H + '/of3-p2-155k.pt')),
     # of3-ob-2025-06-30-174k.pt in converters/sources.py, saved here as
     # of3-ob-174k.pt (same 2287872989-byte file the other openbind0 gates use).
@@ -53,7 +62,8 @@ SEED = 42   # the CLI's default model seed (InferenceExperimentSettings.seeds)
 def _diag_fix_profile():
   """DIAGNOSTIC ONLY (OF3_DIAG_FIX_PROFILE=1), never the gate of record.
 
-  ~/openfold-3 (main @ c615a7f8) computes the MSA profile with
+  Release 0.4.5 (like every 0.4.x; fixed on main by f896db32, 2026-03-19,
+  shipped in v0.5.0 only) computes the MSA profile with
   `col_indices_local = np.repeat(np.arange(block_n_cols), n_rows)` against a
   row-major `msa_chunk.ravel()` (primitives/sequence/msa.py:calculate_profile),
   so profile[c] counts row-major cells c*n_rows..c*n_rows+n_rows-1 instead of
@@ -145,9 +155,13 @@ def _of3_query(j, msa_root):
   # AF3 names the atom, and (b) nothing in openfold3/ reads covalent_bonds --
   # the inference featuriser builds token_bonds from the parsed structure only.
   # So the CLI runs the covalent case without the bond, and that is the vendor.
+  # So the input is NOT EXPRESSIBLE in stock OF3: exit 3, which
+  # vendor_native_parity reports as N/A (dropping the bond would compare a
+  # different input -- NAG then keeps its leaving O1, 33 tokens to our 32).
   if j.get('bondedAtomPairs'):
-    print('openfold3 runner: bondedAtomPairs dropped -- OF3 inference has no '
-          'consumer for covalent_bonds', file=sys.stderr)
+    print('VENDOR_NA: stock OpenFold3 has no covalent-bond input '
+          '(Query.covalent_bonds is never read)', file=sys.stderr)
+    sys.exit(3)
   return {'seeds': [SEED], 'queries': {j['name']: {'chains': chains}}}
 
 
@@ -222,7 +236,8 @@ def _run_cli(model, out_dir, recycles, n_samples=1):
 def _layout(batch, out_dir):
   # Batch axis 0 (bs = 1); no padding at bs = 1 (the collator pads across a
   # batch only), but token_mask/atom_mask are carried through anyway.
-  b = {k: v[0] for k, v in batch.items() if hasattr(v, 'shape')}
+  # On the host: on a GPU run Lightning has already moved the batch to cuda.
+  b = {k: v[0].cpu() for k, v in batch.items() if hasattr(v, 'shape')}
   chars = b['ref_atom_name_chars'].argmax(-1).numpy()          # (atoms, 4)
   names = [''.join(chr(int(c) + 32) for c in row).strip() for row in chars]
   n_at = b['num_atoms_per_token'].numpy()
