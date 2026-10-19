@@ -101,7 +101,11 @@ def _rf3_json(j, msa_dir):
       else:
         d['chain_type'] = 'POLYPEPTIDE(L)'
       if e.get('templates'):
-        raise NotImplementedError('templates: rf3 reads them from a CIF input')
+        # rf3 templates from its INPUT structure (template_selection marks the
+        # input's atoms as the template): handled by _template_cif, which
+        # replaces this JSON input with a CIF of the query on the template's
+        # coordinates
+        _TEMPLATE_CASE.append((ids, e['sequence'], e['templates']))
       if not _trivial_msa(e.get('unpairedMsa'), e['sequence']):
         p = os.path.join(msa_dir, '%s.a3m' % ids[0])
         with open(p, 'w') as f:
@@ -187,6 +191,56 @@ class _Stop(Exception):
   pass
 
 
+_TEMPLATE_CASE = []
+
+
+def _template_cif(j, out_dir):
+  """The case's template as rf3 takes one: the query as a CIF on the template's
+  coordinates, with template_selection over that chain. Only a single protein
+  chain with one template maps onto this (otherwise N/A). A residue the template
+  carries modified where the query has the standard one (5K9P's SEP20 under
+  ubiquitin's S20) is written as the query's residue with the extra atoms gone,
+  which is also what our template featurisation reads (the parent restype)."""
+  import io
+  import biotite.structure as bs
+  from biotite.structure.io import pdbx
+  polymers = [e for entry in j['sequences'] for kind, e in entry.items() if kind != 'ligand']
+  if len(_TEMPLATE_CASE) != 1 or len(polymers) != 1 or len(_TEMPLATE_CASE[0][2]) != 1:
+    print('VENDOR_NA: rf3 templates come from its input structure; only one templated protein chain maps',
+          file=sys.stderr)
+    sys.exit(3)
+  ids, seq, (t,) = _TEMPLATE_CASE[0]
+  # biotite, which atomworks already uses (the vendor venv has no gemmi)
+  cif = pdbx.CIFFile.read(io.StringIO(t['mmcif']))
+  tchain = str(cif.block['entity_poly']['pdbx_strand_id'].as_array()[0]).split(',')[0].strip()
+  arr = pdbx.get_structure(cif, model=1, use_author_fields=True, extra_fields=['charge'])
+  arr = arr[(arr.chain_id == tchain) & ~arr.hetero | ((arr.chain_id == tchain) & (arr.res_name == 'SEP'))]
+  arr = arr[bs.filter_amino_acids(arr) | (arr.res_name == 'SEP')]
+  arr = arr[arr.element != 'H']
+  starts = bs.get_residue_starts(arr)
+  q, tt = t['queryIndices'], t['templateIndices']
+  three = {'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS', 'Q': 'GLN', 'E': 'GLU', 'G': 'GLY',
+           'H': 'HIS', 'I': 'ILE', 'L': 'LEU', 'K': 'LYS', 'M': 'MET', 'F': 'PHE', 'P': 'PRO', 'S': 'SER',
+           'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL'}
+  drop = np.zeros(len(arr), bool)
+  for qi, ti in zip(q, tt):
+    lo = starts[ti]
+    hi = starts[ti + 1] if ti + 1 < len(starts) else len(arr)
+    want = three[seq[qi]]
+    if arr.res_name[lo] != want:
+      arr.res_name[lo:hi] = want
+      arr.hetero[lo:hi] = False
+      # the modified residue's extra atoms (SEP's phosphate) are not the query's
+      drop[lo:hi] |= np.isin(arr.atom_name[lo:hi], ['P', 'O1P', 'O2P', 'O3P'])
+  arr = arr[~drop]
+  arr.chain_id[:] = ids[0]
+  out = pdbx.CIFFile()
+  pdbx.set_structure(out, arr)
+  path = os.path.join(out_dir, 'rf3_template_input.cif')
+  out.write(path)
+  return path, [ids[0]]
+
+
 def _run(out_dir, n_recycles, precision, on_pipeline, patch=None):
   """Construct, seed, build, then engine.run -- the CLI's order. on_pipeline
   sees the featurised example; patch (forward only) installs the overrides."""
@@ -204,7 +258,13 @@ def _run(out_dir, n_recycles, precision, on_pipeline, patch=None):
     return out
   engine.pipeline = pipeline
   try:
-    engine.run(inputs=os.path.join(out_dir, 'rf3.json'), out_dir=None)
+    tpl = os.path.join(out_dir, 'rf3_template_input.cif')
+    if os.path.exists(tpl):
+      with open(os.path.join(out_dir, 'template_selection.json')) as f:
+        sel = json.load(f)
+      engine.run(inputs=tpl, out_dir=None, template_selection=sel)
+    else:
+      engine.run(inputs=os.path.join(out_dir, 'rf3.json'), out_dir=None)
   except _Stop:
     pass
   return engine
@@ -239,8 +299,13 @@ def featurise(model, case_json, out_dir):
     j = json.load(f)
   msa_dir = os.path.join(out_dir, 'msa')
   os.makedirs(msa_dir, exist_ok=True)
+  _TEMPLATE_CASE.clear()
   with open(os.path.join(out_dir, 'rf3.json'), 'w') as f:
     json.dump(_rf3_json(j, msa_dir), f, indent=1)
+  if _TEMPLATE_CASE:
+    path, sel = _template_cif(j, out_dir)
+    with open(os.path.join(out_dir, 'template_selection.json'), 'w') as f:
+      json.dump(sel, f)
 
   def on_pipeline(ex):
     np.savez(os.path.join(out_dir, 'layout.npz'), **_layout(ex))

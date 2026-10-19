@@ -83,6 +83,14 @@ def _case_inputs(j, d):
           lines += ['>ligand|name=%s' % cid, e['smiles']]
         else:
           (code,) = e['ccdCodes']
+          if code not in ('MG',):
+            # chai takes a ligand ONLY as SMILES; a multi-atom CCD ligand then
+            # gets chai's SMILES atom order and names, where ours builds it from
+            # the CCD -- no stock equivalent of the input (ligand_smiles is the
+            # test of chai's ligand path). A single-atom ion has no order.
+            print('VENDOR_NA: chai1 has no CCD-ligand input (SMILES only); see ligand_smiles',
+                  file=sys.stderr)
+            sys.exit(3)
           lines += ['>ligand|name=%s' % cid, _CCD_SMILES[code]]
   for k, (a, b) in enumerate(j.get('bondedAtomPairs') or ()):
     def ref(x):
@@ -107,7 +115,46 @@ def _case_inputs(j, d):
   if restraints:
     rpath = os.path.join(d, 'restraints.csv')
     pd.DataFrame(restraints).to_csv(rpath, index=False)
+  _TEMPLATES.clear()
+  for entry in j['sequences']:
+    (kind, e), = entry.items()
+    if kind != 'protein':
+      continue
+    ids = e['id'] if isinstance(e['id'], list) else [e['id']]
+    for t in e.get('templates') or ():
+      _TEMPLATES.append((ids, e['sequence'], t))
   return fasta, msa_dir, rpath
+
+
+_TEMPLATES = []
+
+
+def _template_m8(case_dir, cache_folder):
+  """chai's template input: an m8 hits file whose hit CIF chai fetches by PDB id
+  into its cache folder -- pre-placed there (<ID>.cif.gz) so the run is offline
+  and reads exactly the template the case carries. One hit per query chain,
+  aligned over the case's own query/template index range; chai realigns the hit
+  sequence itself (kalign), as it does for a server hit."""
+  if not _TEMPLATES:
+    return None
+  import gzip
+  import gemmi
+  os.makedirs(cache_folder, exist_ok=True)
+  lines = []
+  for k, (ids, seq, t) in enumerate(_TEMPLATES):
+    doc = gemmi.cif.read_string(t['mmcif'])
+    pdb_id = doc.sole_block().find_value('_entry.id').strip().upper()
+    chain = doc.sole_block().find_value('_entity_poly.pdbx_strand_id').split(',')[0].strip()
+    with gzip.open(os.path.join(cache_folder, '%s.cif.gz' % pdb_id), 'wt') as f:
+      f.write(t['mmcif'])
+    q, tt = t['queryIndices'], t['templateIndices']
+    for cid in ids:
+      lines.append('\t'.join(map(str, [cid, '%s_%s' % (pdb_id.lower(), chain), 100.0, len(q), 0, 0,
+                                      min(q) + 1, max(q) + 1, min(tt) + 1, max(tt) + 1, 1e-30, 500, ''])))
+  path = os.path.join(case_dir, 'templates.m8')
+  with open(path, 'w') as f:
+    f.write('\n'.join(lines) + '\n')
+  return path
 
 
 def _write_pqt(query, a3m, path, pd):
@@ -205,10 +252,12 @@ def _run(case_dir, recycles, on_inputs, inject=None):
   out = Path(case_dir) / 'chai_out'
   import shutil
   shutil.rmtree(out, ignore_errors=True)
+  m8 = _template_m8(case_dir, str(out / 'templates'))
   ctx = C.make_all_atom_feature_context(
       Path(fasta), output_dir=out, use_esm_embeddings=False,
       msa_directory=Path(msa_dir) if msa_dir else None,
-      constraint_path=Path(rpath) if rpath else None)
+      constraint_path=Path(rpath) if rpath else None,
+      templates_path=Path(m8) if m8 else None)
   got = {}
   orig_collate = C.Collate
 
