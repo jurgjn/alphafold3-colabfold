@@ -68,8 +68,29 @@ vendor () {
 # directories -- set LOGDIR explicitly to keep one run together.
 LOGDIR=${LOGDIR:-$ROOT/dev/oracles/parity_runs/$(date +%Y-%m-%d)}
 mkdir -p "$LOGDIR"
-SUMMARY=$LOGDIR/summary.tsv
+SUMMARY=${SUMMARY:-$LOGDIR/summary.tsv}
 [ -f "$SUMMARY" ] || printf 'gate\tmodel\tstatus\theadline\n' > "$SUMMARY"
+
+# PROVENANCE. Every number here depends on a vendor tree, a checkpoint and a
+# library version as much as on our code, and none of them were recorded: a
+# moved vendor checkout or a new upstream revision in the hub cache changed what
+# a gate measured with no trace (PARITY.md, 2026-09-16, the ESMFold2 revision
+# switch; 2026-10-18, upstream AF3's RDKit bump reading as a featurisation bug).
+# Appended per invocation, so a resumed run shows every environment it mixed.
+# Not on REGRADE: that measures nothing, and today's versions written beside an
+# old run's logs would misdate them.
+[ -n "${REGRADE:-}" ] || {
+  echo "== $(date -Is)  ours $(git -C "$ROOT" describe --always --dirty)"
+  for v in "$V_protenix" "$V_of3" "$V_of3_ob" "$V_if2" "$V_dde" \
+           /home/ubuntu/foundry_rf3 /home/ubuntu/BoltzDesign1 \
+           /home/ubuntu/af3_upstream /home/ubuntu/ColabDesign2; do
+    printf '  %-40s %s\n' "$v" "$(git -C "$v" describe --always --dirty --tags 2>/dev/null || echo '?')"
+  done
+  for py in "$PY" "$PY_ESM" "${AF3_UPSTREAM_PY:-$HOME/venv_af3/bin/python}"; do
+    printf '  %-40s %s\n' "$py" "$($py -I -c 'import importlib.metadata as m
+print(" ".join("%s=%s" % (p, m.version(p)) for p in ("jax", "dm-haiku", "rdkit", "torch", "numpy") if any(d.metadata["Name"].lower() == p for d in m.distributions())))' 2>&1 | tail -1)"
+  done
+} >> "$LOGDIR/provenance.txt"
 
 # The sweep set: every model the graph knows. The four ESMFold2-Experimental
 # releases were removed from the project on 2026-09-09, so there is nothing to
@@ -85,32 +106,54 @@ from alphafold3.model import model_config as c; print(" ".join(c.MODELS))')}
 # checkpoint tensors, which is a finding to read rather than a crash (WARN).
 # Calling those FAIL would bury the real failures in noise. Applied to cached
 # logs too, so a re-run re-classifies instead of keeping an old verdict.
-classify () {  # classify <log> -> status on stdout
-  local log=$1
+classify () {  # classify <log> <tag> -> status<TAB>detail on stdout
+  # EXIT 0 USED TO MEAN OK, and every module gate exits 0 after printing its
+  # numbers -- so a corr of 0.97 read OK and the summary counted gates that RAN.
+  # Now the NUMBERS decide (parity_audit.grade_log): PARITY, FLOOR (below the
+  # cell's own resolution), UNGRADED (nothing gradeable printed), or FAIL.
+  local log=$1 tag=$2
   local rc; rc=$(sed -n 's/^__GATE_EXIT //p' "$log" | tail -1)
-  if [ "$rc" = 0 ]; then echo OK; return; fi
-  if [ "$rc" = 124 ]; then echo TIMEOUT; return; fi
-  if grep -qi '^N/A:\|no native adapter\|no converter registered\|nothing to audit\|has no msa_encoder\|has no final-block\|no weights for\|no native dump at\|run first:\|No module named\|KeyError' "$log"; then
-    echo SKIP; return
+  if [ "$rc" = 0 ]; then
+    case "$tag" in
+      # These grade themselves and exit non-zero on a bad value.
+      Lg.*|L7.*|L0.*)  printf 'OK\tself-graded\n' ;;
+      # Accuracy against a crystal structure, not agreement with a vendor.
+      L5*|L6*)         printf 'SCREEN\t\n' ;;
+      *)               $PY "$ROOT/dev/oracles/parity_audit.py" --log "$log" ;;
+    esac
+    return
+  fi
+  if [ "$rc" = 124 ]; then printf 'TIMEOUT\t\n'; return; fi
+  # Only an EXPLICIT "this gate has nothing to compare" is a skip. `KeyError` and
+  # `No module named` used to be on this list, so a crash read SKIP and then N/A:
+  # boltz2's L3.denoise was "no adapter" for weeks while it was really a missing
+  # `mashumaro` in ~/venv.
+  if grep -qi '^N/A:\|no native adapter\|no converter registered\|nothing to audit\|has no msa_encoder\|has no final-block\|no weights for\|no native dump at\|run first:' "$log"; then
+    printf 'SKIP\t\n'; return
   fi
   # A RESOURCE failure is not a result. Two gates sharing a 23 GB card is the
   # usual cause and it says nothing about the port, so it gets its own status
   # rather than being counted as a failure.
   if grep -qi 'RESOURCE_EXHAUSTED\|CUDA_ERROR_OUT_OF_MEMORY\|Out of memory\|solver_handle_pool\|gpusolverDnCreate\|CUBLAS_STATUS_\|cuSolver internal error' "$log"; then
-    echo OOM; return
+    printf 'OOM\t\n'; return
   fi
   # NONZERO counts only. `[1-9][0-9]*` matters: every trunk gate prints
   # "0 unmapped" on success, and matching a bare 'unmapped' made opendde's L1
   # read WARN off a success line.
   if grep -qEi '[1-9][0-9]* (unaccounted for|unmapped)' "$log"; then
-    echo WARN; return
+    printf 'WARN\t\n'; return
   fi
-  echo FAIL
+  printf 'CRASH\t%s\n' "$(grep -E '^[A-Za-z_.]+(Error|Exception):' "$log" | tail -1 | cut -c1-120)"
 }
 
 gate () {
   local tag=$1 model=$2 pat=$3; shift 3
   local log=$LOGDIR/$tag.$model.log
+  # REGRADE=1 classifies the logs a run already wrote and starts nothing: how a
+  # changed grading rule is applied to an old run, or to one still in progress.
+  if [ -n "${REGRADE:-}" ] && ! grep -qs '^__GATE_EXIT ' "$log"; then
+    return
+  fi
   if [ -n "${FORCE:-}" ] || [ ! -f "$log" ] || ! grep -q '^__GATE_EXIT ' "$log"; then
     local overlay; overlay=$(vendor "$model")
     local pp=src:.
@@ -150,7 +193,8 @@ gate () {
         timeout "${GATE_TIMEOUT:-3600}" $PY "$@" 2>&1
       echo "__GATE_EXIT $?" ) > "$log"
   fi
-  local status; status=$(classify "$log")
+  local cls status detail
+  cls=$(classify "$log" "$tag"); status=${cls%%$'\t'*}; detail=${cls#*$'\t'}
   # SKIP means two very different things: a module this model DOES NOT HAVE,
   # and a module it has with no adapter written. Reported as one status, the
   # summary has no denominator -- 88 SKIPs reads as 88 holes and most are not.
@@ -163,7 +207,9 @@ gate () {
   fi
   local head; head=$(grep -E "$pat" "$log" | tail -1)
   [ "$status" = N/A ] && head=$na
-  [ "$status" = SKIP ] && head="HOLE: applies to this model, no adapter"'' 
+  [ "$status" = SKIP ] && head="HOLE: applies to this model, no adapter"
+  # The grade's own detail beats the headline when the cell is not at parity.
+  case "$status" in FAIL|FLOOR|UNGRADED|CRASH) head="$detail | ${head:0:60}" ;; esac
   printf '  %-24s %-30s %-8s %s\n' "$tag" "$model" "$status" "${head:0:88}"
   printf '%s\t%s\t%s\t%s\n' "$tag" "$model" "$status" "$head" >> "$SUMMARY"
 }
@@ -202,7 +248,7 @@ want () {  # is this level selected?
   case " $LEVELS " in *" all "*|*" $lvl "*) return 0 ;; *) return 1 ;; esac
 }
 
-LEVELS=${*:-L0 L1 L1b L1r L1t L1x L1d L2 L3 L4 L5af2 L7 Lg}
+LEVELS=${*:-L0 L1 L1b L1r L1t L1x L1d L2 L3 Laf3 Lship L4 L5af2 L7 Lg}
 # The README's model tables drift: it claimed 18 model types while listing 16,
 # because the test that used to keep the two in step was deleted and nothing
 # noticed. The driver already knows the real list, so it checks -- cheaper than
@@ -405,8 +451,15 @@ if want L3; then
   for m in $MODELS; do
     DIAG=1 gate L3.denoise "$m" 'per-atom distance' dev/oracles/denoise_parity.py "$m"
   done
-  # boltz2 has no standalone-constructible diffusion module; its L3 is by
-  # injection from a captured native run (~/boltz2_6mrr/diff_dump.npz).
+  # boltz2 again on a REAL trunk's conditioning, at sigma_data. On the synthetic
+  # std-0.5 s/z the step is ill-conditioned in a band around sigma 16 -- a 1e-6
+  # input perturbation moves our own output 11-87% -- so the cell above grades
+  # FLOOR there. With boltz's own s/z/s_inputs it reads max|d| 5e-05 A.
+  DIAG=1 gate L3.denoise_real boltz2 'per-atom distance' \
+    dev/oracles/denoise_parity.py boltz2 --cond_npz "$HOME/boltz2_6mrr/diff_dump.npz"
+  # The old L3 note: boltz2 also has an injection replay from a captured native
+  # run (~/boltz2_6mrr/diff_dump.npz) -- its first and last steps, which are the
+  # two ends of the schedule, where the coordinate path barely matters.
   gate L3.denoise_inject boltz2 'corr|per-atom' dev/oracles/boltz2_denoise_parity.py
   # BOTH ENDS OF THE SCHEDULE. The default dump is a single step at
   # times 1.4157 -> sigma 4608, where c_in is 2.2e-04 and c_out is 16: almost
@@ -429,6 +482,31 @@ if want L3; then
 fi
 
 # --- L4: the confidence head --------------------------------------------
+# alphafold3 against UPSTREAM DeepMind AlphaFold 3 (~/af3_upstream, run from
+# ~/venv_af3): featurisation, the whole model on injected samples, and the
+# shipped cached conditioning against inline -- every input modality. Before
+# this, alphafold3 was N/A at every level because it "is the reference".
+if want Laf3; then
+  echo "== Laf3 alphafold3 vs upstream DeepMind AF3"
+  case " $MODELS " in *" alphafold3 "*)
+    gate Laf3.fp32 alphafold3 '__VERDICT' dev/oracles/af3_native_parity.py
+    gate Laf3.bf16 alphafold3 '__VERDICT' dev/oracles/af3_native_parity.py --bf16
+    # The shipped Ampere default puts the sampler in bf16 as well (301cc16), which
+    # upstream never does. Its own cell so the trade stays visible.
+    gate Laf3.bf16_sampler alphafold3 '__VERDICT' \
+      dev/oracles/af3_native_parity.py --bf16-sampler
+  ;; esac
+fi
+# The SHIPPED paths, ours against ours: staged trunk vs fused, cached diffusion
+# conditioning vs inline, float16 vs fp32. Every vendor gate measures the inline
+# fp32 path; this says whether that verdict carries to what a fold really runs.
+if want Lship; then
+  echo "== Lship shipped entry points agree (staged, cached, float16)"
+  for m in $MODELS; do
+    LM_CASE=protein_6mrr gate Lship.paths "$m" '__VERDICT|corr' \
+      dev/oracles/shipped_path_check.py "$m"
+  done
+fi
 if want L4; then
   echo "== L4 confidence head"
   for m in $MODELS; do
@@ -542,5 +620,8 @@ echo "summary: $SUMMARY"
 echo "  (SKIP now means a real HOLE -- a module the model HAS with no adapter."
 echo "   N/A means the model does not have that module, or it is gated by"
 echo "   another cell; dev/oracles/gate_applies.py decides, from the registry.)"
-awk -F'\t' 'NR>1 {n[$3]++} END {for (k in n) printf "  %-8s %d\n", k, n[k]}' "$SUMMARY"
+# summary.tsv APPENDS, so a resumed or re-run cell has several rows; the last
+# one is the cell's state. Counting every row double-counted stale FAILs.
+awk -F'\t' 'NR>1 {last[$1 FS $2]=$3} END {for (c in last) n[last[c]]++
+  for (k in n) printf "  %-9s %d\n", k, n[k]}' "$SUMMARY"
 echo RUN_ALL_PARITY_DONE

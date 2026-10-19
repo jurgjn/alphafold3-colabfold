@@ -10,6 +10,27 @@ Two standing rules, both learned the hard way:
   those scripts are gone. CPU hides the flash-attention path.
 * **Serialise.** One fold at a time; two concurrent jobs OOM the card.
 
+## How a cell is graded (2026-10-18)
+
+`run_all_parity.sh` used to call a cell OK when its script exited 0, and every
+module gate exits 0 after printing its numbers -- so "OK" counted gates that RAN.
+Now `classify()` grades the numbers (`parity_audit.py --log`):
+
+| status | meaning |
+|---|---|
+| `PARITY` | every graded row passes: corr >= 0.99999 and max\|d\|/rms <= 1e-3 (CLOSE, 1e-2, also passes) |
+| `FAIL` | a row is LOOSE or BAD -- the headline names the worst one |
+| `FLOOR` | a row is below the cell's own measured resolution: not a pass, the cell cannot answer |
+| `UNGRADED` | the gate printed nothing gradeable -- it has not shown agreement |
+| `OK` | gates that grade themselves and exit non-zero on a bad value (L0, L7, Lg) |
+| `SCREEN` | L5/L6: RMSD against a crystal, i.e. accuracy, not parity |
+| `CRASH` | a non-zero exit that is not an explicit "nothing to compare". `KeyError` and `No module named` used to read SKIP, then N/A |
+| `SKIP` / `N/A` | an explicit no-adapter message; `gate_applies.py` decides which |
+
+A gate may print `__VERDICT PASS|FAIL` to grade itself. `REGRADE=1` reclassifies
+an existing run's logs without running anything; `provenance.txt` records every
+vendor tree's revision and every venv's jax/haiku/rdkit/torch per invocation.
+
 ## Cross-model
 
 | file | what it answers |
@@ -25,6 +46,8 @@ Two standing rules, both learned the hard way:
 | `modality_check.py` | L6: RNA / DNA / ligand / complex folds scored against a reference on the RIGHT atom, and `--write DIR` validates the mmCIF the model emits. |
 | `grad_check.py`, `af2_grad_check.py` | Is the model differentiable at its sequence input, on either engine? |
 | `af2_fold_check.py` | AF2 against ColabDesign on the same weights (`--compare`). |
+| `af3_native_parity.py` + `af3_upstream_runner.py` | Laf3: alphafold3 against UPSTREAM DeepMind AF3 (`~/af3_upstream`, run in `~/venv_af3`, its own process because the package names collide). Featurisation, then the real `Model.__call__` on both sides with injected samples -- trunk, distogram, one denoise step, every confidence output -- over 14 input modalities. Module taps name the first module that diverges. `--bf16` compares the same precision split; `--bf16-sampler` measures the shipped Ampere default. Refuses to run across RDKit versions. |
+| `shipped_path_check.py` | Lship: ours against ours, for every model -- staged trunk vs fused, cached diffusion conditioning vs inline, float16 vs fp32. Says whether a vendor gate's verdict on the inline fp32 path carries to the paths a fold really runs. |
 
 Three rules the gates above enforce on themselves, each of which produced a
 wrong number first:

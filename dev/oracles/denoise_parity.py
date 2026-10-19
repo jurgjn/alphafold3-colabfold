@@ -658,7 +658,19 @@ def native_boltz2(model, fb, feats, pos_noisy, noise, s_inputs_449, s, z):
   cond = DiffusionConditioning(atom_s=atom_s, atom_z=atom_z, token_z=token_z,
                                atom_feature_dim=feat_dim, **kw)
   score = DiffusionModule(atom_s=atom_s, dim_fourier=dim_fourier, **kw)
-  rp = RelativePositionEncoder(token_z=token_z)
+  # FROM THE CHECKPOINT, not the class defaults, as conditioning_parity.py and
+  # trunk_init_parity.py already do. Boltz-2 is built with fix_sym_check=True
+  # and cyclic_pos_enc=True; the defaults are False, and on a MONOMER that
+  # alone moves every pair's chain-offset bin (5 -> 2). This adapter crashed on
+  # a missing `mashumaro` until 2026-10-18, so it never learned that: its first
+  # real run read x_denoised corr 0.857, mean 5.8 A, against a port the dump
+  # replays (L3.denoise_inject*) put at 3e-4 A.
+  _hp = raw.get('hyper_parameters', {}) if isinstance(raw, dict) else {}
+  rp = RelativePositionEncoder(
+      token_z=token_z, fix_sym_check=bool(_hp.get('fix_sym_check', False)),
+      cyclic_pos_enc=bool(_hp.get('cyclic_pos_enc', False)))
+  print('  native RelativePositionEncoder(fix_sym_check=%s, cyclic_pos_enc=%s)'
+        % (rp.fix_sym_check, rp.cyclic_pos_enc))
   for mod, sub, label in ((cond, cs, 'DiffusionConditioning'),
                           (score, ms, 'score model'),
                           (rp, rs, 'RelativePositionEncoder')):
@@ -678,6 +690,8 @@ def native_boltz2(model, fb, feats, pos_noisy, noise, s_inputs_449, s, z):
          for k in ('asym_id', 'residue_index', 'entity_id', 'token_index',
                    'sym_id')}
   rpf['mol_type'] = torch.zeros(1, n_tok, dtype=torch.long)
+  # Read only when cyclic_pos_enc is on; 0 means "not cyclic".
+  rpf['cyclic_period'] = torch.zeros(1, n_tok)
   t = lambda x: torch.tensor(_np.asarray(x, _np.float32))
   sigma_data = 16.0
   sigma = float(noise)
@@ -766,6 +780,11 @@ def main(argv=None):
   ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
   ap.add_argument('--noise', type=float, default=16.0)
   ap.add_argument('--model_dir', default=None)
+  # REAL conditioning instead of synthetic: an npz with `s`, `z` and
+  # `s_inputs` (or a boltz dump's `score.in.s_trunk` / `dc.in.z_trunk` /
+  # `score.in.s_inputs`) for the same tokens. Synthetic std-0.5 inputs can sit
+  # where the step is ill-conditioned; a real trunk's output is where folds run.
+  ap.add_argument('--cond_npz', default=None)
   args = ap.parse_args(argv)
   sys.argv = sys.argv[:1]
 
@@ -804,6 +823,15 @@ def main(argv=None):
     print('  s_inputs is %d wide for this model (s_trunk is concatenated with '
           'it, not with a 449-channel target_feat), and both sides get the '
           'same array' % w)
+  if args.cond_npz:
+    cz = np.load(os.path.expanduser(args.cond_npz))
+    g = lambda *ks: next(np.asarray(cz[k], np.float32) for k in ks if k in cz.files)
+    s = g('s', 'score.in.s_trunk').reshape(n_tok, -1)
+    z = g('z', 'dc.in.z_trunk').reshape(n_tok, n_tok, -1)
+    if args.model == 'boltz2':
+      s449 = s447 = g('s_inputs', 'score.in.s_inputs').reshape(n_tok, -1)
+    print('  REAL conditioning from %s: s %s, z %s'
+          % (args.cond_npz, s.shape, z.shape))
   # Noisy coordinates, dense and flat, the same numbers either way.
   pos_dense = (rng.normal(size=(n_tok, max_atoms, 3)) * args.noise
                ).astype(np.float32) * feats['mask'][..., None]
@@ -817,6 +845,18 @@ def main(argv=None):
   print('  shapes: ours %s -> flat %s | native %s'
         % (np.asarray(x_got).shape, x_got_flat.shape, x_ref.shape))
   _cmp('x_denoised', x_got_flat, x_ref)
+  # FLOOR: our own response to a 1e-6 relative perturbation of the injected
+  # conditioning (s, z, s_inputs). The inputs here are SYNTHETIC, and on them
+  # the step can amplify a rounding difference more than any real fold would:
+  # boltz2 reads CLOSE at sigma 1.6, 160 and 4608 and 0.25 max|d|/rms in a band
+  # around sigma_data. A row at or below this floor is graded FLOOR by
+  # parity_audit -- the cell cannot answer there -- rather than BAD.
+  rng_f = np.random.default_rng(1234)
+  pert = lambda x: (np.asarray(x) * (1 + 1e-6 * rng_f.normal(
+      size=np.shape(x)))).astype(np.asarray(x).dtype)
+  x_p = ours(args.model, cfg, model_dir, fb, pos_dense, args.noise,
+             pert(s447), pert(s), pert(z))
+  _cmp('x_denoised_floor', np.asarray(x_p)[feats['mask']], x_got_flat)
   d = np.sqrt(((x_got_flat - x_ref) ** 2).sum(-1))
   print('  per-atom distance: mean %.4f A, max %.4f A, rms(native) %.2f'
         % (d.mean(), d.max(), np.sqrt((x_ref ** 2).sum(-1).mean())))

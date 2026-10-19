@@ -257,22 +257,18 @@ def main(argv=None):
   # FileNotFoundError rather than a result. Fall back to the hub cache, which is
   # where the other harnesses (esmfold2_msa_dump.py) already find it.
   if not os.path.exists(path) and args.model.startswith('esmfold2'):
-    import glob
-    from alphafold3.model import model_registry
-    hub = model_registry.ESMFOLD2_HUB_IDS[args.model]
     # Read the hub cache off disk rather than through huggingface_hub: that
-    # package is not in the GPU venv and must not be installed into it, and the
-    # cache layout is stable enough to glob. If it is not there either, say which
-    # model and which id, because "FileNotFoundError: .../ESMFold2" does not.
-    hits = sorted(glob.glob(os.path.expanduser(
-        '~/.cache/huggingface/hub/models--biohub--%s/snapshots/*' % hub)))
-    if not hits:
-      raise SystemExit(
-          'no weights for %s: neither ~/esmfold2_variants/%s nor a hub cache '
-          'entry for biohub/%s. Fetch it in ~/venv_esm (which has '
-          'huggingface_hub) e.g. via dev/oracles/esmfold2_msa_dump.py.'
-          % (args.model, hub, hub))
-    path = hits[-1]
+    # package is not in the GPU venv and must not be installed into it.
+    #
+    # THROUGH THE PIN. This took `sorted(snapshots)[-1]` -- the 2026-09-16
+    # failure exactly: biohub published a different model line (b1324ddf, nested
+    # keys) beside the one the converter reads (8fc3ff47), it sorts last, and
+    # L0 died on KeyError 'z_init_1.weight'. esmfold2_dumps.checkpoint_dir was
+    # pinned that day; this second copy of the lookup was not, so the fix did
+    # not reach it.
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'oracles'))
+    import esmfold2_dumps
+    path = esmfold2_dumps.checkpoint_dir(args.model)
     print('  (no local snapshot; using the hub cache at %s)' % path)
   loaded = (getattr(mod, loader_name)(path) if loader_name
             else _plain_load(path))

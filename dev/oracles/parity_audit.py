@@ -97,11 +97,11 @@ def grade(corr, ratio):
   return 'BAD'
 
 
-def audit(logdir, unparsed=None):
+def audit(logdir, unparsed=None, files=None):
   rows = []
   floors = collections.defaultdict(dict)
   superseded = {}
-  for f in sorted(os.listdir(logdir)):
+  for f in files or sorted(os.listdir(logdir)):
     if not f.endswith('.log'):
       continue
     stem = f[:-4]
@@ -119,7 +119,8 @@ def audit(logdir, unparsed=None):
                    if h else '') or heading
       m = _LINE.match(line.rstrip('\n'))
       if not m:
-        if unparsed is not None and 'corr' in line:
+        # Indented lines only: an unindented one is a heading or a note.
+        if unparsed is not None and 'corr' in line and line[:2] == '  ':
           unparsed.append((gate, model, line.strip()))
         continue
       corr = float(m.group('corr'))
@@ -170,7 +171,12 @@ def audit(logdir, unparsed=None):
   # ...then: a row at or below its own measured floor is unresolvable.
   for r in rows:
     f = floors.get((r[0], r[1]), {}).get(r[2])
-    if f is not None and r[4] is not None and r[4] <= f and r[5] != 'PARITY':
+    # Only a FAILING row is excused to FLOOR. A CLOSE row below its floor is
+    # still a pass, and demoting it to "cannot answer" hid seven passing cells
+    # (the OF3-family trunk at one block reads corr 1.000000, max|d|/rms
+    # 1.4e-03 against a floor of 5.7e-03).
+    if (f is not None and r[4] is not None and r[4] <= f
+        and r[5] in ('LOOSE', 'BAD')):
       r[5] = 'FLOOR'
   return [tuple(r) for r in rows]
 
@@ -215,5 +221,50 @@ def main(argv):
   return 1 if (t['BAD'] or unparsed) else 0
 
 
+# What a cell's WORST row makes of it. The driver used to call a cell OK when
+# its script exited 0, and every module gate exits 0 after printing its numbers,
+# so a corr of 0.97 read OK. Now the numbers decide.
+PASS_GRADES = ('PARITY', 'CLOSE', 'DIAG')
+
+
+def grade_log(path):
+  """-> (status, detail) for ONE gate log.
+
+  status is PARITY when every graded row passes, FAIL when any is LOOSE or BAD,
+  FLOOR when the worst row is below the cell's own resolution, and UNGRADED
+  when the log has no row this file can grade -- a gate that prints nothing
+  gradeable has not shown agreement, so it does not get to read OK.
+  A gate that grades itself (`__VERDICT PASS|FAIL`) is taken at its word.
+  """
+  for line in open(path, errors='ignore'):
+    if line.startswith('__VERDICT '):
+      v = line.split()[1:]
+      return ('PARITY' if v[0] == 'PASS' else 'FAIL', ' '.join(v[1:]))
+  unparsed = []
+  rows = audit(os.path.dirname(path) or '.', unparsed,
+               files=[os.path.basename(path)])
+  # A `DIAG` row is a localisation aid its gate prints beside the comparison
+  # (corr of the error against the signal, say), and an unindented line is a
+  # heading. Neither is a comparison, so neither leaves the cell ungraded.
+  unparsed = [u for u in unparsed if not u[2].startswith('DIAG')]
+  if not rows:
+    return 'UNGRADED', '%d unparsed corr line(s)' % len(unparsed)
+  bad = [r for r in rows if r[5] in ('LOOSE', 'BAD')]
+  if bad:
+    w = max(bad, key=lambda r: r[4] or 0)
+    return 'FAIL', '%s %s corr %.6f max|d|/rms %s' % (
+        w[5], w[2], w[3], '%.2e' % w[4] if w[4] is not None else 'n/a')
+  if any(r[5] == 'FLOOR' for r in rows):
+    return 'FLOOR', '%d row(s) below the cell\'s resolution' % sum(
+        r[5] == 'FLOOR' for r in rows)
+  if unparsed:
+    return 'UNGRADED', '%d graded, %d unparsed' % (len(rows), len(unparsed))
+  return 'PARITY', '%d rows' % len(rows)
+
+
 if __name__ == '__main__':
+  if len(sys.argv) == 3 and sys.argv[1] == '--log':
+    status, detail = grade_log(sys.argv[2])
+    print('%s\t%s' % (status, detail))
+    sys.exit(0)
   sys.exit(main(sys.argv))
