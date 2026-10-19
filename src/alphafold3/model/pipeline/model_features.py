@@ -997,6 +997,38 @@ _ATOMWORKS_VALENCE = {'H': 1, 'C': 4, 'N': 3, 'O': 2, 'F': 1, 'Cl': 1, 'Br': 1, 
 _BOND_ORDER = {'SING': 1, 'DOUB': 2, 'TRIP': 3, 'QUAD': 4}
 
 
+def _unresolved_leaving_atoms(batch, fold_input):
+  """chai: a ligand's leaving group at a declared bond stays a token it does not place.
+
+  The atom keeps its reference features (in the atom encoder, as chai's atom_ref_mask) but is not a predicted atom
+  (chai's atom_exists_mask false), so its predicted-atom mask goes to zero; the polymer side's leaving atoms are
+  dropped outright (ccd_leaving_atoms='polymer'). Measured on stock chai: NAG on an Asn keeps O1 as token 27,
+  atom_ref_mask true, atom_exists false.
+  """
+  from alphafold3.constants import chemical_components, mmcif_names
+  from alphafold3.model.pipeline import structure_cleaning
+  pairs = getattr(fold_input, 'bonded_atom_pairs', None) or ()
+  layout = batch.get('token_atoms_layout')
+  if not pairs or layout is None or 'pred_dense_atom_mask' not in batch:
+    return batch
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  ligand = {str(c.id) for c in fold_input.chains if type(c).__name__ == 'Ligand'}
+  res_name_of = {}
+  for c, r, n in zip(layout.chain_id.ravel(), layout.res_id.ravel(), layout.res_name.ravel()):
+    if c:
+      res_name_of.setdefault((str(c), int(r)), str(n))
+  ccd = chemical_components.Ccd(user_ccd=getattr(fold_input, 'user_ccd', None))
+  drop = structure_cleaning.declared_bond_leaving_atoms(pairs, res_name_of, ccd)
+  mask = np.array(batch['pred_dense_atom_mask'], copy=True)
+  for (chain, res), names in drop.items():
+    if chain not in ligand:
+      continue
+    hit = (layout.chain_id == chain) & (layout.res_id == res) & np.isin(layout.atom_name, list(names))
+    mask[hit] = 0
+  batch['pred_dense_atom_mask'] = mask.astype(np.asarray(batch['pred_dense_atom_mask']).dtype)
+  return batch
+
+
 def _declared_bond_charge(batch, fold_input):
   """RF3's formal charge on an atom a declared bond forms on: bond degree minus default valence.
 
@@ -1658,6 +1690,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _modified_restype_protein_letter(batch, fold_input)
   if knobs.get('modified_restype') == 'protein_unknown' and fold_input is not None:
     _modified_restype_protein_unknown(batch, fold_input)
+  if knobs.get('unresolved_leaving_atoms') and fold_input is not None:
+    _unresolved_leaving_atoms(batch, fold_input)
   if knobs.get('declared_bond_charge') and fold_input is not None:
     _declared_bond_charge(batch, fold_input)
   if knobs.get('of3_msa_rows'):

@@ -201,6 +201,12 @@ def _tower_rows(model, j, hidden):
   return rows
 
 
+# run_alphafold.py's --buckets default: OURS_BUCKET=shipped pads ours exactly as
+# a real run does (the first bucket at or above the token count)
+_SHIPPED_BUCKETS = [32, 64, 128, 256, 384, 512, 768, 1024, 1280, 1536, 2048, 2560,
+                    3072, 3584, 4096, 4608, 5120]
+
+
 def featurise_ours(model, j, recycles, bf16):
   import fold_check
   from alphafold3.common import folding_input
@@ -213,7 +219,8 @@ def featurise_ours(model, j, recycles, bf16):
       bonded_atom_pairs=fi.bonded_atom_pairs, seed=1,
       # OURS_BUCKET=256: pad ours to the vendor's token bucket (chai always runs
       # at one), a probe for padding leaking into the vendor's outputs
-      **({'buckets': [int(os.environ['OURS_BUCKET'])]} if os.environ.get('OURS_BUCKET') else {}))
+      **({'buckets': _SHIPPED_BUCKETS if os.environ['OURS_BUCKET'] == 'shipped'
+          else [int(os.environ['OURS_BUCKET'])]} if os.environ.get('OURS_BUCKET') else {}))
   cfg.global_config.bfloat16 = bf16
   cfg.num_recycles = recycles
   cfg.return_embeddings = True
@@ -226,6 +233,9 @@ def align(raw, lay):
   ours_names = _names(np.asarray(raw['ref_atom_name_chars']))
   ours_mask = np.asarray(raw['ref_mask']).astype(bool)
   n_tok_o = ours_mask.shape[0]
+  if 'seq_mask' in raw:
+    # ours may be padded to a bucket (OURS_BUCKET): count the real tokens
+    n_tok_o = int(np.asarray(raw['seq_mask']).astype(bool).sum())
   tp = lay['token_pad']
   rows = []
   if int(tp.sum()) != n_tok_o:

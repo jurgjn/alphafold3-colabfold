@@ -819,8 +819,12 @@ _FEATURISE = {
                   std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS'),
                   # chai builds every residue from its conformer cache: CCD heavy atoms minus OXT (5CM keeps OP3, a
                   # terminal MSE has no OXT, an unbonded sugar keeps O1); a declared bond drops its CCD leaving atoms
+                  # on the polymer side, while a LIGAND keeps them as tokens it does not place: the NAG on an Asn
+                  # has its O1 token with reference features (atom_ref_mask) and atom_exists false (stock-chai
+                  # covalent case: 33 tokens to our 32). keep_ligand_leaving_atoms + unresolved_leaving_atoms.
                   **({} if os.environ.get('AF3_NO_CHAI_LEAVING')
-                     else dict(ccd_leaving_atoms=True, drop_inner_terminal_atoms='chai'))),
+                     else dict(ccd_leaving_atoms='polymer', drop_inner_terminal_atoms='chai',
+                               keep_ligand_leaving_atoms=True, unresolved_leaving_atoms=True))),
 }
 
 # Conformer centering rides in as a featurise KNOB as well as a
