@@ -61,12 +61,13 @@ def _protenix_json(j, msa_root):
         d['modifications'] = mods
       seqs.append({'rnaSequence' if kind == 'rna' else 'dnaSequence': d})
     elif kind == 'ligand':
+      # An AF3 input has no `ion` type: Mg is a CCD ligand, which is protenix's
+      # `ligand: CCD_MG`. Its separate `ion` entity is NOT the same input -- its
+      # placeholder MSA reads class 0 in every row and the profile, where a CCD
+      # ligand reads UNK (measured 2026-10-19), so translating MG to `ion` made
+      # the comparison test a convention the AF3 input never asked for.
       if 'smiles' in e:
         seqs.append({'ligand': {'ligand': e['smiles'], 'count': len(ids)}})
-      elif len(e['ccdCodes']) == 1 and len(e['ccdCodes'][0]) <= 2 and \
-          e['ccdCodes'][0].isalpha() and e['ccdCodes'][0].upper() in (
-              'MG', 'ZN', 'CA', 'NA', 'K', 'CL', 'MN', 'FE', 'CU', 'CO', 'NI'):
-        seqs.append({'ion': {'ion': e['ccdCodes'][0], 'count': len(ids)}})
       else:
         seqs.append({'ligand': {'ligand': '_'.join(
             ['CCD'] + list(e['ccdCodes'])), 'count': len(ids)}})
