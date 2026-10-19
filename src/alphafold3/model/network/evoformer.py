@@ -660,6 +660,7 @@ class Evoformer(hk.Module):
 
       lm = _stack(self.config.lm_encoder.num_layer, lm_fn,
                   self.config.pairformer.block_remat)(lm)
+    _esm_tap('lm_refined', lm)
     return pair_activations + lm
 
   @hk.transparent
@@ -969,6 +970,7 @@ class Evoformer(hk.Module):
               is_ligand=batch.token_features.is_ligand,
               asym_id=batch.token_features.asym_id,
           )
+          _esm_tap('z_after_msa_encoder', pair_activations)
         pair_activations = self._embed_lm_pair(
             batch=batch, pair_activations=pair_activations,
             pair_mask=pair_mask, key=key, use_dropout=use_dropout)

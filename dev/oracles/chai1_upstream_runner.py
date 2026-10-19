@@ -162,6 +162,11 @@ def _run(case_dir, recycles, on_inputs, inject=None):
     def __call__(self, contexts):
       batch = super().__call__(contexts)
       got['inputs'] = batch['inputs']
+      if os.environ.get('CHAI_DUMP_FEATURES'):
+        # chai's raw (pre-embedding) feature tensors, for a field-by-field diff
+        np.savez(os.path.join(case_dir, 'chai_features.npz'),
+                 **{k: _np(v)[0] for k, v in batch['features'].items()
+                    if hasattr(v, 'shape') and v.numel() < 5e7})
       on_inputs(batch['inputs'])
       return batch
   C.Collate = Collate
@@ -177,11 +182,14 @@ def _run(case_dir, recycles, on_inputs, inject=None):
         kw = dict(kw, atom_noised_coords=torch.tensor(inject['noisy'], device=dev)[None, None],
                   noise_sigma=torch.full((1, 1), inject['sigma'], device=dev))
         out = self.inner.forward(**kw)
-        got['denoised'] = _np(out)[0, 0]
+        got['denoised'] = _np(out).reshape(-1, 3)   # (1, [ds,] atoms, 3) -> (atoms, 3)
         return out
       if self.name == 'confidence_head.pt':
         kw = dict(kw, atom_coords=torch.tensor(inject['positions'], device=kw['atom_coords'].device)[None])
       out = self.inner.forward(**kw)
+      if self.name == 'feature_embedding.pt':
+        got['emb.TOKEN'] = _np(out['TOKEN'])[0]
+        got['emb.ATOM'] = _np(out['ATOM'])[0]
       if self.name == 'token_embedder.pt':
         got['s_inputs'] = _np(out[0])[0]
       elif self.name == 'trunk.pt':
@@ -279,7 +287,8 @@ def forward(model, out_dir, in_npz, out_npz):
            s_inputs=got['s_inputs'][:n], s=got['s'][:n], z=got['z'][:n, :n],
            pae=expect(got['pae_logits'][:n, :n], centres(0, 32, 64)),
            pde=expect(got['pde_logits'][:n, :n], centres(0, 32, 64)),
-           plddt=pl_atoms[slot], denoised=got['denoised'][slot])
+           plddt=pl_atoms[slot], denoised=got['denoised'][slot],
+           **{'tap.emb_token': got['emb.TOKEN'][:n], 'tap.emb_atom': got['emb.ATOM'][slot]})
 
 
 if __name__ == '__main__':

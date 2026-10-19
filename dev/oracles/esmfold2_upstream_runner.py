@@ -131,6 +131,63 @@ def _fp32_autocast():
   torch.amp.autocast, torch.autocast = off(orig_amp), off(orig_top)
 
 
+def _fp32_atom_attention():
+  """esm's atom attention is bf16 by construction, not by autocast:
+  build_3d_rope returns cos/sin `.to(torch.bfloat16)` and
+  SWA3DRoPEAttention.forward casts fp32 q/k/v to bf16 before attending (~1e-3
+  relative on every atom). Ours is fp32 there. For the logic comparison the
+  vendor runs its own code minus those two casts -- build_3d_rope is wrapped to
+  recompute in fp32, and the attention forward is esm's non-flash path (the one
+  stock takes without flash-attn) with the q/k/v cast left out.
+  ESMFOLD2_VENDOR_BF16_ATTN=1 keeps stock's casts."""
+  import os
+  if os.environ.get('ESMFOLD2_VENDOR_BF16_ATTN'):
+    return
+  import torch
+  import torch.nn.functional as F
+  from esm.models.esmfold2 import layers as L
+  orig_rope = L.build_3d_rope
+
+  def rope_fp32(ref_pos, ref_space_uid, head_dim, n_spatial_per_axis=4, n_uid_pairs=2,
+                spatial_base_freq=10000.0, uid_base_freq=10.0):
+    B, N = ref_pos.shape[:2]
+    half_dim = head_dim // 2
+    dev = ref_pos.device
+    sp = 1.0 / (spatial_base_freq ** (torch.arange(0, n_spatial_per_axis, dtype=torch.float32, device=dev)
+                                      / n_spatial_per_axis))
+    ui = 1.0 / (uid_base_freq ** (torch.arange(0, n_uid_pairs, dtype=torch.float32, device=dev) / n_uid_pairs))
+    freqs = torch.cat([torch.einsum('bna,k->bnak', ref_pos.float(), sp).reshape(B, N, 3 * n_spatial_per_axis),
+                       torch.einsum('bn,k->bnk', ref_space_uid.float(), ui)], dim=-1)
+    if freqs.shape[-1] < half_dim:
+      freqs = torch.cat([freqs, torch.zeros(B, N, half_dim - freqs.shape[-1], device=dev)], dim=-1)
+    return freqs.cos(), freqs.sin()
+  L.build_3d_rope = rope_fp32
+
+  def forward(self, x, attention_params):
+    B, N = x.shape[:2]
+    cos, sin = attention_params[0], attention_params[1]
+    qkv = self.Wqkv(x).view(B, N, 3, self.n_heads, self.head_dim).permute(2, 0, 1, 3, 4)
+    q, k, v = qkv.unbind(0)
+    q, k = L.qk_norm(q), L.qk_norm(k)
+    q, k = L.apply_rotary_emb_3d(q, cos, sin), L.apply_rotary_emb_3d(k, cos, sin)
+    if len(attention_params) > 2:
+      valid = torch.zeros(B * N, dtype=torch.bool, device=q.device)
+      valid[attention_params[2]] = True
+      valid = valid.view(B, N)
+    else:
+      valid = torch.ones(B, N, dtype=torch.bool, device=q.device)
+    rank = torch.cumsum(valid, dim=1) - 1
+    allowed = ((rank.unsqueeze(2) - rank.unsqueeze(1)).abs() <= self.half_window) \
+        & valid.unsqueeze(1) & valid.unsqueeze(2)
+    allowed |= torch.eye(N, dtype=torch.bool, device=q.device)
+    out = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+                                         attn_mask=allowed.unsqueeze(1), scale=self.scale).transpose(1, 2)
+    out = (out * valid.unsqueeze(-1).unsqueeze(-1)).reshape(B, N, -1)
+    out = out * torch.sigmoid(self.gate_proj(x))
+    return self.out_proj(out)
+  L.SWA3DRoPEAttention.forward = forward
+
+
 def _model(model_name):
   import torch
   from esm.models.esmfold2 import EsmFold2Model
@@ -171,7 +228,15 @@ def forward(model, out_dir, in_npz, out_npz):
     raise RuntimeError('esm re-drew a different reference conformer (max |d| %.3g)'
                        % np.abs(now - lay['feat.ref_pos']).max())
   _fp32_autocast()
+  _fp32_atom_attention()
   m = _model(model)
+  # The checkpoint's own LM dropout (lm_encoder.lm_dropout 0.25, per_loop) is
+  # applied by _run_one_loop with training=True in ANY forward, not only under
+  # fold(): a fresh random mask every loop. Ours turns it off for the harness,
+  # so the vendor does too.
+  lm_cfg = getattr(m.config, 'lm_encoder', None)
+  if lm_cfg is not None:
+    lm_cfg.lm_dropout = 0.0
   got = {}
   n_atoms = feats['ref_pos'].shape[1]
 

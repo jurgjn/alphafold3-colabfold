@@ -289,6 +289,15 @@ def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma):
     return Injected(cfg)(b)
   params = afp.get_model_haiku_params(model_dir=model_dir)
   out = jax.jit(fwd.apply)(params, jax.random.PRNGKey(0), batch)
+  if os.environ.get('AF3_ESM_TRUNK_TAPS'):
+    # ESMFold2's seams (evoformer._esm_tap: z_init, z_inject, z_parcae, ...)
+    # record only in an EAGER run -- under jit they are tracers. Slow; debug only.
+    from alphafold3.model.network import evoformer as _evo
+    _evo.ESM_TRUNK_TAPS.clear()
+    with jax.disable_jit():
+      hk.transform(lambda b: Injected(cfg)(b)).apply(params, jax.random.PRNGKey(0), batch)
+    out = dict(out, **{'esmtap/%s/%d' % (k, i): np.asarray(v)
+                       for k, vs in _evo.ESM_TRUNK_TAPS.items() for i, v in enumerate(vs)})
   if os.environ.get('B2_KEEP'):
     # ONE trunk pass through the staged entry point, tapped: the fused path
     # runs the trunk inside a fori_loop, whose values cannot leave the loop.
