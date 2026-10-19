@@ -1189,6 +1189,10 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _boltz_smiles_atom_names(batch, fold_input)
   if knobs.get('modified_restype') == 'protein_letter' and fold_input is not None:
     _modified_restype_protein_letter(batch, fold_input)
+  if knobs.get('modified_restype') == 'protein_unknown' and fold_input is not None:
+    _modified_restype_protein_unknown(batch, fold_input)
+  if knobs.get('of3_msa_rows'):
+    _of3_msa_rows(batch)
   if knobs.get('native_nonprotein_msa'):
     _native_nonprotein_msa(batch)
   if knobs.get('complex_msa_profile'):
@@ -1220,6 +1224,72 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
       # the structural-token layout has its own atom windows, and it is the one
       # the diffusion runs on -- both need the convention.
       _padded_key_window(batch, prefix='struct/')
+  return batch
+
+
+def _modified_restype_protein_unknown(batch, fold_input):
+  """OpenFold3 types EVERY non-standard residue -- SEP, PSU, 5CM alike -- as the
+  protein unknown (featurization/structure.py:85, residues.py:320), where we keep
+  the parent or a nucleic unknown. Its MSA and profile already agree with ours,
+  so only the restype moves. Stock-OF3 comparison: ptm / rna_mod / dna_mod."""
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  resi = np.asarray(batch['residue_index']).reshape(-1)
+  aatype = np.array(batch['aatype'])
+  for index, chain in enumerate(fold_input.chains):
+    mods = (getattr(chain, 'ptms', None)
+            or getattr(chain, 'modifications', None) or ())
+    for _code, residue in mods:
+      aatype[(asym == index + 1) & (resi == int(residue))] = 20   # protein UNK
+  batch['aatype'] = aatype
+  return batch
+
+
+def _of3_msa_rows(batch):
+  """OpenFold3's MSA rows on chains it does not align, and its row count.
+
+  Only protein and RNA chains get alignments there. A DNA or ligand token reads
+  the GAP in every row and an all-zero profile, where we wrote the query base or a
+  one-hot gap profile. The block always carries the query plus each chain's dummy
+  row -- two rows for a heteromer with no paired MSA, where AF3's unpaired dedupe
+  (features.py) leaves one -- and with no protein or RNA chain at all it is ONE
+  all-gap row. Measured against stock OpenFold3 0.4.5 / v0.5.0
+  (vendor_native_parity: dna, protein_dna, ligand_ccd, ion, heterodimer).
+  """
+  if 'msa' not in batch:
+    return batch
+  from alphafold3.constants import residue_names
+  gap = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(
+      residue_names.GAP)
+  msa = np.array(batch['msa'])
+  mask = np.array(batch['msa_mask'])
+  real = np.asarray(batch['seq_mask']).astype(bool).reshape(-1)
+  aligned = ((np.asarray(batch['is_protein']) | np.asarray(batch['is_rna']))
+             .astype(bool).reshape(-1) & real)
+  unaligned = real & ~aligned
+  live = np.flatnonzero(mask.any(-1))
+  msa[np.ix_(live, np.flatnonzero(unaligned))] = gap
+  keys = [k for k in ('msa', 'msa_mask', 'deletion_matrix') if k in batch]
+  arrays = {'msa': msa, 'msa_mask': mask}
+  arrays.update({k: np.asarray(batch[k]) for k in keys if k not in arrays})
+  if not aligned.any():
+    keep = live[:1]                       # one all-gap row
+    arrays = {k: v[keep] for k, v in arrays.items()}
+  elif live.size == 1:                    # the dummy row AF3 deduped away
+    arrays = {k: np.concatenate([v[live], v[live]], axis=0)
+              for k, v in arrays.items()}
+  for k, v in arrays.items():
+    batch[k] = v
+  if 'num_alignments' in batch:
+    batch['num_alignments'] = np.asarray(
+        int(np.asarray(batch['msa_mask']).any(-1).sum()),
+        dtype=np.asarray(batch['num_alignments']).dtype)
+  # The profile is NOT rebuilt from these rows: OF3 profiles its own
+  # deduplicated main MSA (of3_main_msa), and a duplicated query row leaves the
+  # frequencies unchanged. Only the unaligned tokens' profile goes to zero.
+  if 'profile' in batch:
+    prof = np.array(batch['profile'])
+    prof[unaligned] = 0.0
+    batch['profile'] = prof
   return batch
 
 

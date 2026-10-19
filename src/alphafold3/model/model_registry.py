@@ -819,6 +819,12 @@ for _m in ('openfold3', 'openbind0'):
   # of3 pads to 4 empty templates that are all GAP (create_template_restype), where AF3's empty slots read restype 0
   if not os.environ.get('AF3_NO_OF3_TEMPLATE_GAP'):
     _FEATURISE.setdefault(_m, {}).update(empty_template_gap=True, empty_template_gap_slots='atoms')
+  # of3's MSA on DNA/ligand tokens (gap rows, zero profile) and its row count
+  # (model_features._of3_msa_rows), and every modified residue a protein UNK
+  # (_modified_restype_protein_unknown); stock-OF3 comparison, 2026-10-19
+  if not os.environ.get('AF3_NO_OF3_MSA_ROWS'):
+    _FEATURISE.setdefault(_m, {}).update(
+        of3_msa_rows=True, modified_restype='protein_unknown')
 
 
 # Where a converted model's weights are published. The file name is what
