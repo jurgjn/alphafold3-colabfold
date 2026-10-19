@@ -119,22 +119,34 @@ def _features(j, seed=1, model='esmfold2'):
   pairs = j.get('bondedAtomPairs') or ()
   if not pairs:
     return feats, chains
-  names = _atom_names(feats)
-  tok = feats['atom_to_token'][0].numpy()
-  real = feats['atom_attention_mask'][0].numpy().astype(bool)
-  asym = feats['asym_id'][0].numpy()
-  resi = feats['residue_index'][0].numpy()
-  chain_asym = {c.chain_id: c.asym_id for c in chains}
-  bonds = []
-  for a, b in pairs:
-    idx = []
-    for chain, res, atom in (a, b):
-      # esm numbers a residue's atoms in order among the residue's valid atoms
-      # esm numbers residues from 0 (enumerate over the sequence); AF3's are 1-based
-      sel = [i for i in np.flatnonzero(real) if asym[tok[i]] == chain_asym[chain] and resi[tok[i]] == res - 1]
-      idx.append([names[i] for i in sel].index(atom))
-    bonds.append(CovalentBond(chain_id1=a[0], res_idx1=a[1] - 1, atom_idx1=idx[0],
+  def bonds_from(feats, chains):
+    # esm resolves a bond's atom_idx against the residue's FINAL atom list --
+    # after the bond's own leaving atoms are gone -- so the indices are read off
+    # a featurisation that already carries the bonds (fixed point below): read off
+    # the unbonded one, NAG(b1-4)NAG's O4 came out one atom late (O1 still there)
+    names = _atom_names(feats)
+    tok = feats['atom_to_token'][0].numpy()
+    real = feats['atom_attention_mask'][0].numpy().astype(bool)
+    asym = feats['asym_id'][0].numpy()
+    resi = feats['residue_index'][0].numpy()
+    chain_asym = {c.chain_id: c.asym_id for c in chains}
+    out = []
+    for a, b in pairs:
+      idx = []
+      for chain, res, atom in (a, b):
+        # esm numbers residues from 0 (enumerate over the sequence); AF3's are 1-based
+        sel = [i for i in np.flatnonzero(real) if asym[tok[i]] == chain_asym[chain] and resi[tok[i]] == res - 1]
+        idx.append([names[i] for i in sel].index(atom))
+      out.append(CovalentBond(chain_id1=a[0], res_idx1=a[1] - 1, atom_idx1=idx[0],
                               chain_id2=b[0], res_idx2=b[1] - 1, atom_idx2=idx[1]))
+    return out
+  bonds = bonds_from(feats, chains)
+  for _ in range(4):
+    feats, chains = prepare(_structure_input(j, bonds, model=model))
+    again = bonds_from(feats, chains)
+    if again == bonds:
+      return feats, chains
+    bonds = again
   return prepare(_structure_input(j, bonds, model=model))
 
 
