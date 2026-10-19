@@ -45,7 +45,9 @@ def _structure_input(j, bonds=None):
     (kind, e), = entry.items()
     ids = e['id'] if isinstance(e['id'], list) else [e['id']]
     cid = ids if len(ids) > 1 else ids[0]
-    mods = [Modification(position=m.get('ptmPosition', m.get('basePosition')),
+    # AF3's ptmPosition/basePosition is 1-based, esm's Modification.position
+    # zero-indexed (esm.utils.structure.input_builder)
+    mods = [Modification(position=m.get('ptmPosition', m.get('basePosition')) - 1,
                          ccd=m.get('ptmType', m.get('modificationType')))
             for m in e.get('modifications', [])] or None
     msa = None
