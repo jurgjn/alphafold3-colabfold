@@ -1053,6 +1053,18 @@ def prepare_input(fold_input, spec):
   return dataclasses.replace(fold_input, chains=chains)
 
 
+def input_has_msa(fold_input):
+  """Whether any chain of the input carries an alignment -- what `has_msa` means.
+
+  One definition for every caller of `apply`: the CLI computed it inline and
+  dev/oracles/fold_check.py passed a constant False, so a gate on an input WITH
+  an MSA featurised it as if it had none.
+  """
+  return any(getattr(chain, 'unpaired_msa', None)
+             or getattr(chain, 'paired_msa', None)
+             for chain in fold_input.chains)
+
+
 def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
           has_msa=True, fold_input=None, cyclic=None, lm_pair=None, seed=None, lm_hidden=None):
   """Apply `spec`'s featurisation conventions to a featurised batch, in place.

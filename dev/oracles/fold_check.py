@@ -116,9 +116,13 @@ def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
     z = np.load(os.path.expanduser(lm_npz))
     lm_pair = z['lm_pair'] if hasattr(z, 'files') else z
   if spec.featurise:
-    batch = model_features.apply(batch, spec, refeaturise=featurise,
-                                 model_dir=model_dir, esm=esm, has_msa=False,
-                                 fold_input=fold_input, lm_pair=lm_pair)
+    # has_msa and seed as the CLI passes them: a constant False here
+    # featurised every MSA input as MSA-less, and without the seed protenix's
+    # RNG replay never ran.
+    batch = model_features.apply(
+        batch, spec, refeaturise=featurise, model_dir=model_dir, esm=esm,
+        has_msa=model_features.input_has_msa(fold_input),
+        fold_input=fold_input, lm_pair=lm_pair, seed=seed)
   cfg = af3_model.Model.Config()
   # XLA by default because a gate has to be comparable across cards, and it is
   # the one backend every card has. FLASH=cudnn to gate the fused kernel: it is

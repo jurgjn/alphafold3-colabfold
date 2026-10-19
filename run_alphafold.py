@@ -1190,10 +1190,7 @@ def predict_structure(
   if featurise_off:
     print(f'Featurisation conventions switched OFF: {", ".join(featurise_off)}')
   if spec.featurise or cyclic:
-    has_msa = any(
-        getattr(chain, 'unpaired_msa', None) or getattr(chain, 'paired_msa', None)
-        for chain in fold_input.chains
-    )
+    has_msa = model_features.input_has_msa(fold_input)
     # Once, not once per seed: the examples below differ only by rng seed, and
     # `auto` runs a multi-billion-parameter tower.
     esm_embeddings, lm_pair_array = _resolve_esm(
@@ -1208,8 +1205,15 @@ def predict_structure(
             has_msa=has_msa,
             fold_input=fold_input,
             cyclic=cyclic,
+            # featurise_input returns one example per rng seed, in order. The
+            # seed has to come along: protenix's replay of its own inference
+            # randomness (MC dropout, per-pass MSA subsets; 2136ec2) runs only
+            # when it is given one, and no caller passed it -- the replay was
+            # dead code in every shipped fold.
+            seed=seed,
         )
-        for example in featurised_examples
+        for example, seed in zip(featurised_examples, fold_input.rng_seeds,
+                                 strict=True)
     ]
   print(
       f'Featurising data with {len(fold_input.rng_seeds)} seed(s) took'
