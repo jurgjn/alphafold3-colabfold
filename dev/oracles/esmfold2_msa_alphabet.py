@@ -34,6 +34,9 @@ from converters import esmfold2                                 # noqa: E402
 # PROTEIN_UNK_RES_TYPE and MSA_GAP_TOKEN_ID.)
 ESM_AA_FIRST, ESM_UNK, ESM_GAP = 2, 22, 1
 N_ESM = 33
+# and the nucleotides, named one by one (esm/models/esmfold2/constants.py RNA_RESIDUE_TO_RES_TYPE, RNA_UNK_RES_TYPE,
+# DNA_RESIDUE_TO_RES_TYPE, DNA_UNK_RES_TYPE): RNA's unknown sits between U and the DNA, where AF3 has it last
+ESM_NUCLEIC = {'A': 23, 'G': 24, 'C': 25, 'U': 26, 'N': 27, 'DA': 28, 'DG': 29, 'DC': 30, 'DT': 31, 'DN': 32}
 
 
 def esm_to_af3():
@@ -43,10 +46,9 @@ def esm_to_af3():
   m = {ESM_AA_FIRST + i: order[a] for i, a in enumerate(aa)}
   m[ESM_UNK] = order[residue_names.UNK]
   m[ESM_GAP] = order['-']
-  # Everything above UNK is nucleic, in the same order in both models, so it
-  # follows AF3's gap slot rather than being named one by one.
-  for k in range(ESM_UNK + 1, N_ESM):
-    m[k] = order['-'] + (k - ESM_UNK)
+  # Assuming the nucleotides follow in the same order in both models put every DNA class one slot low.
+  for name, k in ESM_NUCLEIC.items():
+    m[k] = order[name]
   return m
 
 
@@ -106,14 +108,13 @@ def main():
   print('  the 31-class s_inputs blocks take the same permutation '
         '(DN, ESM class %d, has no AF3 slot and is dropped)' % (N_ESM - 1))
 
-  # diffusion_head widens AF3's 31 columns back to ESM's 33 before the
-  # conditioner's LayerNorm. Compare it against the converter's table by
-  # WIDENING a marker vector and checking each ESM slot holds the AF3 column
-  # that `esm_class_of_af3` says feeds it.
+  # diffusion_head and the confidence head widen AF3's 31 columns back to ESM's 33 before a LayerNorm, both through
+  # featurization.widen_to_esm_classes. Compare it against the converter's table by WIDENING a marker vector and
+  # checking each ESM slot holds the AF3 column that `esm_class_of_af3` says feeds it.
   import jax.numpy as jnp
-  from alphafold3.model.network import diffusion_head              # noqa: F401
+  from alphafold3.model.network import featurization
   block = jnp.arange(1, n31 + 1, dtype=jnp.float32)
-  wide = np.asarray(_graph_widen(block, n31))
+  wide = np.asarray(featurization.widen_to_esm_classes(block))
   bad = []
   for esm_c in range(N_ESM):
     af3_c = [c for c in range(n31) if perm[c] == esm_c]
@@ -126,31 +127,8 @@ def main():
     print("MISMATCH between the graph's widening and the converter:")
     print('\n'.join(bad))
     return 1
-  print("  diffusion_head's widening to %d agrees with the converter" % N_ESM)
+  print("  the graph's widening to %d agrees with the converter" % N_ESM)
   return 0
-
-
-def _graph_widen(block, n):
-  """diffusion_head's PAIR_ONLY_TRUNK widening, on one block.
-
-  A copy rather than a call: the widening sits inside `_conditioning`, which
-  needs a whole batch and a parameter scope to reach. Copied code is exactly
-  what rots, so the numbers here are the CONVERTER's, and this only checks the
-  SHAPE of the rearrangement -- if the graph's own line changes, the assertion
-  below is what fails.
-  """
-  import inspect
-  import jax.numpy as jnp
-  from alphafold3.model.network import diffusion_head
-  src = inspect.getsource(diffusion_head.DiffusionHead._conditioning)
-  want = '[zero, block[..., 21:22], block[..., :21], block[..., 22:n], zero]'
-  if want not in src:
-    raise SystemExit('diffusion_head no longer widens with %s -- update this '
-                     'gate to match, do not delete it' % want)
-  zero = jnp.zeros_like(block[..., :1])
-  return jnp.concatenate(
-      [zero, block[..., 21:22], block[..., :21], block[..., 22:n], zero],
-      axis=-1)
 
 
 if __name__ == '__main__':

@@ -411,7 +411,7 @@ def _element_symbols(periodic_table):
   return {v: k.upper() for k, v in periodic_table.ATOMIC_NUMBER.items()}
 
 
-def apply_unknown_restype_on_atomized(batch):
+def apply_unknown_restype_on_atomized(batch, nucleic=False, nucleic_unknown=None):
   '''an atomised polymer token is UNKNOWN to RF3, not its parent residue type.
 
   AlphaFold 3 atomises a modified residue but keeps the PARENT restype on every one
@@ -434,7 +434,15 @@ def apply_unknown_restype_on_atomized(batch):
   input can settle -- and mapping a modified base to its PARENT is what made three
   ports fold tRNA. Leaving nucleics alone keeps that.
 
-  RF3-only: every other ported family trains on AlphaFold 3's parent-restype
+  nucleic takes the atomised tokens of RNA and DNA chains too: ESMFold2's tokeniser gives every token of a modified
+  nucleotide the PROTEIN unknown (esm prepare_input.tokenize_nucleotide, PROTEIN_UNK_RES_TYPE), and with the parent
+  base our methylated DNA folded 18 A from native. RF3 does the same: native atomworks puts restype and profile 20 on
+  all 160 atomised 5CM tokens of methylated_dna, and the parent base read pLDDT 84.2 against native's 78.5.
+
+  nucleic_unknown gives a modified nucleotide's atomised tokens that class instead: chai-1's DX/RX, both our N (30), on
+  which the forward tells DNA from RNA.
+
+  RF3 and ESMFold2 only: every other ported family trains on AlphaFold 3's parent-restype
   convention. Boltz-2 wants the unknown restype too, but on a residue it keeps as ONE
   token, and it needs the `is_modified` flag alongside -- see _mark_modified_residues.
   '''
@@ -447,14 +455,18 @@ def apply_unknown_restype_on_atomized(batch):
 
   standard = _standard_residues()
   mask = np.asarray(batch['ref_mask']).astype(bool)
-  is_protein = np.asarray(batch['is_protein']).astype(bool).reshape(-1)
+  polymer = np.asarray(batch['is_protein']).astype(bool).reshape(-1)
+  is_nucleic = np.asarray(batch['is_rna']).astype(bool).reshape(-1) | np.asarray(batch['is_dna']).astype(bool).reshape(-1)
+  if nucleic or nucleic_unknown is not None:
+    polymer = polymer | np.asarray(batch['is_rna']).astype(bool).reshape(-1) | np.asarray(
+        batch['is_dna']).astype(bool).reshape(-1)
   unknown = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(
       residue_names.UNK)
 
   num_token, num_dense = mask.shape[-2], mask.shape[-1]
   atomized = np.zeros((num_token,), bool)
   for t in range(num_token):
-    if not is_protein[t]:
+    if not polymer[t]:
       continue
     for s in range(num_dense):
       if mask[t, s]:
@@ -463,18 +475,21 @@ def apply_unknown_restype_on_atomized(batch):
   if not atomized.any():
     return batch
 
+  cls = np.full((num_token,), unknown)
+  if nucleic_unknown is not None:
+    cls[is_nucleic] = nucleic_unknown
   aatype = np.array(batch['aatype'])
-  aatype[atomized] = unknown
+  aatype[atomized] = cls[atomized]
   batch['aatype'] = aatype
 
   profile = np.array(batch['profile'], copy=True)
   profile[atomized] = 0.0
-  profile[atomized, unknown] = 1.0
+  profile[atomized, cls[atomized]] = 1.0
   batch['profile'] = profile
 
   msa = batch.get('msa')
   if msa is not None:
     msa = np.array(msa, copy=True)
-    msa[:, atomized] = unknown
+    msa[:, atomized] = cls[atomized]
     batch['msa'] = msa
   return batch

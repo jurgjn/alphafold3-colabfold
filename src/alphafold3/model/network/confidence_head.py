@@ -196,18 +196,10 @@ class ConfidenceHead(hk.Module):
     # 447 and its weights are converted at that width.
     if self.global_config.model in model_config.PAIR_ONLY_TRUNK:
       n_af3 = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP
-      zero = jnp.zeros_like(target_feat[..., :1])
-
-      def _widen(block):
-        out = jnp.concatenate(
-            [zero, block[..., 21:22], block[..., :21], block[..., 22:n_af3],
-             zero], axis=-1)
-        assert out.shape[-1] == n_af3 + 2, (out.shape[-1], n_af3 + 2)
-        return out
-
+      widen = featurization.widen_to_esm_classes
       target_feat = jnp.concatenate(
-          [_widen(target_feat[..., :n_af3]),
-           _widen(target_feat[..., n_af3:2 * n_af3]),
+          [widen(target_feat[..., :n_af3]),
+           widen(target_feat[..., n_af3:2 * n_af3]),
            target_feat[..., 2 * n_af3:]], axis=-1)
     s_inputs = hm.LayerNorm(name='s_inputs_norm')(target_feat)
     single_act = hm.LayerNorm(name='s_norm')(single_act)
@@ -325,6 +317,7 @@ class ConfidenceHead(hk.Module):
       bond_type_matrix: jnp.ndarray | None = None,
       atom_name_chars: jnp.ndarray | None = None,
       use_dropout=False,
+      return_logits=False,
   ) -> dict[str, jnp.ndarray]:
     """Builds ConfidenceHead module.
 
@@ -334,6 +327,7 @@ class ConfidenceHead(hk.Module):
       seq_mask: Sequence mask.
       token_atoms_to_pseudo_beta: Pseudo beta info for atom tokens.
       asym_id: Asym ID token features.
+      return_logits: Also return the pLDDT, PAE, PDE and resolved logits.
 
     Returns:
       Dictionary of results.
@@ -665,6 +659,11 @@ class ConfidenceHead(hk.Module):
     if predicted_experimentally_resolved is not None:
       out['predicted_experimentally_resolved'] = (
           predicted_experimentally_resolved)
+    if return_logits:
+      out.update(predicted_lddt_logits=plddt_logits, predicted_aligned_error_logits=pae_logits,
+                 predicted_distance_error_logits=distance_logits)
+      if experimentally_resolved_logits is not None:
+        out['experimentally_resolved_logits'] = experimentally_resolved_logits
     return out
 
   def _get_tmscore_adjusted_pae(

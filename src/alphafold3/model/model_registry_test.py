@@ -235,9 +235,14 @@ class RegistryTest(parameterized.TestCase):
     A static check, deliberately: it fails for a knob that is declared and
     never read even if no model currently sets it to anything interesting.
     """
+    import inspect
     import re
     from alphafold3.model.pipeline import model_features
-    source = pathlib.Path(model_features.__file__).read_text()
+    # Two consumers: model_features.apply edits the featurised batch, and
+    # model_registry.featurise_kwargs turns the featurisation-TIME knobs into
+    # featurise_input arguments (a knob there acts before any batch exists).
+    source = (pathlib.Path(model_features.__file__).read_text()
+              + inspect.getsource(model_registry.featurise_kwargs))
     read = {a or b for a, b in
             # `knobs.get('x')` AND `knobs.get('x', default)` -- the regex
             # once required the closing paren immediately, so a knob read WITH

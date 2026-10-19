@@ -243,6 +243,15 @@ def create_target_feat_embedding(
       s_inputs += hm.Linear(config.seq_channel, use_bias=False,
                             name='boltz2_msa_profile_encoding')(
           jnp.concatenate([profile, deletion], axis=-1))
+      # Boltz's DN (32), the DNA unknown - a DNA N, and a modified DNA residue's one token (get_unk_token) - which our
+      # single nucleic unknown (30, Boltz's RNA N at 27) cannot tell from an RNA one: the converter keeps each
+      # encoding's DN column less its N column, added on a DNA token by its class-30 weight. Zero for a blob without
+      # them (the loader's fill), which folds as before.
+      dn_res = hk.get_parameter('boltz2_dn_res_type', [config.seq_channel], jnp.float32, init=jnp.zeros)
+      dn_prof = hk.get_parameter('boltz2_dn_msa_profile', [config.seq_channel], jnp.float32, init=jnp.zeros)
+      on_dna = batch.token_features.is_dna.astype(dtype)
+      s_inputs += (on_dna * res_oh[:, 30])[:, None] * dn_res.astype(dtype)
+      s_inputs += (on_dna * profile[:, 30])[:, None] * dn_prof.astype(dtype)
       # conditioning inits (trained, non-zero): mol_type (PROTEIN=0/DNA=1/RNA=2/NONPOLYMER=3),
       # method (x-ray=1, the prediction default), modified=0. cyclic=0 -> Linear(0)=0, omitted.
       # These are Embeddings in Boltz; here Linear-over-one-hot (weight (num_cls, seq) == the
@@ -302,6 +311,10 @@ def create_target_feat_embedding(
       res_oh = featurization.blend_soft(res_oh, soft_seq, design_mask).astype(dtype)
       token_feats = hm.Linear(config.seq_channel, use_bias=True,
                               name='chai1_token_feature_embedding')(res_oh)
+      # our N is chai's RX; on a DNA token chai has DX (a modified nucleotide's atomised tokens, an unknown base)
+      dx = hk.get_parameter('chai1_token_dx', [config.seq_channel], jnp.float32, init=jnp.zeros)
+      dna_unk = (batch.token_features.is_dna & (batch.token_features.aatype == n_restype - 1)).astype(dtype)
+      token_feats += dna_unk[:, None] * dx.astype(dtype)
       # chai's TOKEN stream is dominated by ESM2: rebuilding the full 2638-wide
       # stream reproduces its s_init at corr 0.99999280, and zeroing ONLY the
       # ESM columns drops that to 0.327 (rms 0.183). Folding them into the bias
@@ -464,50 +477,28 @@ def _compute_chain_pair_iptm(
 
 
 
-def _structural_to_residue(samples, conf, book, seq_mask, asym_id,
-                           num_plddt_bins, num_pae_bins, num_pde_bins):
-  """Bring an OpenDDE fold back from structural tokens to residue tokens.
-
-  OpenDDE runs its diffusion and confidence on an EXPANDED token set -- several
-  structural subtokens per residue -- so everything downstream (the mmCIF
-  writer, the confidence JSON, pTM) would otherwise be handed arrays indexed the
-  wrong way. Two mappings do it, and they are of different kinds:
-
-    atoms   an exact reconstruction. residue_atom_gather names, for every
-            residue atom slot, the structural (token, slot) holding it, so
-            coordinates and per-atom pLDDT come back unchanged.
-    tokens  a CHOICE. A residue has several structural subtokens and PAE is a
-            token-PAIR quantity, so we read it at the residue's representative
-            subtoken (its first). Nothing reconstructs a per-residue PAE from
-            several subtoken rows; this at least picks the row belonging to the
-            residue's own backbone.
-
-  The PAE/PDE/pLDDT reductions run here rather than inside OpenDDE's head, so
-  that they -- and the pTM built on them -- see the residue token count the rest
-  of the pipeline reports rather than the expanded one.
-  """
+def _structural_atoms_to_residue(positions, book):
+  """OpenDDE's sampled atoms from structural back to residue tokens, exactly, plus the (n_res, max_atoms) atom mask."""
   gather = book['residue_atom_gather']            # (n_res, max_atoms), -1 = none
-  rep = book['residue_rep_token']                 # (n_res,)
   n_res, max_atoms = gather.shape
   valid = gather >= 0
-  flat_idx = jnp.where(valid, gather, 0).reshape(-1)
+  flat = positions.reshape((positions.shape[0], -1, positions.shape[-1]))
+  out = jnp.take(flat, jnp.where(valid, gather, 0).reshape(-1), axis=1)
+  out = out.reshape((positions.shape[0], n_res, max_atoms, positions.shape[-1]))
+  return jnp.where(valid[None, :, :, None], out, 0.0), valid
+
+
+def _opendde_confidence(conf, atom_valid, seq_mask, asym_id,
+                        num_plddt_bins, num_pae_bins, num_pde_bins, return_logits=False):
+  """OpenDDE's residue-space confidence logits reduced to the outputs every other model reports."""
+  n_res, max_atoms = atom_valid.shape
 
   def by_atom(arr):
-    """(n_samples, n_struct * max_atoms, *rest) -> (n_samples, n_res, max_atoms, *rest)."""
+    """(n_samples, n_res * max_atoms, *rest) -> (n_samples, n_res, max_atoms, *rest)."""
     rest = arr.shape[2:]
-    out = jnp.take(arr, flat_idx, axis=1)
-    out = out.reshape((arr.shape[0], n_res, max_atoms) + rest)
-    keep = valid.reshape((1, n_res, max_atoms) + (1,) * len(rest))
+    out = arr.reshape((arr.shape[0], n_res, max_atoms) + rest)
+    keep = atom_valid.reshape((1, n_res, max_atoms) + (1,) * len(rest))
     return jnp.where(keep, out, 0.0)
-
-  def by_token_pair(arr):
-    """(n_samples, n_struct, n_struct, *rest) -> (n_samples, n_res, n_res, *rest)."""
-    return jnp.take(jnp.take(arr, rep, axis=1), rep, axis=2)
-
-  positions = samples['atom_positions']
-  out_samples = dict(samples)
-  out_samples['atom_positions'] = by_atom(
-      positions.reshape((positions.shape[0], -1, positions.shape[-1])))
 
   def centers(min_bin, max_bin, n_bins):
     width = (max_bin - min_bin) / n_bins
@@ -521,8 +512,8 @@ def _structural_to_residue(samples, conf, book, seq_mask, asym_id,
       -1) * 100.0
   resolved_logits = by_atom(conf['experimentally_resolved_logits'])
 
-  pae_logits = by_token_pair(conf['predicted_aligned_error_logits'])
-  pde_logits = by_token_pair(conf['predicted_distance_error_logits'])
+  pae_logits = conf['predicted_aligned_error_logits']
+  pde_logits = conf['predicted_distance_error_logits']
   pae_centers = centers(0.0, 32.0, num_pae_bins)
   pae_probs = jax.nn.softmax(pae_logits, -1)
   mask = seq_mask.astype(bool)
@@ -539,7 +530,7 @@ def _structural_to_residue(samples, conf, book, seq_mask, asym_id,
           asym_id=asym_id, seq_mask=seq_mask, pair_mask=pair_mask,
           bin_centers=pae_centers, pae_probs=probs))(pae_probs)
 
-  return out_samples, {
+  out = {
       'predicted_lddt': predicted_lddt,
       'full_pae': full_pae,
       'full_pde': full_pde,
@@ -548,28 +539,101 @@ def _structural_to_residue(samples, conf, book, seq_mask, asym_id,
           resolved_logits, axis=-1)[..., 1],
       'tmscore_adjusted_pae_global': tm_global,
       'tmscore_adjusted_pae_interface': tm_interface,
-      'predicted_lddt_logits': plddt_logits,
-      'predicted_aligned_error_logits': pae_logits,
-      'predicted_distance_error_logits': pde_logits,
-      'experimentally_resolved_logits': resolved_logits,
   }
+  if return_logits:
+    out.update(predicted_lddt_logits=plddt_logits, predicted_aligned_error_logits=pae_logits,
+               predicted_distance_error_logits=pde_logits, experimentally_resolved_logits=resolved_logits)
+  return out
 
 
 def num_trunk_passes(num_recycles: int, model: str) -> int:
-  """How many times the trunk runs, from a `num_recycles` setting.
+  """Trunk passes for a `num_recycles` setting: AF's convention for every model, N recycles = N + 1 passes.
 
-  AF3 counts ADDITIONAL passes, so num_recycles=3 runs the trunk four times.
-  chai counts TOTAL passes: `for _ in range(num_trunk_recycles)` in chai1.py,
-  whose default 3 runs it three times. Getting this wrong is invisible -- the
-  recycle is nearly converged by then, so an extra pass only perturbs the
-  output -- which is why it is a named function with a test rather than a `+ 1`.
+  Each model's own default pass count lives in model_registry (default_num_recycles), so `model` no longer changes
+  the meaning; it stays in the signature for callers.
   """
-  if model == 'chai1':
-    # clamped at 1: chai's own `range(0)` really would run the trunk zero times,
-    # leaving the recycle carry at its seed, and callers that pass 0 mean "one
-    # trunk pass, no recycling" -- which is what an injection harness wants.
-    return max(1, num_recycles)
-  return num_recycles + 1
+  del model
+  return max(0, num_recycles) + 1
+
+
+class Chai1StructurePair(hk.Module):
+  """chai-1's STRUCTURE token-pair features, the pair input of its diffusion module.
+
+  chai-lab chunks its 512-wide TOKEN_PAIR input projection (and its bond projection) in two: the first halves
+  build the trunk's z_init, the second halves `token_pair_structure_input_feats`, which its diffusion module
+  conditions on beside z_trunk (chai1.py, run_folding_on_context). This repository's converter kept only the
+  trunk halves and fed the diffusion the trunk's z_init instead -- relRMS 9.2 apart on 6MRR, measured on
+  chai-lab's own tensors. The published chai1 blobs carry the second halves now, under this module's name
+  (huggingface.co/sokrypton/af3-any-model 28141c7).
+
+  The 163 inputs are chai's own columns (its generators, alphabetical): docking 0:6 (class 5: no
+  constraint), relative chain 6:12, relative entity 12:15, residue separation 15:82, token separation
+  82:149, the two restraints' masked columns 155 and 162. A one-hot that wide is never built: each pair
+  adds the rows its classes select. The bond projection's structure half reads chai's declared-covalent-
+  bond feature, which nothing here builds -- zero for every input without one, as chai-lab's is.
+
+  Relative entity and chain read the raw ids, which is chai's dense ranking for every purpose here: entity
+  enters only through same/greater/less (clipped to +-1), and sym ids within one entity are consecutive.
+  """
+
+  def __init__(self, num_channels, name='chai1_structure_token_pair'):
+    super().__init__(name=name)
+    self.num_channels = num_channels
+
+  def __call__(self, tf):
+    w = hk.get_parameter('weights', [163, self.num_channels], jnp.float32, init=jnp.zeros)
+    b = hk.get_parameter('bias', [self.num_channels], jnp.float32, init=jnp.zeros)
+    ri = tf.residue_index.astype(jnp.int32)
+    ti = tf.token_index.astype(jnp.int32)
+    asym, ent, sym = (x.astype(jnp.int32) for x in (tf.asym_id, tf.entity_id, tf.sym_id))
+    same_chain = asym[:, None] == asym[None]
+    rss = jnp.where(same_chain, jnp.clip(ri[:, None] - ri[None] + 33, 0, 65), 66)
+    rts = jnp.where(same_chain & (ri[:, None] == ri[None]), jnp.clip(ti[:, None] - ti[None] + 32, 0, 65), 66)
+    rel_e = ent[:, None] - ent[None]
+    rchain = jnp.where(rel_e != 0, 5, jnp.clip(sym[:, None] - sym[None] + 2, 0, 4))
+    rent = jnp.clip(rel_e + 1, 0, 2)
+    return ((b + w[5] + w[155] + w[162])[None, None] + w[6 + rchain] + w[12 + rent]
+            + w[15 + rss] + w[82 + rts])
+
+
+class Chai1StructurePair(hk.Module):
+  """chai-1's STRUCTURE token-pair features, the pair input of its diffusion module.
+
+  chai-lab chunks its 512-wide TOKEN_PAIR input projection (and its bond projection) in two: the first halves
+  build the trunk's z_init, the second halves `token_pair_structure_input_feats`, which its diffusion module
+  conditions on beside z_trunk (chai1.py, run_folding_on_context). This repository's converter kept only the
+  trunk halves and fed the diffusion the trunk's z_init instead -- relRMS 9.2 apart on 6MRR, measured on
+  chai-lab's own tensors. The published chai1 blobs carry the second halves now, under this module's name
+  (huggingface.co/sokrypton/af3-any-model 28141c7).
+
+  The 163 inputs are chai's own columns (its generators, alphabetical): docking 0:6 (class 5: no
+  constraint), relative chain 6:12, relative entity 12:15, residue separation 15:82, token separation
+  82:149, the two restraints' masked columns 155 and 162. A one-hot that wide is never built: each pair
+  adds the rows its classes select. The bond projection's structure half reads chai's declared-covalent-
+  bond feature, which nothing here builds -- zero for every input without one, as chai-lab's is.
+
+  Relative entity and chain read the raw ids, which is chai's dense ranking for every purpose here: entity
+  enters only through same/greater/less (clipped to +-1), and sym ids within one entity are consecutive.
+  """
+
+  def __init__(self, num_channels, name='chai1_structure_token_pair'):
+    super().__init__(name=name)
+    self.num_channels = num_channels
+
+  def __call__(self, tf):
+    w = hk.get_parameter('weights', [163, self.num_channels], jnp.float32, init=jnp.zeros)
+    b = hk.get_parameter('bias', [self.num_channels], jnp.float32, init=jnp.zeros)
+    ri = tf.residue_index.astype(jnp.int32)
+    ti = tf.token_index.astype(jnp.int32)
+    asym, ent, sym = (x.astype(jnp.int32) for x in (tf.asym_id, tf.entity_id, tf.sym_id))
+    same_chain = asym[:, None] == asym[None]
+    rss = jnp.where(same_chain, jnp.clip(ri[:, None] - ri[None] + 33, 0, 65), 66)
+    rts = jnp.where(same_chain & (ri[:, None] == ri[None]), jnp.clip(ti[:, None] - ti[None] + 32, 0, 65), 66)
+    rel_e = ent[:, None] - ent[None]
+    rchain = jnp.where(rel_e != 0, 5, jnp.clip(sym[:, None] - sym[None] + 2, 0, 4))
+    rent = jnp.clip(rel_e + 1, 0, 2)
+    return ((b + w[5] + w[155] + w[162])[None, None] + w[6 + rchain] + w[12 + rent]
+            + w[15 + rss] + w[82 + rts])
 
 
 class Model(hk.Module):
@@ -595,6 +659,8 @@ class Model(hk.Module):
     # True. It was read by getattr and never declared here, which made it
     # invisible to anyone reading the config.
     recycle_last_only: bool = False
+    # the confidence heads' logits per sample (several GiB for the pair ones on a large fold)
+    return_confidence_logits: bool = False
 
   def __init__(self, config: Config, name: str = 'diffuser'):
     super().__init__(name=name)
@@ -635,6 +701,13 @@ class Model(hk.Module):
           use_conditioning=True,
           conditioning_only=True,
       )
+
+    override = diffusion_head.SAMPLER_OVERRIDE
+    sampler = None if override is None or hk.running_init() else override(
+        self.global_config.model, sample_config)
+    if sampler is not None:
+      return sampler(hk.experimental.get_params(), batch, embeddings, pair_cond,
+                     atom_cond, hk.next_rng_key())
 
     denoising_step = functools.partial(
         self.diffusion_module,
@@ -783,6 +856,8 @@ class Model(hk.Module):
       del batch[k]
     has_structural = opendde and any(
         k.startswith('structbook/') for k in _struct)
+    # protenix's native randomness replayed per seed (pipeline.protenix_rng); read by the evoformer
+    native_rng = {k[len('px_'):]: batch.pop(k) for k in list(batch) if k.startswith('px_')} or None
 
     batch = feat_batch.Batch.from_data_dict(batch)
 
@@ -823,6 +898,7 @@ class Model(hk.Module):
     # prediction. See featurization.blend_soft.
     embedding_module.soft_seq = soft_seq
     embedding_module.design_mask = design_mask
+    embedding_module.native_rng = native_rng
     # REUSED from the carry when the caller has it. This is an atom-level
     # transformer over every atom and it does not depend on the recycle state,
     # so the fused path computes it once before the loop. A stepwise caller
@@ -893,6 +969,10 @@ class Model(hk.Module):
       # loop). The evoformer cannot see the iteration index inside a fori_loop,
       # so flag the first pass in the carry and let it substitute z_init/s_init.
       embeddings['recycle_first'] = jnp.ones((), jnp.float32)
+    # main's per-pass counter for the protenix RNG replay; part of the INITIAL
+    # carry, so the staged path (stage='embed' then 'trunk') carries it too.
+    if native_rng is not None:
+      embeddings['px_pass'] = jnp.zeros((), jnp.int32)
     # The INITIAL carry: zeros for the recycled tensors plus target_feat, which
     # is the atom-level input embedding and does not depend on the recycle
     # state. Its own trace is cheap -- no trunk in it -- and it exists so every
@@ -975,6 +1055,17 @@ class Model(hk.Module):
       else:
         embeddings, _ = hk.fori_loop(0, num_iter, recycle_body,
                                      (embeddings, key))
+
+    if self.global_config.model == 'chai1':
+      # chai's diffusion conditions on [z_trunk | its STRUCTURE token-pair features], not on the trunk's
+      # z_init -- see Chai1StructurePair
+      embeddings['pair_init'] = Chai1StructurePair(self.config.evoformer.pair_channel)(batch.token_features)
+      if batch.declared_bonds is not None:
+        # the structure half of chai's bond projection (bond_loss_input_proj rows 256:512)
+        from alphafold3.model.components import haiku_modules as hm
+        embeddings['pair_init'] += hm.Linear(self.config.evoformer.pair_channel, use_bias=False,
+                                             name='chai1_structure_bond')(
+            batch.declared_bonds[..., None].astype(embeddings['pair_init'].dtype))
 
     # ColabDesign2: the distogram head stays with the trunk. It reads embeddings
     # only, it is what every design objective is built on, and it is cheap.
@@ -1067,39 +1158,34 @@ class Model(hk.Module):
       )
 
     if has_structural:
-      # OpenDDE's own confidence head, on the structural-token set. Rep-atom coords
-      # per token come from the pseudo-beta gather; the pLDDT/resolved einsum runs
-      # over the dense (token, atom-slot) layout, so atom_to_token repeats the token
-      # index and atom_to_tokatom tiles the slot index.
-      n_struct = diff_batch.token_features.mask.shape[0]
-      max_atoms = samples['atom_positions'].shape[-2]
-      a2t = jnp.repeat(jnp.arange(n_struct), max_atoms)
-      a2ta = jnp.tile(jnp.arange(max_atoms), n_struct)
-      c_s_inputs = diff_emb['target_feat'].shape[-1]
-      def _conf(dense_atom_positions):
-        rep = atom_layout.convert(
-            diff_batch.pseudo_beta_info.token_atoms_to_pseudo_beta,
-            dense_atom_positions, layout_axes=(-3, -2))         # (n_struct, 3)
-        return opendde_confidence.OpenDDEConfidenceHead(
-            self.config.evoformer.seq_channel, self.config.evoformer.pair_channel,
-            c_s_inputs, self.global_config)(
-                diff_emb['target_feat'], diff_emb['single'], diff_emb['pair'], rep,
-                a2t, a2ta, diff_batch.token_features.mask,
-                extra_pair_bias=diff_emb.get('structural_pair_attn_bias'))
-      confidence_output = mapping.sharded_map(_conf, in_axes=0)(samples['atom_positions'])
-      # Back to residue tokens, so every consumer below -- the mmCIF writer, the
-      # confidence JSON, pTM -- sees the same layout it does for every other
-      # model. Without this the structure writer is handed 160 structural tokens
-      # where its gather expects 128 residues, which is where it stops.
+      # the confidence head reads the residue trunk (OpenDDE's pair_output_space='residue'), not the structural one
       book = {k[len('structbook/'):]: v for k, v in _struct.items()
               if k.startswith('structbook/')}
-      samples, confidence_output = _structural_to_residue(
-          samples, confidence_output, book,
+      samples = dict(samples)
+      samples['atom_positions'], atom_valid = _structural_atoms_to_residue(
+          samples['atom_positions'], book)
+      n_res, max_atoms = atom_valid.shape
+      # the pLDDT/resolved einsum runs over the dense (token, atom-slot) layout
+      a2t = jnp.repeat(jnp.arange(n_res), max_atoms)
+      a2ta = jnp.tile(jnp.arange(max_atoms), n_res)
+      def _conf(dense_atom_positions):
+        rep = atom_layout.convert(
+            batch.pseudo_beta_info.token_atoms_to_pseudo_beta,
+            dense_atom_positions, layout_axes=(-3, -2))         # (n_res, 3)
+        return opendde_confidence.OpenDDEConfidenceHead(
+            self.config.evoformer.seq_channel, self.config.evoformer.pair_channel,
+            embeddings['target_feat'].shape[-1], self.global_config)(
+                embeddings['target_feat'], embeddings['single'], embeddings['pair'], rep,
+                a2t, a2ta, batch.token_features.mask)
+      logits = mapping.sharded_map(_conf, in_axes=0)(samples['atom_positions'])
+      confidence_output = _opendde_confidence(
+          logits, atom_valid,
           seq_mask=batch.token_features.mask,
           asym_id=batch.token_features.asym_id,
-          num_plddt_bins=confidence_output['predicted_lddt_logits'].shape[-1],
-          num_pae_bins=confidence_output['predicted_aligned_error_logits'].shape[-1],
-          num_pde_bins=confidence_output['predicted_distance_error_logits'].shape[-1])
+          num_plddt_bins=logits['predicted_lddt_logits'].shape[-1],
+          num_pae_bins=logits['predicted_aligned_error_logits'].shape[-1],
+          num_pde_bins=logits['predicted_distance_error_logits'].shape[-1],
+          return_logits=self.config.return_confidence_logits)
     elif self.global_config.model in model_config.NO_CONFIDENCE_HEAD:
       # No head in the checkpoint, so none in the graph: this model predicts a
       # structure and nothing about it. The keys are simply absent, which is
@@ -1128,6 +1214,7 @@ class Model(hk.Module):
               # dense slot order; the names are how we recover the permutation.
               atom_name_chars=diff_batch.ref_structure.atom_name_chars,
               use_dropout=use_dropout,
+              return_logits=self.config.return_confidence_logits,
           ),
           in_axes=0,
       )(samples['atom_positions'])

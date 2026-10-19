@@ -118,6 +118,47 @@ def make_backbone_rigid(
   return rigid, rigid_mask
 
 
+class _Shared(hk.Module):
+  """Runs fn under the creating module's own name, so every call (both branches of a cond) reads the same parameters."""
+
+  def __init__(self, fn, name):
+    super().__init__(name=hk.experimental.force_name(name))
+    self._fn = fn
+
+  def __call__(self, *args):
+    return self._fn(*args)
+
+
+def _skip_draws(num_layer):
+  """Draw the keys a template stack would: haiku's layer_stack takes two from the sequence per call, its layers none.
+
+  haiku's key stream depends only on how many keys were drawn, so a skipped or reused stack keeps the diffusion
+  sampler's later key unchanged.
+  """
+  for _ in range(2 if num_layer else 0):
+    hk.maybe_next_rng_key()
+
+
+def _sum_slots(embed, slots, zero, dedupe, num_layer):
+  """Sum of embed(slot) over the leading axis of `slots`; with dedupe a slot equal to its predecessor reuses its embedding."""
+  if not dedupe or hk.running_init():
+    return hk.scan(lambda total, x: (total + embed(x), None), zero, slots)[0]
+
+  def reuse(p, _):
+    _skip_draws(num_layer)
+    return p
+
+  def body(carry, x):
+    total, prev, prev_x, valid = carry
+    same = valid & jnp.all(jnp.stack([jnp.all(a == b) for a, b in zip(
+        jax.tree.leaves(x), jax.tree.leaves(prev_x))]))
+    e = hk.cond(same, reuse, lambda _, s: embed(s).astype(zero.dtype), prev, x)
+    return (total + e, e, x, jnp.bool_(True)), None
+
+  first = jax.tree.map(lambda a: a[0], slots)
+  return hk.scan(body, (zero, zero, first, jnp.bool_(False)), slots)[0][0]
+
+
 class TemplateEmbedding(hk.Module):
   """Embed a set of templates."""
 
@@ -190,9 +231,9 @@ class TemplateEmbedding(hk.Module):
 
     subkeys = jnp.array(jax.random.split(key, num_templates))
 
-    def scan_fn(carry, x):
+    def embed(x):
       templates, key = x
-      embedding = template_embedder(
+      return template_embedder(
           query_embedding,
           templates,
           padding_mask_2d,
@@ -200,14 +241,16 @@ class TemplateEmbedding(hk.Module):
           key,
           use_dropout,
       )
-      return carry + embedding, None
 
     scan_init = jnp.zeros(
         (num_res, num_res, c.num_channels), dtype=query_embedding.dtype
     )
-    summed_template_embeddings, _ = hk.scan(
-        scan_fn, scan_init, (templates, subkeys)
-    )
+    # the per-slot keys differ but only dropout reads them, so without dropout equal slots embed alike (empty slots)
+    if use_dropout:
+      summed_template_embeddings = _sum_slots(embed, (templates, subkeys), scan_init, False, 0)
+    else:
+      summed_template_embeddings = _sum_slots(
+          lambda t: embed((t, subkeys[0])), templates, scan_init, True, c.template_stack.num_layer)
 
     # AF3 divides by the number of template SLOTS, and the pipeline always pads
     # to max_templates=4 (features.py _pad_to), so one real template is summed
@@ -564,20 +607,46 @@ class Boltz2TemplateEmbedding(hk.Module):
 
     vis_in = vis_2d if by_coverage else jnp.broadcast_to(
         multichain_mask_2d[None], (T,) + multichain_mask_2d.shape)
-    v_all = hk.vmap(per_template, in_axes=0, out_axes=0,
-                    split_rng=False)(aatype, atom_positions, atom_mask,
-                                     vis_in)                            # (T,N,N,64)
+    slots = (aatype, atom_positions, atom_mask, vis_in)
+    shared = _Shared(lambda s: hk.vmap(per_template, in_axes=0, out_axes=0, split_rng=False)(*s),
+                     self.module_name)
+    embed = lambda s: shared(s)                                         # (T,N,N,64)
+    lazy = not hk.running_init()
+
+    def project(u):
+      return hm.Linear(z.shape[-1], use_bias=False, name='u_proj')(jax.nn.relu(u)).astype(dtype)
+
     if self.global_config.model in model_config.TEMPLATE_MEAN_OVER_ALL_SLOTS:
       # protenix divides by the PADDED slot count and sums every slot, so the
       # Z-dependent half of v survives with no template at all. See
       # model_config.TEMPLATE_MEAN_OVER_ALL_SLOTS for what dropping this cost.
-      u = v_all.sum(0) / (1e-7 + T)
-    else:
-      present = (atom_mask.reshape(T, -1).sum(-1) > 0).astype(v_all.dtype)  # (T,)
-      num_t = jnp.clip(present.sum(), 1.0, None)
-      u = jnp.einsum('t,tijc->ijc', present, v_all) / num_t           # (N,N,64)
-    out = hm.Linear(z.shape[-1], use_bias=False, name='u_proj')(jax.nn.relu(u))
-    return out.astype(dtype)
+      full = lambda _: embed(slots)
+      if lazy and T > 2:
+        # protenix pads its one gap slot with empty ones: embed the first two, repeat the second
+        def head(_):
+          v2 = embed(jax.tree.map(lambda a: a[:2], slots))
+          return jnp.concatenate([v2, jnp.broadcast_to(v2[1:], (T - 2,) + v2.shape[1:])])
+        tail_same = jnp.all(jnp.stack([jnp.all(a[2:] == a[1:2]) for a in slots]))
+        v_all = hk.cond(tail_same, head, full, 0)
+      else:
+        v_all = full(0)
+      return project(v_all.sum(0) / (1e-7 + T))
+
+    present = (atom_mask.reshape(T, -1).sum(-1) > 0)                     # (T,)
+
+    def mean_present(_):
+      v_all = embed(slots)
+      p = present.astype(v_all.dtype)
+      return project(jnp.einsum('t,tijc->ijc', p, v_all) / jnp.clip(p.sum(), 1.0, None))  # (N,N,C)
+
+    if not lazy:
+      return mean_present(0)
+
+    # no template present: the mean is 0 and u_proj has no bias, so the term is exactly zero
+    def absent(_):
+      _skip_draws(c.template_stack.num_layer)
+      return jnp.zeros(z.shape, dtype)
+    return hk.cond(present.any(), mean_present, absent, 0)
 
 
 class Protenix2TemplateEmbedding(Boltz2TemplateEmbedding):

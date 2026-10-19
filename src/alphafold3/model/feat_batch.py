@@ -52,6 +52,8 @@ class Batch:
   # dropout and the 4-block lm_encoder) is ordinary pair-stack work and stays
   # here. None for every other model, and for ESMFold2 run without ESM-C.
   lm_pair: features.xnp_ndarray | None = None
+  # chai-1 only: (num_tokens, num_tokens) 0/1, its TokenBondRestraint -- one entry per declared bond, left -> right
+  declared_bonds: features.xnp_ndarray | None = None
 
   @property
   def num_res(self) -> int:
@@ -80,6 +82,7 @@ class Batch:
         frames=features.Frames.from_data_dict(batch),
         chirals=features.Chirals.from_data_dict(batch),
         lm_pair=batch.get('lm_pair'),
+        declared_bonds=batch.get('declared_bonds'),
     )
 
   def as_data_dict(self) -> features.BatchDict:
@@ -99,6 +102,8 @@ class Batch:
     }
     if self.lm_pair is not None:
       output['lm_pair'] = self.lm_pair
+    if self.declared_bonds is not None:
+      output['declared_bonds'] = self.declared_bonds
     return output
 
 

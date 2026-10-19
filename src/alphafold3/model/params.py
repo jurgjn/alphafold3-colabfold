@@ -24,6 +24,7 @@ import collections
 from collections.abc import Iterator, Sequence
 import contextlib
 import io
+import logging
 import os
 import re
 import struct
@@ -313,7 +314,70 @@ def get_model_haiku_params(model_dir: epath.PathLike) -> hk.Params:
   if not params:
     raise FileNotFoundError(f'Model missing from "{model_dir}"')
   _check_blob_convention(model_dir, params)
+  _upgrade_esmfold2_class_rows(model_dir, params)
+  # chai1's blobs carry chai-lab's structure token-pair weights from 28141c7 on (model.Chai1StructurePair);
+  # one fetched before has the model and not its diffusion's pair input
+  if (any(scope.endswith('diffusion_embed_atom_pair_feat') for scope in params)      # (chai's alone)
+      and 'diffuser/chai1_structure_token_pair' not in params):
+    raise ValueError(
+        f'{model_dir}: these chai1 weights predate chai-lab\'s structure token-pair weights, which its '
+        'diffusion conditions on. Delete the blob there and run again to fetch the current one.')
+  if ('diffuser/chai1_structure_token_pair' in params
+      and 'chai1_chain_entity' not in params.get('diffuser/evoformer', {})):
+    # a chai1 blob from before its relative chain/entity rows: a complex keeps the monomer's classes, as it always did
+    logging.warning('%s: chai1 weights without chai1_chain_entity; complexes read single-chain relative chain and '
+                    'entity features. Delete the blob to fetch the current one once it is published.', model_dir)
+    params.setdefault('diffuser/evoformer', {})['chai1_chain_entity'] = jnp.zeros(
+        (9, params['diffuser/chai1_structure_token_pair']['weights'].shape[1]), jnp.float32)
+  if ('diffuser/chai1_structure_token_pair' in params
+      and 'diffuser/evoformer/chai1_bond_trunk' not in params):
+    # and its declared-bond trunk row: a declared bond reaches the diffusion's pair input but not the trunk's
+    logging.warning('%s: chai1 weights without chai1_bond_trunk; declared bonds reach only the diffusion\'s pair '
+                    'input, not the trunk. Delete the blob to fetch the current one once it is published.', model_dir)
+    params['diffuser/evoformer/chai1_bond_trunk'] = {'weights': jnp.zeros(
+        (1, params['diffuser/chai1_structure_token_pair']['weights'].shape[1]), jnp.float32)}
+  if 'diffuser/boltz2_res_type_encoding' in params and 'boltz2_dn_res_type' not in params.get('diffuser', {}):
+    # a boltz2 blob from before Boltz's DN rows: a DNA unknown reads Boltz's RNA N, as it always did
+    logging.warning('%s: boltz2 weights without boltz2_dn_*; a DNA N or modified DNA residue reads Boltz\'s RNA '
+                    'unknown. Delete the blob to fetch the current one once it is published.', model_dir)
+    width = params['diffuser/boltz2_res_type_encoding']['weights'].shape[1]
+    params.setdefault('diffuser', {})['boltz2_dn_res_type'] = jnp.zeros((width,), jnp.float32)
+    params['diffuser']['boltz2_dn_msa_profile'] = jnp.zeros((width,), jnp.float32)
+    params.setdefault('diffuser/evoformer', {})['boltz2_dn_msa'] = jnp.zeros(
+        (params['diffuser/evoformer/msa_activations']['weights'].shape[1],), jnp.float32)
+  if 'diffuser/chai1_token_feature_embedding' in params and 'chai1_token_dx' not in params.get('diffuser', {}):
+    # likewise its DNA-unknown row: a DNA N or modified nucleotide reads chai's RX rather than its DX
+    params.setdefault('diffuser', {})['chai1_token_dx'] = jnp.zeros(
+        params['diffuser/chai1_token_feature_embedding']['bias'].shape, jnp.float32)
   return params
+
+
+# ESMFold2's DNA and N rows of each 31-class block, and the rows a blob before convention 2 holds them in
+_ESMFOLD2_CLASS_ROWS, _ESMFOLD2_OLD_ROWS = [26, 27, 28, 29, 30], [27, 28, 29, 30, 26]
+
+
+def _upgrade_esmfold2_class_rows(model_dir, params) -> None:
+  """An ESMFold2 blob converted before blob convention 2 holds its DNA and N rows in the old shift order: rotate them
+  into ESMFold2's class order (converters/esmfold2.esm_class_of_af3), as a fresh conversion writes them."""
+  from alphafold3.model import model_config
+
+  name = os.path.basename(os.path.normpath(os.path.expanduser(str(model_dir)))).split('-')[0]
+  rec = params.get('__meta__', {}).get('__convention__')
+  if name not in model_config.ESMFOLD2_FAMILY or (rec is not None and int(np.asarray(rec).reshape(-1)[0]) >= 2):
+    return
+  evo = 'diffuser/evoformer'
+  for scope, blocks in ((f'{evo}/extra_msa_target_feat', 2), (f'{evo}/left_single', 2), (f'{evo}/right_single', 2),
+                        (f'{evo}/msa_activations', 1)):
+    w = params.get(scope, {}).get('weights')
+    if w is None:
+      continue
+    new = [r + 31 * b for b in range(blocks) for r in _ESMFOLD2_CLASS_ROWS]
+    old = [r + 31 * b for b in range(blocks) for r in _ESMFOLD2_OLD_ROWS]
+    # numpy: a jnp scatter would compile once per shape
+    w = np.array(w)
+    w[new] = w[old]
+    params[scope]['weights'] = jnp.asarray(w)
+  logging.info('%s: ESMFold2 weights before blob convention 2, DNA and N rows rotated into its class order', model_dir)
 
 
 def _check_blob_convention(model_dir, params) -> None:

@@ -137,6 +137,8 @@ class WholePdbPipeline:
         undesirable behavior, but moves away from the regime where AlphaFold 3
         was trained and evaluated. This has only an effect if
         drop_ligand_leaving_atoms is True.
+      ccd_leaving_atoms: Leaving atoms as protenix removes them, by the CCD's
+        flags at the declared bonds (atom_layout.make_flat_atom_layout).
     """
 
     max_atoms_per_token: int = 24
@@ -158,6 +160,7 @@ class WholePdbPipeline:
     conformer_max_iterations: int | None = None
     resolve_msa_overlaps: bool = True
     fix_standalone_glycans: bool = False
+    ccd_leaving_atoms: bool = False
 
   def __init__(self, *, config: Config):
     """Initializes WholePdb data pipeline.
@@ -176,6 +179,7 @@ class WholePdbPipeline:
       paired_msa_by_chain_id: Mapping[str, str],
       templates_by_chain_id: Mapping[str, Sequence[folding_input.Template]],
       random_seed: int | None = None,
+      ccd_leaving: Mapping[tuple[str, int], set[str]] | None = None,
   ) -> feat_batch.Batch:
     """Computes features for a structure and associated MSAs/templates."""
     if random_seed is None:
@@ -228,6 +232,7 @@ class WholePdbPipeline:
             ligand_ligand_bonds=ligand_ligand_bonds,
             drop_ligand_leaving_atoms=self._config.drop_ligand_leaving_atoms,
             fix_standalone_glycans=self._config.fix_standalone_glycans,
+            ccd_leaving=ccd_leaving,
         )
     )
 
@@ -454,6 +459,26 @@ class WholePdbPipeline:
   ) -> features.BatchDict:
     """Takes requests from in_queue, adds (key, serialized ex) to out_queue."""
     struct = fold_input.to_structure(ccd=ccd)
+    ccd_leaving = None
+    if self._config.ccd_leaving_atoms:
+      # read before cleaning, which drops the polymer-polymer bonds
+      res_name_of = dict(zip(zip(struct.chain_id.tolist(), struct.res_id.tolist()), struct.res_name.tolist()))
+      ccd_leaving = structure_cleaning.declared_bond_leaving_atoms(fold_input.bonded_atom_pairs, res_name_of, ccd)
+    if not self._config.flatten_non_standard_residues:
+      # boltz2 keeps a modified residue as ONE token, and genuine Boltz-2 parses it with drop_leaving_atoms=True: every
+      # CCD leaving atom goes, a chain end's OXT or 5' OP3 included - so a 5' 2-methylguanosine is 24 atoms, where AF3's
+      # rule kept its OP3 and the token's 24 slots then lost the base's C4
+      ccd_leaving = dict(ccd_leaving or {})
+      for chain in fold_input.chains:
+        mods = getattr(chain, 'ptms', None) or getattr(chain, 'modifications', None) or ()
+        for code, position in mods:
+          entry = ccd.get(code) or {}
+          names = entry.get('_chem_comp_atom.atom_id', ())
+          flags = entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ())
+          elements = entry.get('_chem_comp_atom.type_symbol', ())
+          leaving = {n for n, f, e in zip(names, flags, elements) if f == 'Y' and e not in ('H', 'D')}
+          if leaving:
+            ccd_leaving.setdefault((str(chain.id), int(position)), set()).update(leaving)
     unpaired_msa_by_chain_id = {}
     paired_msa_by_chain_id = {}
     templates_by_chain_id = {}
@@ -474,6 +499,7 @@ class WholePdbPipeline:
         paired_msa_by_chain_id=paired_msa_by_chain_id,
         templates_by_chain_id=templates_by_chain_id,
         random_seed=random_seed,
+        ccd_leaving=ccd_leaving,
     )
     np_example = batch.as_data_dict()
 

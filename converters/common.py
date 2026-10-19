@@ -38,7 +38,9 @@ from alphafold3.model.params import encode_record, read_records
 #      diffusion_head, so a v1 blob under a pre-permutation library puts AF3's
 #      gap column on a NUCLEIC weight row -- silently, and only on inputs that
 #      have gaps or nucleic acids at all.
-BLOB_CONVENTION = 1
+#   2  ESMFold2's DNA and N classes in its own order (N between U and the DNA); params.py rotates the rows of an
+#      ESMFold2 blob before this into that order on load.
+BLOB_CONVENTION = 2
 
 
 def write_params_blob(output_dir, filename, params, *, add_meta=True,

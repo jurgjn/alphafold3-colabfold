@@ -71,6 +71,10 @@ def load_chai1(model_dir):
                'feature_embedding'):
     path = os.path.join(base, name + '.pt')
     out[name] = torch.jit.load(path, map_location='cpu').state_dict()
+  bond = os.path.join(base, 'bond_loss_input_proj.pt')
+  if os.path.isfile(bond):
+    # chai-lab's bond feature projection, 512 wide like TOKEN_PAIR: trunk half, then structure half
+    out['bond_loss_input_proj'] = torch.jit.load(bond, map_location='cpu').state_dict()
   dgram = os.path.join(base, 'distogram_head.pt')
   if os.path.isfile(dgram):
     # not a TorchScript archive -- a plain state_dict from sokrypton/chai-lab@dgram
@@ -1048,6 +1052,34 @@ def map_pair_init(sds, params):
       'weights': C.t(Wp @ rel),
       'bias': Wp @ (P @ const + b),
   }
+  params.setdefault('diffuser/evoformer', {})['chai1_chain_entity'] = chain_entity_rows(sds)
+  # the STRUCTURE halves (rows 256:512) of TOKEN_PAIR and of the bond projection feed the diffusion's token-pair input
+  # (model.Chai1StructurePair); the bond half reads a declared-covalent-bond feature nothing builds yet
+  P_all = np.asarray(fe['input_projs.TOKEN_PAIR.0.weight'])
+  params['diffuser/chai1_structure_token_pair'] = {
+      'weights': np.ascontiguousarray(P_all[half:].T).astype(np.float32),
+      'bias': np.asarray(fe['input_projs.TOKEN_PAIR.0.bias'])[half:].astype(np.float32)}
+  if 'bond_loss_input_proj' in sds:
+    wb = np.asarray(sds['bond_loss_input_proj']['weight'])
+    params['diffuser/chai1_structure_bond'] = {'weights': np.ascontiguousarray(wb[half:].T).astype(np.float32)}
+    # its trunk half enters before token_pair_proj_in_trunk, so it folds through Wp like the other pair columns
+    params['diffuser/evoformer/chai1_bond_trunk'] = {'weights': np.ascontiguousarray((Wp @ wb[:half]).T).astype(np.float32)}
+
+
+def chain_entity_rows(sds):
+  """chai's RelativeChain (6) and RelativeEntity (3) classes through the trunk pair init, as rows ADDED to the folded
+  bias: each minus the single-chain class the bias already holds (chain 2, entity 1), so a monomer is unchanged.
+
+  A complex reads other classes off the diagonal blocks (another entity: chain 5, entity 0 or 2; another copy: chain
+  2 + sym difference), and without these rows its inter-chain z_init was the monomer's: tetr_dimer_dna z_init corr
+  0.994 against chai-lab's, 0.975-0.985 on every inter-chain block, with every input otherwise native's.
+  """
+  fe, te = sds['feature_embedding'], sds['token_embedder']
+  Wp = np.asarray(te['token_pair_proj_in_trunk.weight'])
+  P = np.asarray(fe['input_projs.TOKEN_PAIR.0.weight'])[:Wp.shape[1]]
+  chain = (Wp @ P[:, slice(*PAIR_COLS['RelativeChain'])]).T
+  entity = (Wp @ P[:, slice(*PAIR_COLS['RelativeEntity'])]).T
+  return np.concatenate([chain - chain[2], entity - entity[1]]).astype(np.float32)
 
 
 # cumulative offsets of the ATOM stream's alphabetical concat
@@ -1171,6 +1203,8 @@ def map_input_embedder(sds, params):
       'weights': C.t(col('ResidueType')[:, CHAI1_RESTYPE_PERM]),
       'bias': const,
   }
+  # our one nucleic unknown (N) reads chai's RX; a DNA token of that class adds DX - RX (model.py)
+  params.setdefault('diffuser', {})['chai1_token_dx'] = np.asarray(col('ResidueType')[:, 30] - col('ResidueType')[:, 25])
   params['diffuser/chai1_single_proj_in_trunk'] = {
       'weights': C.t(np.asarray(te['token_single_proj_in_trunk.weight']))}
   # The DIFFUSION module's s_inputs is a second, separately trained projection

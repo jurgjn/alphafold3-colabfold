@@ -31,6 +31,10 @@ import numpy as np
 import rdkit.Chem as rd_chem
 
 
+# AF3 builds an unknown amino acid as GLY; a model whose featuriser keeps the CCD UNK (N CA C O CB CG) clears this
+UNK_AS_GLY = True
+
+
 def _value_is_missing(value: Collection[Any] | str | None) -> bool:
   return value in ('.', '?', '', None)
 
@@ -513,7 +517,7 @@ def get_all_atoms_in_entry(
   """
   # The CCD version of 'UNK' is weird. It has a CB and a CG atom. We just want
   # the minimal amino-acid here which is GLY.
-  if res_name == 'UNK':
+  if res_name == 'UNK' and UNK_AS_GLY:
     res_name = 'GLY'
   ccd_data = ccd.get(res_name)
   if not ccd_data:
@@ -545,8 +549,12 @@ def get_all_atoms_in_entry(
   return res_atoms
 
 
-@functools.lru_cache(maxsize=128)
 def get_res_atom_names(ccd: chemical_components.Ccd, res_name: str) -> set[str]:
   """Gets the names of the atoms in a given CCD residue."""
+  return _get_res_atom_names(ccd, res_name, UNK_AS_GLY)
+
+
+@functools.lru_cache(maxsize=128)
+def _get_res_atom_names(ccd: chemical_components.Ccd, res_name: str, unk_as_gly: bool) -> set[str]:
   atoms = get_all_atoms_in_entry(ccd, res_name)['_chem_comp_atom.atom_id']
   return set(atoms)

@@ -327,6 +327,8 @@ CHAI1_SETTINGS = (
     # confirms it: chai's step-0 noise_sigma is 1261.6. Starting at twice the
     # noise the denoiser was trained for is not a small error.
     ('heads.diffusion.eval.sigma_max', 80.0),
+    # chai runs every MSA row, up to its MAX_MSA_DEPTH, on every pass (recycle_msa_subsample=0 by default)
+    ('evoformer.num_msa', int(os.environ.get('AF3_CHAI_NUM_MSA', 16384))),
 )
 
 
@@ -505,8 +507,8 @@ _FEATURISE = {
     # context around a query block; AF3's default 128 is too narrow, so widen the
     # key subset and let the exact window ride in as a mask.
     # ...and its atom encoder was trained on ESMFold2's OWN idealised residue
-    # geometry (`constants/esmfold2_ref_pos.py`, from
-    # `protein_utils.PROTEIN_REF_POS`), which its featuriser writes into
+    # geometry (`constants/esmfold2_ref_pos.py`, its ccd.pkl conformers for
+    # residues and nucleotides), which its featuriser writes into
     # `ref_pos` with no centering and no augmentation -- not the CCD ideal
     # values AF3 uses. Read off an env override so the two can be A/B'd:
     # substituting it is what takes the family's L2.atom_encoder from
@@ -525,15 +527,21 @@ _FEATURISE = {
     # the measurement -- it moves the trunk's MSA injection by 4.3%.
     # AF3_NO_ESM_DEDUPE_MSA=1 keeps AF3's two rows, for the A/B.
     **{m: dict(atom_keys_subset_size=192, lm_pair=True,
-               dedupe_self_msa=not os.environ.get('AF3_NO_ESM_DEDUPE_MSA'),
+               # 'query_once': native's MSA is the a3m, query once, with or without homologs (6648 rows to our 6649)
+               dedupe_self_msa=not os.environ.get('AF3_NO_ESM_DEDUPE_MSA') and 'query_once',
+               # profile over the complex MSA: a nucleic chain beside a protein MSA reads ~all gap, not its own one-hot
+               complex_msa_profile=not os.environ.get('AF3_NO_ESM_COMPLEX_PROFILE'),
+               # deletion_mean over rows of (pi / 2) * arctan(d / 3), as esm prepare_input; AF3 takes the raw count mean
+               esm_deletion_mean=not os.environ.get('AF3_NO_ESM_DELETION'),
                esmfold2_ref_pos=not os.environ.get('AF3_NO_ESM_REF_POS'),
                # An atomised residue is UNKNOWN to ESMFold2, not its parent.
                # Its featuriser (esm 3.4.1 prepare_esmfold2_input) puts
                # PROTEIN_UNK_RES_TYPE = 22 on all ten tokens of a
                # phospho-serine where we put SER -- the same convention
-               # rosettafold3 already needs, and for the same reason.
+               # rosettafold3 already needs, and for the same reason -- and on
+               # a modified nucleotide's tokens too.
                atomized_unknown_restype=not os.environ.get(
-                   'AF3_NO_ESM_ATOMIZED_UNK'),
+                   'AF3_NO_ESM_ATOMIZED_UNK') and 'nucleic',
                # DIAGNOSTIC: AF3_ESM_PTM_ONE_TOKEN=1 keeps a modified residue
                # as ONE token holding all its atoms (boltz2's convention)
                # instead of atomising it. esmfold2 places a residue's atoms
@@ -575,7 +583,8 @@ _FEATURISE = {
     # in training, occupying a slot in the atom windows and shifting the flat
     # atom axis of every chain after the first. Same knob esmfold2 and chai-1
     # already use.
-    'boltz2': dict(modified_as_one_token=True, padded_keys=True,
+    # declared_polymer_bonds: boltz's `bond` constraint between two tokens is a token bond, polymer-polymer included
+    'boltz2': dict(modified_as_one_token=True, padded_keys=True, declared_polymer_bonds=True,
                    **({} if os.environ.get('AF3_NO_BOLTZ2_DROP_OXT')
                       else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
                    # 'query': boltz keeps the a3m as given, query once, with
@@ -591,7 +600,9 @@ _FEATURISE = {
                    keep_ligand_leaving_atoms=True,
                    # SMILES atoms named element + canonical rank, as boltz
                    # names them (_boltz_smiles_atom_names).
-                   smiles_atom_names='boltz'),
+                   smiles_atom_names='boltz',
+                   # raw_last_conformer: its last conformer group keeps the stored frame (constants/boltz2_conformers.py)
+                   raw_last_conformer=not os.environ.get('AF3_NO_BOLTZ2_RAW_LAST')),
     # opendde runs its diffusion on an expanded structural-token set, and pads
     # the atom key window rather than sliding it in bounds.
     # struct_num_tokens is deliberately absent: the structural-token count
@@ -611,10 +622,24 @@ _FEATURISE = {
     # `false`. Reading the code got the right question and the wrong answer, and
     # the feature dump is what settled it -- which is the argument for
     # dev/oracles/featurisation_diff.py existing.
+    # dedupe_self_msa: a protenix fork, and its featuriser too emits a depth-1 self MSA; the duplicate query row
+    # moved a single-sequence protein+RNA trunk to another basin (u1a pair rel 0.35 -> 0.06 against native)
     'opendde': dict(opendde=True, padded_keys=True,
+                    # a protenix fork: same include_discont_poly_poly_bonds=True rule for declared bonds
+                    declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
+                    # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
+                    # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
+                    ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                     empty_template_gap=not os.environ.get(
                         'AF3_NO_DDE_TEMPLATE_GAP'),
-                    empty_template_gap_slots='first'),
+                    empty_template_gap_slots='first',
+                    dedupe_self_msa=not os.environ.get('AF3_NO_DDE_DEDUPE_MSA'),
+                    # its featuriser fills a ligand's MSA with UNK and a nucleic chain's all-gap rows with its query
+                    native_nonprotein_msa=not os.environ.get('AF3_NO_DDE_NONPROTEIN_MSA'),
+                    # and deduplicates a protein chain's unpaired MSA, which AF3 keeps as supplied
+                    dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
+                    # after the centring its featuriser moves each reference conformer by U(-1, 1) per axis
+                    translate_conformers=True),
     # PER FAMILY, not per model. One `protenix/model/modules/primitives.py`
     # serves every protenix release, so the padded key window is a property of
     # the implementation and not of a checkpoint. It was set for protenix2
@@ -638,9 +663,21 @@ _FEATURISE = {
     # Both are env-overridable for A/B on a target, the way the esmfold2 dedupe
     # already is -- a convention that changes a fold by 9 A deserves a switch
     # that can be flipped without an edit.
+    # native_nonprotein_msa: the same msa_featurizer as opendde's -- ligands UNK, nucleic all-gap rows filled with the query
     **{m: dict(padded_keys=True,
                empty_template_gap=not os.environ.get('AF3_NO_PX_TEMPLATE_GAP'),
-               dedupe_self_msa=not os.environ.get('AF3_NO_PX_DEDUPE_MSA'))
+               dedupe_self_msa=not os.environ.get('AF3_NO_PX_DEDUPE_MSA'),
+               native_nonprotein_msa=not os.environ.get('AF3_NO_PX_NONPROTEIN_MSA'),
+               dedupe_unpaired_msa=not os.environ.get('AF3_NO_DEDUPE_UNPAIRED_MSA'),
+               translate_conformers=True,
+               # declared bonds: discontinuous polymer-polymer and modified-residue-to-ligand, as include_discont_poly_poly_bonds
+               declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'discontinuous',
+               # and its leaving atoms by the CCD flags: the group at each declared bond atom goes before
+               # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
+               ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
+               # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width
+               **({} if os.environ.get('AF3_NO_PX_NATIVE_RNG')
+                  else {'native_rng': {'protenix1': 128, 'protenix2': 256}[m]}))
        for m in model_config.PROTENIX_FAMILY},
     # EXPERIMENT (see the if2 tail investigation): align the atom key window's
     # edge to the atom count rounded up to a whole query block, which is what
@@ -691,8 +728,11 @@ _FEATURISE = {
                             else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
                          chirals=True, atomized_element_names=True,
                          restype_alignment=True,
-                         atomized_unknown_restype=True,
+                         # native gives a modified nucleotide's atomised tokens the protein UNK too (5CM: 20)
+                         atomized_unknown_restype='nucleic',
                          atomized_backbone_bonds=True,
+                         # atomworks keeps a modified (atomised) residue's bond to a ligand, drops polymer-polymer ones
+                         declared_polymer_bonds=not os.environ.get('AF3_NO_DECLARED_BONDS') and 'ligand',
                          padded_keys=True,
                          dedupe_self_msa=not os.environ.get(
                              'AF3_NO_RF3_DEDUPE_MSA')),
@@ -704,14 +744,20 @@ _FEATURISE = {
     # depth-1 self-MSA. It also takes ESM2 embeddings, which are optional but not
     # minor -- without them a natural protein folds to 5.70 A where chai reaches
     # 0.642.
-    # std_conformers is deliberately absent: see converters/publish.py. chai's
-    # own standard-residue conformers are worth 0.08 A on 6MRR (1.698 vs 1.776)
-    # and we do not have the licence to redistribute them, so the CCD ideal
-    # values every other model uses are the default. Pass
-    # std_conformers='std_conformers.npz' here, with the file beside the blob,
-    # to restore them.
-    'chai1': dict(circular_keys=True, drop_atoms=('OXT',),
-                  zero_msa_without_alignment=True, esm=True),
+    # std_conformers: chai's own standard-residue conformers (constants/chai1_conformers.py) in place of CCD ideal ones
+    # atomized_unknown_restype: chai-lab's restype is gemmi's fasta_code(), X for
+    # every modified residue (SEP, TPO, MSE ...), where AlphaFold 3 keeps the
+    # parent; atomised, a phosphoserine's ten tokens are UNKNOWN to chai
+    # (data/parsing/structure/residue.py get_restype), and its ESM2 sequence
+    # reads X there too (_resolve_esm).
+    # atomized_unknown_restype='chai': a modified nucleotide's atomised tokens are chai's DX/RX (our N), not the parent
+    # chai_msa: its uint8 profile and single-sequence context for chains without an alignment (model_features._chai_msa)
+    'chai1': dict(circular_keys=True, drop_atoms=('OXT', 'OP3'),
+                  zero_msa_without_alignment=True, esm=True, full_msa=True,
+                  atomized_unknown_restype='chai', chai_msa=True,
+                  # its TokenBondRestraint: every declared bond, directed, into both pair inputs
+                  declared_bond_feature=not os.environ.get('AF3_NO_DECLARED_BONDS'),
+                  std_conformers=not os.environ.get('AF3_NO_CHAI_CONFORMERS')),
 }
 
 # Conformer centering rides in as a featurise KNOB as well as a
@@ -746,6 +792,15 @@ for _m in model_config.CENTRE_REF_CONFORMERS:
 for _m in ('openfold3', 'openbind0'):
   if not os.environ.get('AF3_NO_TERMINAL_DROP'):
     _FEATURISE.setdefault(_m, {})['drop_atoms'] = ('OXT', 'OP3', 'O3P')
+  # of3 profiles the deduplicated first 16384 main-MSA rows; on msa_gappy that is 6530 of 21577, profile max|d| 0.18 without
+  if not os.environ.get('AF3_NO_OF3_MAIN_MSA'):
+    _FEATURISE.setdefault(_m, {})['of3_main_msa'] = 16384
+  # of3 builds an unknown amino acid from the CCD UNK, N CA C O CB CG (593 atoms on unk_residues to AF3's GLY-built 587)
+  if not os.environ.get('AF3_NO_CCD_UNK'):
+    _FEATURISE.setdefault(_m, {})['ccd_unk'] = True
+  # of3 pads to 4 empty templates that are all GAP (create_template_restype), where AF3's empty slots read restype 0
+  if not os.environ.get('AF3_NO_OF3_TEMPLATE_GAP'):
+    _FEATURISE.setdefault(_m, {}).update(empty_template_gap=True, empty_template_gap_slots='atoms')
 
 
 # Where a converted model's weights are published. The file name is what
@@ -770,12 +825,29 @@ WEIGHTS_FOLDERS = {
 TOWER_FOLDER = 'lm'
 
 
+# Trunk passes each model's own inference path runs by default (its CLI, not its base config); unlisted = AF3's 11.
+_TRUNK_PASSES = {
+    'openfold3': 4,      # of3_all_atom model_config num_recycles 3; num_cycles = num_recycles + 1
+    'openbind0': 4,      # the same OpenFold3 config
+    'boltz2': 4,         # boltz main.py --recycling_steps 3; range(recycling_steps + 1)
+    'protenix1': 10,     # runner --cycle 10 (and use_default_params); range(N_cycle)
+    'protenix2': 10,
+    'opendde': 10,       # config/model_base.py N_cycle 10
+    'rosettafold3': 10,  # inference_engine/rf3.yaml n_recycles 10; range(n_recycles)
+    'chai1': 3,          # chai1.py num_trunk_recycles 3; range(num_trunk_recycles)
+    'esmfold2': 20,      # esmfold2/processor.py num_loops 20
+    'esmfold2_fast': 20,
+    'esmfold2_lm600m': 20,
+    'esmfold2_lm300m': 20,
+}
+
+
 class ModelSpec:
   """Everything `global_config.model = name` implies, in one place."""
 
   __slots__ = ('name', 'full_fat', 'trained_fourier', 'featurise',
                'weights_repo', 'weights_file', 'weights_prefix', 'weights_licence',
-               'weights_source')
+               'weights_source', 'default_num_recycles')
 
   # Which network this spec's weights run on. Everything in MODELS rides the
   # AF3 graph; AF2 does not (see AF2Spec). Read this rather than testing the
@@ -800,6 +872,8 @@ class ModelSpec:
                          or name == 'chai1')
     self.trained_fourier = trained_fourier
     self.featurise = dict(_FEATURISE.get(name, {}))
+    # AF's convention (N recycles = N + 1 passes) for the model's own default pass count
+    self.default_num_recycles = _TRUNK_PASSES.get(name, 11) - 1
     self.weights_repo = weights_repo
     self.weights_file = weights_file or f'{name}.bin.zst'
     # Where it lives IN the repo. A flat repo of forty-odd blobs is unreadable;
@@ -1075,7 +1149,11 @@ def featurise_kwargs(spec):
       flatten_non_standard_residues=not knobs.get('modified_as_one_token',
                                                   False),
       drop_ligand_leaving_atoms=not knobs.get('keep_ligand_leaving_atoms',
-                                              False))
+                                              False),
+      # protenix/opendde's leaving atoms by CCD flags. Declared as a knob on
+      # main and passed by NO caller -- model_features warned at runtime that
+      # "an older caller does not pass" it; this is where callers get it.
+      ccd_leaving_atoms=bool(knobs.get('ccd_leaving_atoms', False)))
 
 
 def get(name):

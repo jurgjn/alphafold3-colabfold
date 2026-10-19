@@ -354,6 +354,13 @@ def tokenizer(
           atom_names.append('')
           atom_elements.append('')
 
+      # A residue whose holes push it past the token's slots (2'-O-methylguanosine kept as ONE token, as boltz2
+      # keeps a modified residue: its leaving atoms' holes put C4 at slot 24) is packed - holes dropped - before
+      # anything is truncated, as genuine Boltz-2 keeps every atom; a residue that fits keeps its holes.
+      if len(atom_names) > max_atoms_per_token:
+        kept = [(n, e) for n, e in zip(atom_names, atom_elements) if n]
+        atom_names = [n for n, _ in kept]
+        atom_elements = [e for _, e in kept]
       if len(atom_names) > max_atoms_per_token:
         logging.warning(
             'Atom list for chain %s '
@@ -424,6 +431,8 @@ class MSA:
   deletion_mean: xnp_ndarray
   # Number of MSA alignments.
   num_alignments: xnp_ndarray
+  # Leading rows that came from the paired MSA (chai-1's IsPairedMSA reads it); None in a batch built without it.
+  num_paired: xnp_ndarray | None = None
 
   @classmethod
   def compute_features(
@@ -634,6 +643,7 @@ class MSA:
       ])
       np_example['msa_all_seq'] = np_example['msa_all_seq'][:max_allowed_paired]
 
+    num_paired = len(np_example['msa_all_seq']) if 'msa_all_seq' in np_example else 0
     np_example = merging_features.merge_paired_and_unpaired_msa(np_example)  # pyrefly: ignore[bad-argument-type]
 
     # Crop MSA residues. Need to use the standard token indices, since msa does
@@ -674,6 +684,7 @@ class MSA:
         profile=_pad_to(np_example['profile'], (num_tokens, None)),  # pyrefly: ignore[bad-argument-type]
         deletion_mean=_pad_to(np_example['deletion_mean'], (num_tokens,)),  # pyrefly: ignore[bad-argument-type]
         num_alignments=np.array(num_alignments, dtype=np.int32),
+        num_paired=np.array(num_paired, dtype=np.int32),
     )
 
   def index_msa_rows(self, indices: xnp_ndarray) -> Self:
@@ -686,6 +697,7 @@ class MSA:
         profile=self.profile,
         deletion_mean=self.deletion_mean,
         num_alignments=self.num_alignments,
+        num_paired=self.num_paired,
     )
 
   @classmethod
@@ -697,6 +709,7 @@ class MSA:
         profile=batch['profile'],
         deletion_mean=batch['deletion_mean'],
         num_alignments=batch['num_alignments'],
+        num_paired=batch.get('num_paired_alignments'),
     )
     return output
 
@@ -708,6 +721,7 @@ class MSA:
         'profile': self.profile,
         'deletion_mean': self.deletion_mean,
         'num_alignments': self.num_alignments,
+        **({} if self.num_paired is None else {'num_paired_alignments': self.num_paired}),
     }
 
 

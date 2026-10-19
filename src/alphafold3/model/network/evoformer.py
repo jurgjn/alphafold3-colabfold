@@ -19,6 +19,7 @@
 
 """Evoformer network."""
 
+import dataclasses
 import functools
 
 from alphafold3.common import base_config
@@ -31,6 +32,7 @@ from . import atom_cross_attention
 from . import featurization
 from . import modules
 from . import template_modules
+from . import torch_philox
 import os
 
 import haiku as hk
@@ -293,6 +295,19 @@ def _esm_tap(name, value):
   return value
 
 
+def _native_mc_dropout(x, rng, k):
+  """protenix's MC dropout on the recycled pair, with native's own mask for this seed and pass"""
+  from alphafold3.model.pipeline import protenix_rng
+  keep_p = 1.0 - protenix_rng.MC_DROPOUT_RATE
+  k = jnp.minimum(k, rng['drop_offset'].shape[0] - 1)
+
+  def drop(x):
+    keep = torch_philox.dropout_keep(rng['seed'], rng['drop_offset'][k], rng['n_tokens'], x.shape,
+                                     keep=keep_p, grid=rng['grid'])
+    return jnp.where(keep, x.astype(jnp.float32) * jnp.float32(1.0 / keep_p), 0.0).astype(x.dtype)
+  return jax.lax.cond(rng['mc_dropout'] > 0, drop, lambda x: x, x)
+
+
 class Evoformer(hk.Module):
   """Creates 'single' and 'pair' embeddings."""
 
@@ -399,7 +414,13 @@ class Evoformer(hk.Module):
       pair_activations += hm.Linear(
           self.config.pair_channel, use_bias=True, name='position_activations'
       )(rel_feat)
-      return pair_activations
+      # RelativeChain and RelativeEntity, which the bias holds only at their single-chain classes (2 and 1)
+      ce = hk.get_parameter('chai1_chain_entity', [9, self.config.pair_channel], jnp.float32, init=jnp.zeros)
+      ent, sym = tf.entity_id.astype(jnp.int32), tf.sym_id.astype(jnp.int32)
+      rel_e = ent[:, None] - ent[None, :]
+      rchain = jnp.where(rel_e != 0, 5, jnp.clip(sym[:, None] - sym[None, :] + 2, 0, 4))
+      rent = jnp.clip(rel_e + 1, 0, 2)
+      return pair_activations + (ce[rchain] + ce[6 + rent]).astype(pair_activations.dtype)
 
     # A GATHER, not a matmul against a one-hot. `position_activations` is a
     # (139, pair_channel) weight contracted with a concatenation of three
@@ -644,9 +665,14 @@ class Evoformer(hk.Module):
       is_ligand: jnp.ndarray | None = None,
       asym_id: jnp.ndarray | None = None,
       single_post_recycle: jnp.ndarray | None = None,
+      rows_keep: jnp.ndarray | None = None,
+      is_dna: jnp.ndarray | None = None,
   ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Processes MSA and returns updated pair activations."""
     dtype = pair_activations.dtype
+    if rows_keep is not None:
+      msa_batch = dataclasses.replace(
+          msa_batch, mask=msa_batch.mask * rows_keep[:, None].astype(msa_batch.mask.dtype))
     chai1 = self.global_config.model == 'chai1'
     # chai does NOT shuffle: it takes the MSA in the order given and keeps the
     # query first. Shuffling here would also break the query-row handling below,
@@ -654,7 +680,9 @@ class Evoformer(hk.Module):
     # land somewhere random and some other sequence would be labelled as it.
     keep_query = (self.global_config.model in model_config.MSA_KEEP_QUERY_ROW
                   and not os.environ.get('AF3_NO_KEEP_QUERY'))
-    if keep_query:
+    if rows_keep is not None:
+      pass        # the replayed subset is native's whole sample (its test cutoff is 16384), so no shuffle or cut
+    elif keep_query:
       # One call, not shuffle-then-truncate: the query has to survive the
       # SUBSAMPLE, which is a property of the pair and not of either step.
       msa_batch, key = featurization.subsample_msa_keep_query(
@@ -668,7 +696,10 @@ class Evoformer(hk.Module):
                                                    self.config.num_msa)
     msa_feat = featurization.create_msa_feat(
         msa_batch, self.soft_seq, self.design_mask, chai1=chai1,
-        is_ligand=is_ligand, asym_id=asym_id).astype(dtype)
+        is_ligand=is_ligand, asym_id=asym_id,
+        # esm prepare_input: deletion_value = (pi / 2) * arctan(d / 3), where AF3 scales by 2 / pi
+        deletion_scale=(jnp.pi / 2.0 if self.global_config.model in model_config.ESMFOLD2_FAMILY
+                        else 2.0 / jnp.pi)).astype(dtype)
 
     # Boltz-2 appends an is_paired MSA feature (Boltz msa features = [onehot(33), has_deletion,
     # deletion_value, is_paired]; ours are [onehot(32), has_deletion, deletion_value]). For a
@@ -710,6 +741,13 @@ class Evoformer(hk.Module):
     msa_activations = hm.Linear(
         self.config.msa_channel, use_bias=chai1, name='msa_activations'
     )(msa_feat)
+    if self.global_config.model == 'boltz2' and is_dna is not None:
+      # Boltz's DN, the DNA unknown (its class 32), which our single nucleic unknown (30, Boltz's N) cannot tell from an
+      # RNA one: the converter keeps the difference of its msa_proj columns, added where a DNA column reads 30. Zero (the
+      # loader's fill) for a blob without it, so those fold as before.
+      dn = hk.get_parameter('boltz2_dn_msa', [self.config.msa_channel], jnp.float32, init=jnp.zeros)
+      at_dn = (msa_batch.rows == 30) & is_dna.astype(bool)[None, :]
+      msa_activations += at_dn.astype(dtype)[..., None] * dn.astype(dtype)
 
     # chai DOES add a single-representation term, `msa_module.linear_s2m`. It
     # lives INSIDE msa_module, which is how it was first missed -- the search
@@ -776,6 +814,8 @@ class Evoformer(hk.Module):
   # Attributes rather than call arguments so the change stays at the two ends --
   # here and in Model -- instead of threading through every intermediate call.
   soft_seq = None
+  # protenix's native MC dropout and MSA subsets for this seed (pipeline.protenix_rng), or None
+  native_rng = None
   design_mask = None
 
   def __call__(
@@ -791,6 +831,8 @@ class Evoformer(hk.Module):
 
     num_residues = target_feat.shape[0]
     assert batch.token_features.aatype.shape == (num_residues,)
+    rng = self.native_rng
+    px_pass = prev.get('px_pass') if rng is not None else None
 
     dtype = utils.compute_dtype(self.global_config)
 
@@ -855,13 +897,16 @@ class Evoformer(hk.Module):
           )(
               hm.LayerNorm(name='prev_embedding_layer_norm')(act)
           )
-        return act + hm.Linear(
+        recycled = hm.Linear(
             act.shape[-1],
             name='prev_embedding',
             initializer=self.global_config.final_init,
         )(
             hm.LayerNorm(name='prev_embedding_layer_norm')(z_prev)
         )
+        if rng is not None:
+          recycled = _native_mc_dropout(recycled, rng, px_pass)
+        return act + recycled
 
       if pair_only:
         # ESMFold2 assembles the ENTIRE injection -- relative encoding, bonds AND
@@ -912,6 +957,10 @@ class Evoformer(hk.Module):
         _esm_tap('z_parcae', pair_activations)
       elif chai:
         pair_activations = self._relative_encoding(batch, pair_activations)
+        if batch.declared_bonds is not None:
+          # the trunk half of chai's bond projection, through token_pair_proj_in_trunk (converters.chai1)
+          pair_activations += hm.Linear(self.config.pair_channel, use_bias=False, name='chai1_bond_trunk')(
+              batch.declared_bonds[..., None].astype(pair_activations.dtype))
         pair_init = pair_activations
         pair_activations = _add_prev(pair_activations, pair_init)
       else:
@@ -920,13 +969,9 @@ class Evoformer(hk.Module):
         _esm_tap('z_after_prev', pair_activations)
         pair_activations = self._relative_encoding(batch, pair_activations)
 
-      # chai has NO bond feature: its 163-column token-pair stream is
-      # docking/chain/entity/separation/restraints only (converters.chai1
-      # PAIR_COLS). So bond_embedding has no source weight, and running it left
-      # a RANDOM-init Linear adding a term chai does not have. Harmless for a
-      # bare protein, where the contact matrix is all zero -- but a ligand has
-      # intra-ligand bonds (BTN contributes 34 nonzero entries), so this was
-      # live on exactly the inputs the port had just started supporting.
+      # chai has no AF3 bond_embedding: its only bond input is the DECLARED-bond feature above (chai1_bond_trunk), not
+      # a ligand's own bonds. Running bond_embedding left a RANDOM-init Linear adding a term chai does not have, live
+      # on every ligand (BTN contributes 34 nonzero entries).
       if self.global_config.model != 'chai1' and not pair_only:
         pair_activations = self._embed_bonds(
             batch=batch, pair_activations=pair_activations
@@ -973,12 +1018,15 @@ class Evoformer(hk.Module):
             use_dropout=use_dropout,
             is_ligand=batch.token_features.is_ligand,
             asym_id=batch.token_features.asym_id,
+            is_dna=batch.token_features.is_dna,
             # chai's msa_module.linear_s2m reads the single AFTER its recycle
             # term is added (its argument traces to
             # add(token_single_trunk_initial_repr, recycle_proj(prev))), not
             # s_init. Feeding s_init put the block-0 outer product at corr 0.613;
             # this takes it to 0.999993.
             single_post_recycle=single_activations,
+            rows_keep=(None if rng is None else
+                       rng['msa_rows'][jnp.minimum(px_pass, rng['msa_rows'].shape[0] - 1)]),
         )
         _esm_tap('z_after_msa', pair_activations)
       del key  # Unused after this point.
@@ -1069,6 +1117,7 @@ class Evoformer(hk.Module):
           # consumed above; every pass after the first recycles for real
           **({'recycle_first': jnp.zeros((), jnp.float32)}
              if first is not None else {}),
+          **({'px_pass': px_pass + 1} if rng is not None else {}),
       }
 
     return output

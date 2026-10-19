@@ -45,8 +45,8 @@ def _cmp(tag, ours, native):
   return corr
 
 
-def ours(model, seq, seed, ptms):
-  """-> our own s_inputs / s_trunk / z_trunk, caught on the way to diffusion."""
+def ours(model, seq, seed, ptms, chains=None):
+  """-> our own s_inputs / s_trunk / z_trunk, caught on the way to diffusion; chains replace the one protein chain."""
   import fold_check
   from alphafold3.common import folding_input
   from alphafold3.model.network import diffusion_head
@@ -61,7 +61,7 @@ def ours(model, seq, seed, ptms):
 
   orig = diffusion_head.DiffusionHead.__call__
   diffusion_head.DiffusionHead.__call__ = _hook
-  chains = [folding_input.ProteinChain(
+  chains = chains or [folding_input.ProteinChain(
       id='A', sequence=seq, ptms=list(ptms), unpaired_msa='', paired_msa='',
       templates=[])]
   try:
@@ -83,21 +83,31 @@ def main(argv=None):
   ap.add_argument('--case', default=None,
                   help='json in dev/oracles/native_json (defaults from --native)')
   ap.add_argument('--seed', type=int, default=101)
+  ap.add_argument('--af3-json', default=None,
+                  help='our fold input for the same molecule, for inputs the native json reader here does not cover '
+                       '(RNA, DNA, modifications, complexes)')
   args = ap.parse_args(argv)
   sys.argv = sys.argv[:1]
 
   nat = np.load(args.native)
   case = args.case or os.path.basename(args.native)[len('native_trunk_'):-4]
-  jpath = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       'native_json', case + '.json')
-  spec = json.load(open(jpath))[0]['sequences'][0]['proteinChain']
-  seq = spec['sequence']
-  ptms = [(m['ptmType'].replace('CCD_', ''), m['ptmPosition'])
-          for m in spec.get('modifications', [])]
-  print('%s / %s: %d residues, ptms %s, seed %d'
-        % (args.model, case, len(seq), ptms or 'none', args.seed))
+  chains = None
+  if args.af3_json:
+    from alphafold3.common import folding_input
+    chains = list(folding_input.Input.from_json(open(args.af3_json).read()).chains)
+    seq, ptms = '', []
+    print('%s / %s: %d chain(s) from %s, seed %d' % (args.model, case, len(chains), args.af3_json, args.seed))
+  else:
+    jpath = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'native_json', case + '.json')
+    spec = json.load(open(jpath))[0]['sequences'][0]['proteinChain']
+    seq = spec['sequence']
+    ptms = [(m['ptmType'].replace('CCD_', ''), m['ptmPosition'])
+            for m in spec.get('modifications', [])]
+    print('%s / %s: %d residues, ptms %s, seed %d'
+          % (args.model, case, len(seq), ptms or 'none', args.seed))
 
-  got = ours(args.model, seq, args.seed, ptms)
+  got = ours(args.model, seq, args.seed, ptms, chains)
   print('  shapes: single %s pair %s target_feat %s'
         % (got['single'].shape, got['pair'].shape, got['target_feat'].shape))
 
