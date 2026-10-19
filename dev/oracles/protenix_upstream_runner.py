@@ -41,13 +41,17 @@ def _protenix_json(j, msa_root):
       if mods:
         d['modifications'] = mods
       msa = e.get('unpairedMsa') or ''
-      if msa and msa.strip() != '>q\n%s' % e['sequence']:
+      paired = e.get('pairedMsa') or ''
+      has_pair = len(paired.splitlines()) > 2
+      if (msa and msa.strip() != '>q\n%s' % e['sequence']) or has_pair:
         md = os.path.join(msa_root, ids[0])
         os.makedirs(md, exist_ok=True)
         with open(os.path.join(md, 'non_pairing.a3m'), 'w') as f:
-          f.write(msa)
+          f.write(msa or '>query\n%s\n' % e['sequence'])
+        # the pairedMsa as protenix's pairing.a3m: it pairs by the UniProt
+        # species in each header (msa_utils.get_species_ids), as AF3 does
         with open(os.path.join(md, 'pairing.a3m'), 'w') as f:
-          f.write('>query\n%s\n' % e['sequence'])
+          f.write(paired if has_pair else '>query\n%s\n' % e['sequence'])
         d['msa'] = {'precomputed_msa_dir': md, 'pairing_db': 'uniref100'}
       if e.get('templates'):
         raise NotImplementedError('templates')
@@ -242,6 +246,65 @@ def forward(model, out_dir, in_npz, out_npz):
                        for k, v in out.items()})
 
 
+def trajectory(model, out_dir, in_npz, out_npz):
+  """protenix's REAL sampler at its inference defaults (200 steps), one sample,
+  every random draw the harness's (vendor_native_parity --trajectory): the
+  initial positions and per step the augmentation and the noise eps.
+  protenix rotates as R @ x (rot_vec_mul) where the harness's draw means
+  x @ R, so it gets the transpose."""
+  import torch
+  from runner.inference import InferenceRunner, update_inference_configs
+  from protenix.model import generator as G
+  z = np.load(in_npz)
+  c = _configs(model, os.path.join(out_dir, 'protenix.json'), out_dir, 'fp32')
+  c.model.N_cycle = int(z['recycling_steps']) + 1
+  c.sample_diffusion.N_sample = 1
+  runner = InferenceRunner(c)
+  from protenix.utils.seed import seed_everything
+  seed_everything(seed=1, deterministic=True)
+  _, data, _ = _batch(model, out_dir, 'fp32')
+  runner.update_model_configs(update_inference_configs(c, data['N_token'].item()))
+  net = runner.model
+  dev = runner.device
+  x0 = torch.tensor(z['traj_x0'], dtype=torch.float32, device=dev)
+  eps = torch.tensor(z['traj_eps'], dtype=torch.float32, device=dev)
+  rot = torch.tensor(z['traj_rot'], dtype=torch.float32, device=dev).transpose(-1, -2)
+  trans = torch.tensor(z['traj_trans'], dtype=torch.float32, device=dev)
+  n = {'randn': 0, 'aug': 0}
+  got = {}
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def randn(self, size, device=None, dtype=None, **kw):
+      k = n['randn']
+      n['randn'] += 1
+      v = x0 if k == 0 else eps[k - 1]
+      return v.reshape(size).to(dtype or torch.float32)
+
+  def aug(x_input_coords, N_sample=1, s_trans=1.0, centre_only=False, mask=None, eps=1e-12):
+    assert N_sample == 1 and not centre_only and mask is None
+    k = n['aug']
+    n['aug'] += 1
+    x = x_input_coords - x_input_coords.mean(dim=-2, keepdim=True)
+    x = x[..., None, :, :]
+    # rot_vec_mul(R, x): R @ x per point
+    return torch.einsum('ij,...j->...i', rot[k], x) + trans[k] * s_trans
+
+  G.torch, G.centre_random_augmentation = _Torch(), aug
+  orig = net.sample_diffusion
+
+  def sample_diffusion(**kw):
+    got['sigmas'] = kw['noise_schedule'].detach().float().cpu().numpy()
+    out = orig(**kw)
+    got.setdefault('final', out.detach().float().cpu().numpy().reshape(-1, 3))
+    return out
+  net.sample_diffusion = sample_diffusion
+  runner.predict(data)
+  np.savez(out_npz, sigmas=got['sigmas'], steps=n['aug'], final=got['final'])
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)

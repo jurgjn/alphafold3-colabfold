@@ -71,7 +71,7 @@ def _rf3_json(j, msa_dir):
       which is RF3's single-sequence path as `rf3 fold` runs it with no
       LOCAL_MSA_DIRS: LoadPolymerMSAs finds nothing and the MSA is the query.
     * An unpaired alignment goes to an .a3m file named by msa_path, the way the
-      CLI reads one. (AF3's pairedMsa is '' in every case here.)
+      CLI reads one. (A pairedMsa goes into it, tagged by TaxID.)
   """
   comps, resname = [], {}
   for entry in j['sequences']:
@@ -106,13 +106,27 @@ def _rf3_json(j, msa_dir):
         # replaces this JSON input with a CIF of the query on the template's
         # coordinates
         _TEMPLATE_CASE.append((ids, e['sequence'], e['templates']))
-      if not _trivial_msa(e.get('unpairedMsa'), e['sequence']):
+      paired = e.get('pairedMsa')
+      if not _trivial_msa(paired, e['sequence']):
+        # rf3 reads ONE a3m per chain and pairs rows across chains by the
+        # `TaxID=N` in the header (atomworks extract_tax_id): the pair a3m's
+        # rows tagged TaxID=<row index>, then the single a3m's rows past its
+        # query, untagged
+        pr = [l for l in paired.splitlines() if l.strip()]
+        ur = [l for l in (e.get('unpairedMsa') or '').splitlines() if l.strip()]
+        lines = pr[:2]
+        for r in range(1, len(pr) // 2):
+          lines += ['>%s TaxID=%d' % (pr[2 * r][1:], 900000 + r), pr[2 * r + 1]]
+        lines += ur[2:]
+        p = os.path.join(msa_dir, '%s.a3m' % ids[0])
+        with open(p, 'w') as f:
+          f.write('\n'.join(lines) + '\n')
+        d['msa_path'] = p
+      elif not _trivial_msa(e.get('unpairedMsa'), e['sequence']):
         p = os.path.join(msa_dir, '%s.a3m' % ids[0])
         with open(p, 'w') as f:
           f.write(e['unpairedMsa'])
         d['msa_path'] = p
-      if not _trivial_msa(e.get('pairedMsa'), e['sequence']):
-        raise NotImplementedError('pairedMsa')
       comps.append(d)
     elif kind == 'ligand':
       d = {'chain_id': ids if len(ids) > 1 else ids[0]}
@@ -446,6 +460,61 @@ def forward(model, out_dir, in_npz, out_npz):
                        for k, v in out.items()})
 
 
+def trajectory(model, out_dir, in_npz, out_npz):
+  """RF3's REAL sampler at `rf3 fold`'s engine defaults (num_steps 50: a
+  50-point schedule, 49 steps), one sample, every random draw the harness's
+  (vendor_native_parity --trajectory): the initial positions, and per step
+  the augmentation (foundry centre_random_augmentation, which rotates as
+  R @ x -- the replacement applies the harness's x @ R) and the noise.
+
+  RF3's initial structure is c0 * N(0, 1) PLUS coord_atom_lvl_to_be_noised,
+  which inference fills with a second unit normal (extra_xforms.
+  CheckForNaNsInInputs). A 1 A jitter on a 2560 A cloud, and not a draw the
+  port has: it is taken as 0 here, so x0 is c0 * the harness's draw."""
+  import torch
+  from rf3.diffusion_samplers import inference_sampler as smod
+  z = np.load(in_npz)
+  x0 = torch.tensor(z['traj_x0'], dtype=torch.float32)
+  eps = torch.tensor(z['traj_eps'], dtype=torch.float32)
+  rot = torch.tensor(z['traj_rot'], dtype=torch.float32)
+  trans = torch.tensor(z['traj_trans'], dtype=torch.float32)
+  n = {'eps': 0, 'aug': 0}
+  got = {}
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def normal(self, mean=0.0, std=1.0, size=None, device=None, **kw):
+      k = n['eps']
+      n['eps'] += 1
+      return eps[k].reshape(size).to(device)
+
+  def aug(X_L, X_exists_L, s_trans=1.0):
+    k = n['aug']
+    n['aug'] += 1
+    assert bool(X_exists_L.all())
+    x = X_L - X_L.mean(dim=-2, keepdim=True)
+    return x @ rot[k].to(X_L) + s_trans * trans[k].to(X_L)
+
+  def initial(self, c0, D, L, coord_atom_lvl_to_be_noised):
+    return c0 * x0.reshape(D, L, 3).to(c0.device)
+
+  smod.torch, smod.centre_random_augmentation = _Torch(), aug
+  smod.SampleDiffusion._get_initial_structure = initial
+  orig = smod.SampleDiffusion.sample_diffusion_like_af3
+
+  def sample(self, **kw):
+    got['sigmas'] = self._construct_inference_noise_schedule(
+        device=kw['S_inputs_I'].device).float().cpu().numpy()
+    out = orig(self, **kw)
+    got.setdefault('final', out['X_L'].detach().float().cpu().numpy().reshape(-1, 3))
+    return out
+  smod.SampleDiffusion.sample_diffusion_like_af3 = sample
+  _run(out_dir, int(z['recycling_steps']) + 1, 'fp32', lambda ex: None)
+  np.savez(out_npz, sigmas=got['sigmas'], steps=n['aug'], final=got['final'])
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)

@@ -90,7 +90,7 @@ class RegistryTest(parameterized.TestCase):
     ev = config.heads.diffusion.eval
     self.assertNotEqual(ev.sigma_min, default.heads.diffusion.eval.sigma_min)
     self.assertAlmostEqual(ev.sigma_min, 0.0001)
-    self.assertTrue(ev.terminal_zero)
+    self.assertEqual(ev.schedule_tail, 'append')
     levels = np.asarray(diffusion_head.noise_schedule_for(ev, False))
     self.assertEqual(len(levels), ev.steps + 1)
     self.assertEqual(levels[-1], 0.0)

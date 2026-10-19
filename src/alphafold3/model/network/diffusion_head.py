@@ -149,12 +149,17 @@ class SampleConfig(base_config.BaseConfig):
   sigma_min: float = 0.0004
   sigma_max: float = 160.0
   rho: float = 7.0
-  # boltz's schedule shape (AtomDiffusion.sample_schedule): `steps` points from
-  # sigma_max down to sigma_min, i.e. t = arange(N) / (N - 1), then a final 0
-  # appended. AF3's is the N+1 endpoints of linspace(0, 1, N + 1), ending AT
-  # sigma_min. Same step count, but every intermediate sigma differs (37 at the
-  # largest gap for 200 steps) and boltz's last step lands on sigma 0.
-  terminal_zero: bool = False
+  # How the schedule ENDS. AF3's is the N+1 endpoints of linspace(0, 1, N + 1),
+  # ending AT sigma_min (16 * 4e-4 = 0.0064). The vendors differ, and the last
+  # step is the one that lands the structure:
+  #   'append'  -- boltz (AtomDiffusion.sample_schedule) and esm's ESMFold2:
+  #                N points from sigma_max to sigma_min (t = arange(N)/(N-1)),
+  #                then a 0 appended: N steps, every intermediate sigma moved.
+  #   'replace' -- protenix/OpenDDE (InferenceNoiseScheduler): AF3's N+1
+  #                points with the last overwritten by 0.
+  #   'extend'  -- IntelliFold (noise_schedule): AF3's N+1 points and a 0
+  #                appended, so N+1 steps (one more denoiser call).
+  schedule_tail: str = ''
   # ESMFold2 CLIPS the schedule: it drops every sigma above max_inference_sigma
   # and starts from that value instead. With sigma_data 16 and smax 160 the EDM
   # schedule opens at 2560, so a clip at 256 is a tenfold cut in initial noise
@@ -794,7 +799,7 @@ def noise_schedule_for(config, chai: bool):
     # where AF3 uses the N+1 endpoints, so it never samples sigma=0 exactly and
     # every sigma sits half a step inside AF3's.
     times = np.linspace(0.0, 1.0, 2 * config.steps + 1, dtype=np.float32)[1::2]
-  elif getattr(config, 'terminal_zero', False):
+  elif getattr(config, 'schedule_tail', '') == 'append':
     times = np.linspace(0, 1, config.steps, dtype=np.float32)
   else:
     times = np.linspace(0, 1, config.steps + 1, dtype=np.float32)
@@ -803,8 +808,13 @@ def noise_schedule_for(config, chai: bool):
                                      smax=config.flow_sigma_max if flow else config.sigma_max,
                                      p=config.rho),
                       dtype=np.float32)
-  if getattr(config, 'terminal_zero', False) and not chai:
+  tail = '' if chai else getattr(config, 'schedule_tail', '')
+  if tail in ('append', 'extend'):
     levels = np.concatenate([levels, np.zeros((1,), np.float32)])
+  elif tail == 'replace':
+    levels[-1] = 0.0
+  elif tail:
+    raise ValueError('schedule_tail %r: want append, replace or extend' % tail)
   if getattr(config, 'max_sigma', 0.0) and not flow:
     levels = np.concatenate([[config.max_sigma],
                              levels[levels <= config.max_sigma]])

@@ -369,30 +369,38 @@ def _widen_rosettafold3(cfg):
 #   1.107, noise_scale 0.901, step_scale 1.638, rho 8, sigma_min 4e-4); the
 #   full-trajectory parity (vendor_native_parity --trajectory) found it.
 _SAMPLER_CONSTANTS = {
-    # Protenix's small models ship their OWN sampler settings and they are not
-    # small differences: 5 steps against 200, no churn (gamma0 0 against 0.8) and
-    # step_scale 1.0 against 1.5 (configs_model_type.py, "the default setting for
-    # mini model"). Running them on AF3's constants would anneal on the wrong
-    # schedule 40x too slowly -- silent, as ever; nothing errors.
     'boltz2': dict(gamma_0=0.8, gamma_min=1.0, noise_scale=1.003,
                    step_scale=1.5, rho=7.0, sigma_min=0.0001, sigma_max=160.0,
-                   terminal_zero=True),
-    # ESMFold2 samples in FOURTEEN steps, not 200, and clips the schedule at
-    # sigma 256 -- the EDM schedule opens at sigma_data * smax = 2560, so
-    # running AF3's constants starts the trajectory with ten times the noise the
-    # model was trained to undo, and then anneals it fourteen times too slowly.
-    # Every ESMFold2 variant BUT ONE samples the same way.
-    **{m: dict(steps=14, max_sigma=256.0)
+                   schedule_tail='append'),
+    # protenix and OpenDDE: AF3's constants and grid, but InferenceNoiseScheduler
+    # overwrites the last sigma (0.0064) with 0, so the final step lands on the
+    # denoised structure (x = den - 0.5 (x - den)) instead of a quarter of the way.
+    **{m: dict(schedule_tail='replace') for m in ('protenix1', 'protenix2', 'opendde')},
+    # IntelliFold's native stack appends a 0 to AF3's 201 points: 201 steps.
+    'intellifold2': dict(schedule_tail='extend'),
+    # RF3's inference engine samples num_steps=50 (configs/inference_engine/
+    # rf3.yaml), and its schedule is linspace(0, 1, num_timesteps) -- 50 POINTS,
+    # 49 steps, ending at sigma_min. AF3's grid at steps=49 is exactly that.
+    'rosettafold3': dict(steps=49),
+    # ESMFold2's checkpoints set 14 schedule points (esm `inference_num_steps`),
+    # built boltz's way (14 points then a 0 appended) and then CLIPPED at sigma
+    # 256 with 256 prepended -- 10 steps. The EDM schedule opens at sigma_data
+    # * smax = 2560, so AF3's constants would start the trajectory with ten
+    # times the noise the model was trained to undo. Every ESMFold2 variant BUT
+    # ONE samples the same way.
+    **{m: dict(steps=14, max_sigma=256.0, schedule_tail='append')
        for m in model_config.ESMFOLD2_FAMILY},
     # The 600M tier does not: its config carries a different EDM schedule
     # entirely -- and it is Boltz-1's, constant for constant (gamma_0 0.605,
     # gamma_min 1.107, noise_scale 0.901, step_scale 1.638, rho 8). Found by
     # check_release_config refusing the conversion, which is exactly the failure
     # it exists for: nothing about the wrong schedule errors, it just anneals
-    # differently and returns a plausible structure.
+    # differently and returns a plausible structure. Synthyra's runtime
+    # (generation_esmfold2.py) builds the same append-then-cap schedule.
     **{m: dict(steps=15, gamma_0=0.605, gamma_min=1.107,
                noise_scale=0.901, step_scale=1.638, rho=8.0,
-               sigma_min=0.0004, sigma_max=160.0, max_sigma=256.0)
+               sigma_min=0.0004, sigma_max=160.0, max_sigma=256.0,
+               schedule_tail='append')
        for m in ('esmfold2_lm600m', 'esmfold2_lm300m')},
 }
 

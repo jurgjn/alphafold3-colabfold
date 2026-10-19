@@ -426,6 +426,62 @@ def forward(model, out_dir, in_npz, out_npz):
                        for k, v in out.items()})
 
 
+def trajectory(model, out_dir, in_npz, out_npz):
+  """OF3's REAL rollout at `predict`'s defaults (200 steps), one sample, every
+  random draw the harness's (vendor_native_parity --trajectory): the initial
+  positions, and per step the augmentation (centre_random_augmentation) and
+  the noise (torch.randn_like). OF3 rotates as x @ R^T; the replacement
+  applies the harness's x @ R directly, keeping OF3's masked centring and
+  mask multiply."""
+  import torch
+  _prep(model, out_dir)
+  z = np.load(in_npz)
+  from openfold3.core.model.structure import diffusion_module as D
+  from openfold3.core.model.structure.diffusion_module import SampleDiffusion
+  x0 = torch.tensor(z['traj_x0'], dtype=torch.float32)
+  eps = torch.tensor(z['traj_eps'], dtype=torch.float32)
+  rot = torch.tensor(z['traj_rot'], dtype=torch.float32)
+  trans = torch.tensor(z['traj_trans'], dtype=torch.float32)
+  n = {'randn': 0, 'eps': 0, 'aug': 0}
+  got = {}
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def randn(self, size, device=None, dtype=None, **kw):
+      assert n['randn'] == 0, 'one randn (the initial positions) expected'
+      n['randn'] += 1
+      return x0.reshape(size).to(device=device, dtype=dtype or torch.float32)
+
+    def randn_like(self, x, **kw):
+      k = n['eps']
+      n['eps'] += 1
+      return eps[k].reshape(x.shape).to(device=x.device, dtype=x.dtype)
+
+  def aug(xl, atom_mask, scale_trans=1.0):
+    k = n['aug']
+    n['aug'] += 1
+    m = atom_mask[..., None]
+    mean = (xl * m).sum(-2, keepdim=True) / m.sum(-2, keepdim=True)
+    r, t = rot[k].to(xl), trans[k].to(xl)
+    return ((xl - mean) @ r + scale_trans * t) * m
+
+  D.torch, D.centre_random_augmentation = _Torch(), aug
+  orig = SampleDiffusion.forward
+
+  def forward_(self, batch, si_input, si_trunk, zij_trunk, noise_schedule,
+               no_rollout_samples, *a, **kw):
+    got['sigmas'] = noise_schedule.detach().float().cpu().numpy()
+    out = orig(self, batch, si_input, si_trunk, zij_trunk, noise_schedule,
+               no_rollout_samples, *a, **kw)
+    got.setdefault('final', out.detach().float().cpu().numpy().reshape(-1, 3))
+    return out
+  SampleDiffusion.forward = forward_
+  _run_cli(model, out_dir, recycles=int(z['recycling_steps']))
+  np.savez(out_npz, sigmas=got['sigmas'], steps=n['aug'], final=got['final'])
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)
