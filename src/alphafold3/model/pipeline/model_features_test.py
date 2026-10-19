@@ -153,6 +153,7 @@ def _token_batch(asym_id, residue_index, aatype=None):
       'is_rna': np.zeros_like(asym_id),
       'is_dna': np.zeros_like(asym_id),
       'msa': aatype[None].copy(),
+      'msa_mask': np.ones((1,) + aatype.shape, np.float32),
       'profile': np.eye(31, dtype=np.float32)[aatype],
   }
 

@@ -1517,8 +1517,14 @@ def input_has_msa(fold_input):
   dev/oracles/fold_check.py passed a constant False, so a gate on an input WITH
   an MSA featurised it as if it had none.
   """
-  return any(getattr(chain, 'unpaired_msa', None)
-             or getattr(chain, 'paired_msa', None)
+  # An a3m holding only the query ('>q\nSEQ', AF3's single-sequence form) is
+  # not an alignment: chai, the one model that reads this, then takes its empty
+  # single-sequence MSA (every row padding, profile zero), as stock chai does for
+  # the same input (stock-chai comparison, protein case).
+  def aligned(a3m):
+    return bool(a3m) and sum(line.startswith('>') for line in a3m.splitlines()) > 1
+  return any(aligned(getattr(chain, 'unpaired_msa', None))
+             or aligned(getattr(chain, 'paired_msa', None))
              for chain in fold_input.chains)
 
 
