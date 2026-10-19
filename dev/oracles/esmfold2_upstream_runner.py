@@ -370,7 +370,10 @@ def forward(model, out_dir, in_npz, out_npz):
     h = torch.tensor(hidden, device=_dev())[None]
     import inspect
     accepted = inspect.signature(m.forward).parameters
-    extra = {k: v for k, v in dict(lm_mask_pct=0.0, msa_column_mask_rate=0.0).items() if k in accepted}
+    # MSA_ALL_ROWS: no random row subsample (max_depth above any depth here)
+    extra = {k: v for k, v in dict(lm_mask_pct=0.0, msa_column_mask_rate=0.0,
+                                   msa_max_depth=10 ** 6 if os.environ.get('MSA_ALL_ROWS') else None).items()
+             if k in accepted and v is not None}
     out = m(**{k: v for k, v in f.items() if k in accepted}, lm_hidden_states=h,
             num_loops=int(z['recycling_steps']), num_diffusion_samples=1, **extra)
   n = int(tok.sum())

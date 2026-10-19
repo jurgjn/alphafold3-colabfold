@@ -115,6 +115,7 @@ def _vendor(model, *args):
     env['PYTHONPATH'] = path
   if os.environ.get('VENDOR_CPU'):
     env['CUDA_VISIBLE_DEVICES'] = ''
+  env.setdefault('MSA_ALL_ROWS', '1')
   if model.startswith('esmfold2'):
     env.setdefault('HF_HUB_OFFLINE', '1')
   if model == 'chai1':
@@ -223,6 +224,13 @@ def featurise_ours(model, j, recycles, bf16):
           else [int(os.environ['OURS_BUCKET'])]} if os.environ.get('OURS_BUCKET') else {}))
   cfg.global_config.bfloat16 = bf16
   cfg.num_recycles = recycles
+  # Random MSA row subsampling is a draw like any other: above num_msa rows ours
+  # samples with its key and every vendor with its own RNG, so a deep MSA would
+  # compare two random subsets. Both sides take every row instead (the runners
+  # lift their caps, MSA_ALL_ROWS); the MSA stack is row-permutation invariant.
+  rows = np.asarray(batch['msa']).shape[0] if 'msa' in batch else 0
+  if rows > cfg.evoformer.num_msa:
+    cfg.evoformer.num_msa = rows
   cfg.return_embeddings = True
   cfg.return_distogram = True
   return batch, fold_check.LAST_RAW_BATCH, cfg, model_dir
