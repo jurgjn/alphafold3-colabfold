@@ -77,10 +77,29 @@ def featurise(json_path, out_path):
                         if np.asarray(v).dtype.kind != 'O'})
 
 
+def _xla_glu():
+  """Pin tokamax's gated linear unit to its XLA implementation.
+
+  Upstream calls tokamax.gated_linear_unit with no implementation, so on a GPU
+  it takes the fused Triton/Mosaic kernel; on CPU it falls back to XLA, which is
+  why every CPU run matched and the same cases read LOOSE/BAD on the A10. A
+  kernel choice, like the vendors' cuequivariance/deepspeed switches -- ours
+  runs the GLU through XLA whenever attention is 'xla'.
+  """
+  import functools
+  import tokamax
+  if getattr(tokamax.gated_linear_unit, '_xla_pinned', False):
+    return
+  fn = functools.partial(tokamax.gated_linear_unit, implementation='xla')
+  fn._xla_pinned = True
+  tokamax.gated_linear_unit = fn
+
+
 def forward(in_path, out_path):
   import haiku as hk
   import jax
   import jax.numpy as jnp
+  _xla_glu()
   from alphafold3.model import model as af3_model
   from alphafold3.model import params as afp
 

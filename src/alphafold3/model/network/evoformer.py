@@ -262,6 +262,13 @@ class _RelativeEncodingProjection(hk.Module):
     weights = hk.get_parameter(
         'weights', (num_features, self.num_channels), dtype,
         hm.get_initializer_scale('linear', (num_features,)))
+    # In the COMPUTE dtype. get_parameter returns the stored array whatever
+    # dtype it is asked for, and AF3's official blob stores this weight in
+    # bfloat16: the four-term gather-and-add then ran in bf16. A CPU computes
+    # bf16 arithmetic in f32 and hid it (exact to 9e-9 against float64); an A10
+    # adds natively in bf16 and read max|d|/rms 1.2e-2 -- the whole of the
+    # fp32 GPU gap against upstream, whose one_hot @ W promotes to f32.
+    weights = weights.astype(dtype)
     w_pos = weights[:n_idx]
     w_token = weights[n_idx:2 * n_idx]
     w_entity = weights[2 * n_idx]
