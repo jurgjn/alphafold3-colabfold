@@ -364,7 +364,19 @@ def atom_cross_att_encoder(
           use_fast_variance=False, create_scale=False, create_offset=False,
           name=f'{name}_atom_cond_norm')(queries_single_cond)
 
-    queries_single_cond = queries_single_cond * queries_mask[..., None]
+    # chai never masks its conditioning: a reference-only atom (a ligand's
+    # leaving atom at a declared bond, atom_ref_mask true, atom_exists_mask
+    # false) keeps LayerNorm(a + token_to_atom_single(s)) as its adaLN
+    # conditioning and its atom-pair row/column -- and it is a KEY in chai's
+    # atom attention (same_token_mask below), so that conditioning reaches the
+    # real atoms of its residue. Mask by the reference mask there, which
+    # zeroes exactly the padding as before.
+    cond_mask = (atom_layout.convert(
+        batch.atom_cross_att.token_atoms_to_queries,
+        batch.ref_structure.mask,
+        layout_axes=(-2, -1),
+    ) if global_config.model == 'chai1' else queries_mask)
+    queries_single_cond = queries_single_cond * cond_mask[..., None]
     q_base = q_base * queries_mask[..., None]
     # Boltz/RF3 query uses per-atom features without s_trunk; AF3 uses the full conditioning.
   else:
@@ -450,6 +462,20 @@ def atom_cross_att_encoder(
     # atoms are a token each, the token rule blinds every atom to the rest of
     # its molecule: GOL's bonds 0.29 A rms, worse with more steps (LocalFold's
     # native port, which had the same rule; 0.053 with this one).
+    #
+    # "Both atoms real" is by chai's REFERENCE mask (collate.py calls
+    # get_block_atom_pair_mask(atom_single_mask=atom_ref_mask)), not by
+    # atom_exists_mask, which is what our queries/keys mask carries. The two
+    # part on a ligand's leaving atom at a declared bond (NAG's O1 on an Asn or
+    # in a glycosidic bond, model_features._unresolved_leaving_atoms): it has
+    # reference features but is not placed, and it is still a KEY for every
+    # atom of its residue, in the encoder and in the denoiser's decoder (both
+    # read this tensor). Its key is chai's block-top re-mask of a zero
+    # activation, i.e. the adaLN shift of its (unmasked) conditioning, which is
+    # why the conditioning above is masked by reference too. Measured on stock
+    # chai (vendor_native_parity glycan): with the O1s out of the pair mask,
+    # NAG2's C4/C6 s_inputs were off by 4.5e-2; with both changes every row is
+    # at the fp32 floor (s_inputs 3.8e-6, denoise 2.8e-6).
     same_token_mask = None
     if global_config.model == 'chai1':
       queries_uid = atom_layout.convert(
@@ -460,10 +486,14 @@ def atom_cross_att_encoder(
       keys_uid = atom_layout.convert(
           queries_to_keys, queries_uid, layout_axes=(-2, -1)
       )
+      queries_ref = cond_mask.astype(jnp.bool_)   # the reference mask (above)
+      keys_ref = atom_layout.convert(
+          queries_to_keys, queries_ref, layout_axes=(-2, -1)
+      )
       same_token_mask = (
           (queries_uid[..., :, None] == keys_uid[..., None, :])
-          & queries_mask[..., :, None].astype(jnp.bool_)
-          & keys_mask[..., None, :].astype(jnp.bool_)
+          & queries_ref[..., :, None]
+          & keys_ref[..., None, :]
       )
 
     # Embed single features into the pair conditioning.
