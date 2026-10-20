@@ -395,6 +395,13 @@ TEMPLATE_POLICIES = {
 #   1.107, noise_scale 0.901, step_scale 1.638, rho 8, sigma_min 4e-4); the
 #   full-trajectory parity (vendor_native_parity --trajectory) found it.
 _SAMPLER_CONSTANTS = {
+    # bioemu2: its EDMSampler/edm_sampler and the checkpoint's EDMSchedule --
+    # boltz's loop (gamma keyed on the NEXT sigma, a realign before each step,
+    # 0 appended to the schedule) at sigma_min 4e-4, noise_scale 1.0, and
+    # predict-structure's step_scale 1.5 (sample-equilibrium uses 1.0).
+    'bioemu2': dict(gamma_0=0.8, gamma_min=1.0, noise_scale=1.0, step_scale=1.5,
+                    rho=7.0, sigma_min=0.0004, sigma_max=160.0, steps=200,
+                    schedule_tail='append'),
     'boltz2': dict(gamma_0=0.8, gamma_min=1.0, noise_scale=1.003,
                    step_scale=1.5, rho=7.0, sigma_min=0.0001, sigma_max=160.0,
                    schedule_tail='append'),
@@ -542,6 +549,9 @@ _WIDENERS = {
 # under that the input pipeline has to reproduce. Not preferences -- getting one
 # wrong is silent, and shows up as a fold that is merely mediocre.
 _FEATURISE = {
+    # BioEmu2 reads its own feature dict (pipeline/bioemu2_features.py), built
+    # from the fold input; the AF3 batch only carries it and the output layout.
+    'bioemu2': dict(bioemu2_features=True),
     # ESMFold2 attends +/-64 atoms by rank, which needs 32 + 2*64 = 160 keys of
     # context around a query block; AF3's default 128 is too narrow, so widen the
     # key subset and let the exact window ride in as a mask.
@@ -1005,6 +1015,7 @@ _TRUNK_PASSES = {
     'esmfold2_fast': 20,
     'esmfold2_lm600m': 20,
     'esmfold2_lm300m': 20,
+    'bioemu2': 4,        # load_model num_steps_recycle=3; range(num_steps_recycle + 1)
 }
 
 
@@ -1138,7 +1149,17 @@ class ModelSpec:
   @property
   def sampler(self):
     """EDM constants for this family, or {} to keep AF3's."""
-    return dict(_SAMPLER_CONSTANTS.get(self.name, {}))
+    out = dict(_SAMPLER_CONSTANTS.get(self.name, {}))
+    if self.name == 'bioemu2':
+      import os
+      # sample-equilibrium samples at step_scale 1.0, predict-structure at 1.5
+      # (bioemu2.sampling.get_sampler); the mode's other half is its method
+      # token (pipeline/model_features._bioemu2_features)
+      mode = os.environ.get('BIOEMU2_MODE', 'structure')
+      if mode not in ('structure', 'equilibrium'):
+        raise ValueError(f'BIOEMU2_MODE={mode!r}: want structure or equilibrium')
+      out['step_scale'] = 1.5 if mode == 'structure' else 1.0
+    return out
 
   def configure(self, config):
     """Apply this model's shape and sampler settings to a Model.Config, in place."""
@@ -1272,6 +1293,9 @@ MODEL_SPECS = {
                               weights_source='https://github.com/RosettaCommons/foundry'),
     'chai1': ModelSpec('chai1', weights_licence='the Apache License, Version 2.0',
                        weights_source='https://github.com/chaidiscovery/chai-lab'),
+    # its Fourier noise projection is the checkpoint's (a frozen draw, saved)
+    'bioemu2': ModelSpec('bioemu2', trained_fourier=True, weights_licence='the MIT License',
+                         weights_source='https://huggingface.co/microsoft/bioemu2'),
     # ESMFold2 carries a trained Fourier noise embedding like the OF3 lineage,
     # but is not OpenFold-derived, so it is named rather than inherited -- the
     # same reason chai1 is named.

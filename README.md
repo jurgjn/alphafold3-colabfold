@@ -33,7 +33,7 @@ https://storage.googleapis.com/alphafold3/af3.bin.zst. Use is subject to these
 
 ## The models this fork runs
 
-**16 model types**, and one `--model` flag decides which forward branches,
+**17 model types**, and one `--model` flag decides which forward branches,
 config shapes, sampler constants and input conventions are used. The same input
 JSON drives all of them.
 
@@ -96,6 +96,23 @@ that ships with the weights. **Passing one variant another's tower reads corr
 `model_registry.ESMFOLD2_VARIANTS[name]['esmc']`. Given an MSA instead they fold
 from that: 5CAJ reads 17.5 Å from a single sequence and 1.24 Å at MSA depth 256.
 Supplying neither is the one broken configuration.
+
+### BioEmu2 — its own trunk and denoiser
+
+| `--model` | model | weights |
+|---|---|---|
+| `bioemu2` | [BioEmu2](https://github.com/microsoft/bioemu2) `bioemu2-preview` (Microsoft Research) | MIT |
+
+Boltz-derived, but neither of its stages is AF3's: a PairMixer trunk (Boltz's
+MSA module without triangle attention, then 48 triangle-multiplication blocks)
+and a dual-stream denoiser that runs atom and token transformers side by side.
+It runs as its own network (`network/bioemu2.py`) on its own features
+(`pipeline/bioemu2_features.py`, built from the same input JSON) and shares
+the sampler and the output path. There is no confidence head, so confidence
+fields are written as NaN. `BIOEMU2_MODE=equilibrium` switches from structure
+prediction to BioEmu2's equilibrium ensemble sampling; its propagation mode is
+not ported yet. **Port in progress:** the network matches stock BioEmu2 on the
+vendor's own features, and the input-type parity sweep is under way.
 
 ### AlphaFold 2 — a sibling network, not the AF3 graph
 

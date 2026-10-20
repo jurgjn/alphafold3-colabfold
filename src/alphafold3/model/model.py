@@ -37,6 +37,7 @@ from alphafold3.model.atom_layout import atom_layout
 from alphafold3.model.components import mapping
 from alphafold3.model.components import utils
 from .network import atom_cross_attention
+from .network import bioemu2 as bioemu2_network
 from .network import confidence_head
 from .network import diffusion_head
 from .network import diffusion_transformer
@@ -670,6 +671,8 @@ class Model(hk.Module):
     self.diffusion_module = diffusion_head.DiffusionHead(
         self.config.heads.diffusion, self.global_config
     )
+    if self.global_config.model == 'bioemu2':
+      self.bioemu2 = bioemu2_network.BioEmu2()
 
   @hk.transparent
   def _sample_diffusion(
@@ -766,6 +769,68 @@ class Model(hk.Module):
     return sample
 
   @hk.transparent
+  def _bioemu2(self, batch, key, structure=True):
+    """BioEmu2, fused: its own trunk and denoiser (network/bioemu2.py) on its own
+    features (pipeline/bioemu2_features.py, attached under `bioemu2/`), and
+    OUR sampler on its flat atom layout, viewed as (atoms, 1 slot) so the
+    sampler's (token, slot) reductions apply unchanged.
+
+    The samples come back in the AF3 token-atom layout through
+    `bioemu2/af3_index`, so the output writer is the shared one. BioEmu2 has no
+    confidence head: the result carries no confidence keys and becomes the
+    structure-only output.
+    """
+    f = {k[len('bioemu2/'):]: v for k, v in batch.items() if k.startswith('bioemu2/')}
+    for k in ('atom_pad_mask', 'token_pad_mask', 'atom_mask', 'is_dynamics_conditioned'):
+      f[k] = jnp.asarray(f[k]).astype(bool)
+    af3_index = f.pop('af3_index')
+    af3_token = f.pop('af3_token')
+    b = self.bioemu2
+    s_inputs = b.input_embedder(f)
+    s_init, z_init = b.trunk_init(f, s_inputs)
+    s, z = jnp.zeros_like(s_init), jnp.zeros_like(z_init)
+    if hk.running_init():
+      s, z = b.trunk_pass(f, s_inputs, s_init, z_init, s, z)
+    else:
+      n = num_trunk_passes(self.config.num_recycles, 'bioemu2')
+      s, z = hk.fori_loop(0, n, lambda _, sz: b.trunk_pass(f, s_inputs, s_init, z_init, *sz),
+                          (s, z))
+    logits = b.distogram(z)
+    # P(d < 8 A). BioEmu2's inference code never states its bins; these are
+    # Boltz's (64 bins over 2-22 A), which its distogram head comes from.
+    edges = np.linspace(2.0, 22.0, 63)
+    contact = jax.nn.softmax(logits, -1)[..., :int((edges <= 8.0).sum())].sum(-1)
+    tok = jnp.maximum(af3_token, 0)
+    contact_af3 = jnp.where((af3_token[:, None] >= 0) & (af3_token[None, :] >= 0),
+                            contact[tok[:, None], tok[None, :]], 0.0)
+    output = {'distogram': {'contact_probs': contact_af3},
+              'bioemu2': {'single': s, 'pair': z, 's_inputs': s_inputs, 'distogram': logits}}
+    if not structure:
+      return output
+    ctx = b.static_context(f, s, z)
+
+    def denoising_step(positions_noisy, noise_level):
+      den = b.denoise(f, ctx, s_inputs, s, positions_noisy[:, 0], noise_level)
+      return den[:, None]
+
+    class _Info:      # all the sampler reads of a batch
+      class predicted_structure_info:   # noqa: N801
+        atom_mask = f['atom_mask'][:, None]
+    sample = diffusion_head.sample(
+        denoising_step=denoising_step, batch=_Info, key=key,
+        config=self.config.heads.diffusion.eval, global_config=self.global_config)
+    flat = sample['atom_positions'][..., 0, :]                 # (samples, N, 3)
+    idx = jnp.maximum(af3_index, 0)
+    valid = af3_index >= 0
+    positions = jnp.where(valid[None, ..., None], flat[:, idx], 0.0)
+    samples = {'atom_positions': positions,
+               'mask': jnp.tile(valid[None], (positions.shape[0], 1, 1)).astype(jnp.float32)}
+    if 'trajectory' in sample:
+      samples['trajectory'] = sample['trajectory']
+    output['diffusion_samples'] = samples
+    return output
+
+  @hk.transparent
   def _structural_expand_refine(self, embeddings, residue_batch, struct_data,
                                 struct_mask):
     """OpenDDE: residue trunk embeddings -> refined structural-token embeddings.
@@ -842,6 +907,11 @@ class Model(hk.Module):
     """
     if key is None:
       key = hk.next_rng_key()
+
+    if self.global_config.model == 'bioemu2':
+      if stage != 'all':
+        raise NotImplementedError(f'bioemu2 runs fused only (stage={stage!r})')
+      return self._bioemu2(batch, key, structure=structure)
 
 
     # OpenDDE structural-token expansion: featurise_spec attaches the structural

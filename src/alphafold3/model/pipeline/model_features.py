@@ -1953,6 +1953,67 @@ def _mask_padded_atoms(batch, prefix=''):
   return batch
 
 
+def _bioemu2_features(batch, fold_input, cyclic=None):
+  """BioEmu2 reads its own features, not the AF3 batch: attach them under
+  `bioemu2/`, with the maps back to the AF3 token-atom layout the output is
+  written in (`af3_index`: each (token, slot) -> a BioEmu2 atom or -1;
+  `af3_token`: each AF3 token -> a BioEmu2 token or -1).
+
+  BIOEMU2_MODE picks the mode (`structure`, the default, or `equilibrium`);
+  bioemu2_features.SMILES_TEMPLATES lets a parity harness hand in the vendor's
+  own conformer draw for a SMILES ligand.
+  """
+  import os
+  from alphafold3.constants import chemical_components
+  from alphafold3.model import features as _features
+  from alphafold3.model.pipeline import bioemu2_features as bf
+  if fold_input is None:
+    raise ValueError('bioemu2 needs fold_input= to build its features')
+  if cyclic:
+    raise NotImplementedError('bioemu2 has no cyclic input')
+  mode = os.environ.get('BIOEMU2_MODE', 'structure')
+  lay = _features._unwrap(batch.get('token_atoms_layout'))
+  n_af3 = lay.atom_name.shape[0]
+  ccd = chemical_components.Ccd(user_ccd=fold_input.user_ccd)
+  f, keys = bf.featurise(fold_input, ccd, mode=mode, smiles_templates=bf.SMILES_TEMPLATES)
+  t = f['res_type'].shape[0]
+  n = int(f['atom_pad_mask'].sum())
+  if n_af3 > t:     # the AF3 batch is bucket-padded: pad ours to match, so one compile serves a bucket
+    f = bf.pad_tokens(f, n_af3)
+    n_pad = -(-n // 256) * 256
+    if n_pad > f['template_coords'].shape[0]:
+      f = bf.pad_atoms(f, n_pad)
+  where = {k: i for i, k in enumerate(keys)}
+  for ch in fold_input.chains:      # a SMILES ligand: AF3 keeps RDKit's SMILES order
+    if getattr(ch, 'smiles', None):
+      ids = [i for i, k in enumerate(keys) if k[0] == ch.id]
+      order = bf.smiles_order(ch.smiles, bf.SMILES_TEMPLATES.get(ch.id) or bf.smiles_template(ch.smiles))
+      af3_names = [str(x) for x in lay.atom_name[lay.chain_id == ch.id] if str(x)]
+      for i, o in zip(ids, order):
+        where[(ch.id, 1, af3_names[o])] = i
+  af3_index = np.full(lay.atom_name.shape, -1, np.int32)
+  for ti in range(lay.atom_name.shape[0]):
+    for a in range(lay.atom_name.shape[1]):
+      name = str(lay.atom_name[ti, a])
+      if name:
+        af3_index[ti, a] = where.get((str(lay.chain_id[ti, a]), int(lay.res_id[ti, a]), name), -1)
+  # atoms AF3 lays out and BioEmu2 never predicts (every C-terminal OXT, every
+  # 5' OP3, a leaving atom): out of the output layout, not written at the origin
+  named = np.vectorize(lambda x: bool(str(x)))(lay.atom_name)
+  drop = list(zip(*np.nonzero(named & (af3_index < 0))))
+  if drop:
+    _remove_dropped_atoms_from_layouts(batch, [(int(t), int(a)) for t, a in drop])
+  tok_of_atom = f['token_idx_at_atom']
+  first = np.where(af3_index >= 0, af3_index, np.iinfo(np.int32).max).min(1)
+  af3_token = np.where(first < np.iinfo(np.int32).max,
+                       tok_of_atom[np.minimum(first, len(tok_of_atom) - 1)], -1).astype(np.int32)
+  for k, v in f.items():
+    batch['bioemu2/' + k] = np.asarray(v)
+  batch['bioemu2/af3_index'] = af3_index
+  batch['bioemu2/af3_token'] = af3_token
+  return batch
+
+
 def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
           has_msa=True, fold_input=None, cyclic=None, lm_pair=None, seed=None, lm_hidden=None):
   """Apply `spec`'s featurisation conventions to a featurised batch, in place.
@@ -1976,6 +2037,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   does; lm_pair is a finished one.
   """
   knobs = spec.featurise
+  if knobs.get('bioemu2_features'):
+    return _bioemu2_features(batch, fold_input, cyclic)
   if cyclic:
     cyclic_period(batch, cyclic, fold_input=fold_input)
   # A KNOB, not a name test, and the registry derives it from

@@ -65,6 +65,12 @@ MODELS = (
     # trunk depth, same sampler, same heads.
     'esmfold2_lm600m',
     'esmfold2_lm300m',
+    # BioEmu2 (Microsoft Research): Boltz-derived, but its trunk (a PairMixer)
+    # and its denoiser (a dual-stream stack) are neither of AF3's, so it runs
+    # its own network (network/bioemu2.py) on its own features
+    # (pipeline/bioemu2_features.py) and shares only the sampler and the
+    # output path. None of the per-model tuples in this file apply to it.
+    'bioemu2',
 )
 
 # AlphaFold 2, which is NOT in MODELS above and must not be: every name there is
@@ -755,7 +761,7 @@ TOKEN_LAYOUT_KEYS_REF_SPACE_UID = ('alphafold3',)
 # boltz2 too: `boltz predict` sets alignment_reverse_diff=True
 # (Boltz2DiffusionParams), so AtomDiffusion.sample weighted-rigid-aligns the
 # noisy coordinates onto the denoised ones before every update.
-REALIGN_SAMPLER = ESMFOLD2_FAMILY + ('boltz2',)
+REALIGN_SAMPLER = ESMFOLD2_FAMILY + ('boltz2', 'bioemu2')
 
 
 # Models that LayerNorm the summed per-atom reference features. AF3 sums
