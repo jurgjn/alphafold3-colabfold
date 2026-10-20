@@ -925,6 +925,7 @@ def _set_msa(batch, msa, dele, real, gap):
 
 
 _BOLTZ_MAX_MSA_SEQS = 8192    # `boltz predict --max_msa_seqs`: parse_csv keeps this many unique rows per chain
+_IF2_MAX_MSA_SEQS = 16384     # run_intellifold.py process_inputs(max_msa_seqs=16384): parse_a3m / parse_csv cap
 _BOLTZ_MAX_PAIRS, _BOLTZ_MAX_TOTAL = 8192, 16384    # construct_paired_msa; inference max_seqs is const.max_msa_seqs
 
 
@@ -959,7 +960,7 @@ def _boltz_surviving_deletions(per_seq):
   return kept
 
 
-def _boltz_msa(batch, fold_input):
+def _boltz_msa(batch, fold_input, variant='boltz2'):
   """Boltz-2's MSA as `boltz predict` builds it from a chain's key,sequence CSV (query, paired rows keyed 1.., then
   the unpaired rows): parse_csv drops repeats of a sequence (gaps removed, insertions upper-cased) and stops at 8192
   rows; construct_paired_msa lays rows sharing a key across chains side by side (msa_paired 1 for those chains), fills
@@ -967,7 +968,17 @@ def _boltz_msa(batch, fold_input):
   `visited` set never matches, so a paired sequence comes round again in the unpaired block, as in AF3. A chain
   without an MSA (ligand, nucleic, protein without alignments) has its query (UNK on a ligand) and then gaps. Profile
   and deletion mean are over every row, the latter of the deletion value (pi / 2) * arctan(d / 3) -- of the deletions
-  boltz's mapping keeps, which is none (_boltz_surviving_deletions)."""
+  boltz's mapping keeps, which is none (_boltz_surviving_deletions).
+
+  variant='intellifold2': IntelliFold's fork of the same featuriser (intellifold/data/feature/featurizer.py) --
+  its CLI parses up to 16384 rows per chain (run_intellifold.py max_msa_seqs); its deletion mapping slices each
+  sequence's own deletions (every deletion kept, as AF3); the query row stays AF3's (its ligand rows are not UNK); and
+  profile and deletion mean (raw counts) are PER CHAIN over the first `msa_valid_depths` rows of the paired MSA, that
+  depth being the chain's own SEQUENCE count (prepare_msa_arrays), not its row count: with pairing the first rows
+  hold the paired block and the tail of the chain's unpaired rows (and a shallower chain's gap rows) is not counted.
+  Neither boltz's profile (every row) nor AF3's (the chain's unpaired MSA) -- vendor_native_parity intellifold2
+  paired_msa: target_feat corr 0.9957 before this."""
+  if2 = variant == 'intellifold2'
   import collections
   from alphafold3.common import folding_input as fi
   from alphafold3.constants import residue_names
@@ -981,7 +992,9 @@ def _boltz_msa(batch, fold_input):
   real = np.asarray(batch['seq_mask']).astype(bool).reshape(-1)
   lig = np.asarray(batch['is_ligand']).astype(bool).reshape(-1)
   query = np.asarray(batch['msa'])[0].copy()
-  query[lig & real] = unk
+  if not if2:
+    query[lig & real] = unk
+  max_seqs = _IF2_MAX_MSA_SEQS if if2 else _BOLTZ_MAX_MSA_SEQS
   chains = [i for i in range(len(fold_input.chains)) if (real & (asym == i + 1)).any()]
   seqs = {}
   for i in chains:
@@ -1006,7 +1019,7 @@ def _boltz_msa(batch, fold_input):
         continue
       seen.add(flat)
       rows.append((key, line))
-      if len(rows) >= _BOLTZ_MAX_MSA_SEQS:
+      if len(rows) >= max_seqs:
         break
     seqs[i] = rows
   # construct_paired_msa
@@ -1051,7 +1064,8 @@ def _boltz_msa(batch, fold_input):
       continue
     col = resi[sel] - 1
     idx = np.asarray([p[i] for p in pairing])
-    kept = _boltz_surviving_deletions([parse(q)[1] for _, q in seqs[i]])
+    kept = (dict(enumerate(parse(q)[1] for _, q in seqs[i])) if if2
+            else _boltz_surviving_deletions([parse(q)[1] for _, q in seqs[i]]))
     # every row past the first that holds one of this chain's sequences -- the query too, which a keyed query pairs
     # into a row of its own
     for r in np.flatnonzero(idx >= 0)[np.flatnonzero(idx >= 0) > 0]:
@@ -1060,6 +1074,20 @@ def _boltz_msa(batch, fold_input):
         msa[r, sel] = tok[col]
         dele[r, sel] = kept.get(int(idx[r]), np.zeros_like(d))[col]
   n_cls = np.asarray(batch['profile']).shape[-1]
+  if if2:
+    profile = np.zeros((n_tok, n_cls), np.float32)
+    del_mean = np.zeros(n_tok, np.float32)
+    for i in chains:
+      sel = np.flatnonzero(real & (asym == i + 1))
+      depth = len(seqs.get(i, [None]))      # msa_valid_depths: the chain's own sequence count, not its rows
+      sub = np.minimum(msa[:depth][:, sel], n_cls - 1)
+      profile[sel] = (np.arange(n_cls) == sub[..., None]).mean(0)
+      del_mean[sel] = dele[:depth][:, sel].mean(0)
+    pad = _set_msa(batch, msa, dele, real, gap)
+    batch['msa_paired'] = pad(flag, 0)
+    batch['profile'] = profile.astype(np.asarray(batch['profile']).dtype)
+    batch['deletion_mean'] = del_mean.astype(np.asarray(batch['deletion_mean']).dtype)
+    return batch
   counts = np.bincount((np.arange(n_tok) * n_cls + np.minimum(msa, n_cls - 1)).ravel(),
                        minlength=n_tok * n_cls).reshape(n_tok, n_cls).astype(np.float32)
   pad = _set_msa(batch, msa, dele, real, gap)
@@ -1950,7 +1978,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('dna_gap_msa'):
     _dna_gap_msa(batch)
   if knobs.get('boltz_msa') and fold_input is not None and 'msa' in batch:
-    _boltz_msa(batch, fold_input)
+    _boltz_msa(batch, fold_input, knobs['boltz_msa'] if isinstance(knobs['boltz_msa'], str) else 'boltz2')
   if knobs.get('rf3_msa') and fold_input is not None and 'msa' in batch:
     _rf3_msa(batch, fold_input)
   boltz_built = bool(knobs.get('boltz_msa') and fold_input is not None and 'msa' in batch)

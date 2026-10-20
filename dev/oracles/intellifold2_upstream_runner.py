@@ -267,6 +267,12 @@ def _pipeline(out_dir, args, load_weights):
       target_dir=processed.targets_dir, msa_dir=processed.msa_dir,
       template_dir=processed.template_dir, constraints_dir=processed.constraints_dir)
   config = get_model_config(args)
+  if os.environ.get('MSA_ALL_ROWS'):
+    # IntelliFold's MSAEmbedder subsamples min(msa_depth=1024, rows) rows at random each pass
+    # (SampleRandomWithoutReplacement, torch.randperm): a draw, which the harness lifts on every side --
+    # all rows, as ours takes them (the MSA stack is row-permutation invariant, so the randperm left in
+    # place only reorders them)
+    config.backbone.msa.msa_embedder.msa_depth = 1 << 20
   generator = torch.Generator(device=accelerator.device)
   generator.manual_seed(SEED)
   model = IntelliFold(config, generator=generator)

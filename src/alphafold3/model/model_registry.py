@@ -770,6 +770,11 @@ _FEATURISE = {
                          templates=TEMPLATE_POLICIES['intellifold2'],
                          # its boltz-derived a3m parser drops a row repeating an earlier one (gaps removed, upper-cased)
                          boltz_msa_dedupe=True,
+                         # its featuriser is boltz's construct_paired_msa (rows paired across chains on the CSV
+                         # key), with per-chain profile / deletion mean over the chain's own rows
+                         # (model_features._boltz_msa variant 'intellifold2'; stock-IntelliFold paired_msa:
+                         # target_feat corr 0.9957 without it)
+                         boltz_msa=('intellifold2' if not os.environ.get('AF3_NO_IF2_BOLTZ_MSA') else False),
                          # 'query', as boltz2: the featuriser IntelliFold forks
                          # keeps the a3m as given, query once, WITH alignments
                          # too -- a 4-row a3m is 4 rows where AF3 builds 5
