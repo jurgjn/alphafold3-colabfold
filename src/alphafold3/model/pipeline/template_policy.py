@@ -11,9 +11,16 @@ vendors ported here each read a template differently, and every difference is a 
                                            boltz atomises it and the query position takes its first atom's token;
                                            protenix maps it to UNK, whose dense atoms are all N
               'drop_hit'                   chai: a hit with any residue outside its standard codes is dropped
+              'unk_restype'                OpenFold3 (0.4.5, v0.5.0): the residue keeps its own N/CA/C/CB, read by
+                                           atom name, but its template restype is UNK (create_template_restype ->
+                                           get_with_unknown_3_to_idx); MSE too, which its template path never turns
+                                           into MET; one missing any of N/CA/C/CB is dropped (GAP)
+                                           (map_token_pos_to_template_residues). A batch-level rule, after
+                                           featurisation: unknown_restype_templates
   realign     'given' (AF3)                AF3, IntelliFold (re-aligns within the hit range), chai
               'whole_chain'                boltz (aligns the query to the whole template chain itself), protenix,
-                                           OpenDDE (kalign to the chain's whole SEQRES)
+                                           OpenDDE (kalign to the chain's whole SEQRES), OpenFold3 (CIF-direct:
+                                           kalign to the chain's canonical sequence)
   prefilter   False (AF3)
               True                         protenix, OpenDDE, IntelliFold (template_utils._assess_hit + get_templates):
                                            released after 2021-09-30, aligned to <= 10% of the query, a large
@@ -21,7 +28,12 @@ vendors ported here each read a template differently, and every difference is a 
                                            self-template never reaches these models), under 10 residues, or a
                                            repeat of an earlier hit's sequence
   hit_letter  'X' / 'parent'               the prefilter's hit sequence renders a modified residue as protenix's
-                                           parser does ('X') or as IntelliFold's (its parent's letter)
+                                           parser does ('X') or as IntelliFold's (its parent's letter); also the
+                                           SEQRES whole_chain aligns to (OpenFold3: the canonical, parent letter)
+  rank        False (AF3)                  templates in the order given
+              True                         OpenFold3 (_parse_templates_from_cif_files): a template scoring
+                                           seq_id * q_cov < 0.1 (cif_direct_min_score) is dropped, the rest are
+                                           stable-sorted by that score, best first; both are per query residue
 
 A policy is a dict of these keys (model_registry's `templates` featurise knob); a missing key keeps AF3's value, so an
 empty policy is AF3's pipeline, byte for byte. Each rule was read off the vendor's code and checked against its own
@@ -37,9 +49,13 @@ import re
 
 import numpy as np
 
-DEFAULT = dict(altloc='occupancy', modified='parent', realign='given', prefilter=False, hit_letter='X')
-_AXES = {'altloc': ('occupancy', 'first'), 'modified': ('parent', 'unk_n', 'drop_hit'),
-         'realign': ('given', 'whole_chain'), 'prefilter': (False, True), 'hit_letter': ('X', 'parent')}
+DEFAULT = dict(altloc='occupancy', modified='parent', realign='given', prefilter=False, hit_letter='X', rank=False)
+_AXES = {'altloc': ('occupancy', 'first'), 'modified': ('parent', 'unk_n', 'drop_hit', 'unk_restype'),
+         'realign': ('given', 'whole_chain'), 'prefilter': (False, True), 'hit_letter': ('X', 'parent'),
+         'rank': (False, True)}
+
+# OpenFold3 TemplatePreprocessorSettings.cif_direct_min_score
+RANK_MIN_SCORE = 0.1
 
 # protenix TemplateHitFeaturizer(max_template_date=...) at inference
 PREFILTER_CUTOFF = '2021-09-30'
@@ -82,7 +98,7 @@ def apply(fold_input, policy):
         continue
       qmap = dict(t.query_to_template_map)
       seqres = None
-      if p['prefilter'] or p['realign'] == 'whole_chain':
+      if p['prefilter'] or p['realign'] == 'whole_chain' or p['rank']:
         seqres, date = template_seqres(t.mmcif, p['hit_letter'])
       if p['prefilter']:
         hit = ''.join(seqres[j] for j in sorted(qmap.values()) if j < len(seqres))
@@ -102,12 +118,73 @@ def apply(fold_input, policy):
       cif = t.mmcif
       if p['altloc'] == 'first' or p['modified'] == 'unk_n':
         cif = rewrite_mmcif(cif, first_altloc=p['altloc'] == 'first', modified_unk_n=p['modified'] == 'unk_n')
-      kept.append(fi.Template(mmcif=cif, query_to_template_map=qmap))
+      tpl = fi.Template(mmcif=cif, query_to_template_map=qmap)
+      if p['rank']:
+        # seq_id and q_cov are both over the query's length (compute_sequence_identity_and_coverage: every query
+        # residue is a non-gap column of a global alignment)
+        ident = sum(query[i] == seqres[j] for i, j in qmap.items() if j < len(seqres))
+        score = ident * len(qmap) / len(query) ** 2
+        if score < RANK_MIN_SCORE:
+          continue
+        tpl = (score, tpl)
+      kept.append(tpl)
+    if p['rank']:
+      kept = [tpl for _, tpl in sorted(kept, key=lambda x: -x[0])]   # stable: ties keep their order
     # (ProteinChain and Template are slotted classes, not dataclasses: rebuilt)
     chains.append(fi.ProteinChain(
         id=chain.id, sequence=query, ptms=chain.ptms, description=chain.description,
         unpaired_msa=chain.unpaired_msa, paired_msa=chain.paired_msa, templates=kept))
   return dataclasses.replace(fold_input, chains=chains)
+
+
+_UNK_RESTYPE, _GAP_RESTYPE = 20, 21   # our protein UNK and gap indices
+# dense slots every standard amino acid shares (protein_data_processing): N, CA, C, CB
+_BACKBONE_DENSE = (0, 1, 2, 4)
+
+
+def unknown_restype_templates(batch, fold_input):
+  """modified='unk_restype', on the featurised batch: each template residue outside the 20 standard amino acids
+  (raw name: SEP, MSE, UNK, ...) reads restype UNK, with its N, CA, C and CB taken by atom name from the template
+  itself into the dense slots every standard residue keeps them in (template_modules reads an UNK template residue's
+  geometry from those slots for the models that use this); one missing any of the four is dropped to a gap.
+  `fold_input` is the one template_policy.apply returned (its query->template maps are the ones featurised)."""
+  from alphafold3 import structure
+  from alphafold3.constants import atom_types
+  from alphafold3.common import folding_input as fi
+  if 'template_aatype' not in batch:
+    return batch
+  aatype = np.array(batch['template_aatype'])
+  pos = np.array(batch['template_atom_positions'])
+  mask = np.array(batch['template_atom_mask'])
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  resi = np.asarray(batch['residue_index']).reshape(-1)
+  atom37 = [atom_types.ATOM37_ORDER[n] for n in ('N', 'CA', 'C', 'CB')]
+  for ci, chain in enumerate(fold_input.chains):
+    if not isinstance(chain, fi.ProteinChain) or not chain.templates:
+      continue
+    for k, t in enumerate(chain.templates[:aatype.shape[0]]):
+      struc = structure.from_mmcif(t.mmcif, fix_mse_residues=False, fix_arginines=False, include_bonds=False,
+                                   include_water=False, include_other=True).filter_to_entity_type(protein=True)
+      names = next(iter(struc.chain_res_name_sequence(include_missing_residues=True).values()))
+      arrays = struc.to_res_arrays(include_missing_residues=True, atom_order=atom_types.ATOM37_ORDER)
+      for q, j in t.query_to_template_map.items():
+        if j >= len(names) or names[j] in _STANDARD_AA:
+          continue
+        tok = np.nonzero((asym == ci + 1) & (resi == q + 1))[0]
+        have = arrays.atom_mask[j][atom37] > 0
+        pos[k, tok] = 0
+        mask[k, tok] = 0
+        if have.all():
+          aatype[k, tok] = _UNK_RESTYPE
+          for slot, a in zip(_BACKBONE_DENSE, atom37):
+            pos[k, tok, slot] = arrays.atom_positions[j][a]
+            mask[k, tok, slot] = 1
+        else:
+          aatype[k, tok] = _GAP_RESTYPE
+  batch['template_aatype'] = aatype.astype(np.asarray(batch['template_aatype']).dtype)
+  batch['template_atom_positions'] = pos.astype(np.asarray(batch['template_atom_positions']).dtype)
+  batch['template_atom_mask'] = mask.astype(np.asarray(batch['template_atom_mask']).dtype)
+  return batch
 
 
 def _residue_names(cif):

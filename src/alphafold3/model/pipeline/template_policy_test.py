@@ -53,6 +53,31 @@ class TemplatePolicyTest(absltest.TestCase):
     # a query that is the middle of the template chain aligns to it, not to its start
     self.assertEqual(template_policy.global_align('CDE', 'ACDEF'), {0: 1, 1: 2, 2: 3})
 
+  def test_of3_policy(self):
+    p = template_policy.resolve(model_registry.TEMPLATE_POLICIES['openfold3'])
+    self.assertEqual((p['modified'], p['realign'], p['hit_letter'], p['rank']),
+                     ('unk_restype', 'whole_chain', 'parent', True))
+    self.assertEqual(model_registry.TEMPLATE_POLICIES['openbind0'], model_registry.TEMPLATE_POLICIES['openfold3'])
+    # no other model reads templates OpenFold3's way
+    for model, policy in model_registry.TEMPLATE_POLICIES.items():
+      if model not in ('openfold3', 'openbind0'):
+        self.assertFalse(template_policy.resolve(policy)['rank'])
+        self.assertNotEqual(template_policy.resolve(policy)['modified'], 'unk_restype')
+
+  def test_rank_orders_by_identity_times_coverage(self):
+    from unittest import mock
+    from alphafold3.common import folding_input as fi
+    query = 'ACDEFGHIKLMNPQRSTVWY'
+    full = {i: i for i in range(20)}
+    half = {i: i for i in range(10)}
+    tiny = {0: 0}                                                     # score 1/400 < 0.1: dropped
+    tpls = [fi.Template(mmcif=str(k), query_to_template_map=m) for k, m in enumerate((half, tiny, full))]
+    inp = fi.Input(name='t', chains=[fi.ProteinChain(id='A', sequence=query, ptms=[], unpaired_msa='',
+                                                     paired_msa='', templates=tpls)], rng_seeds=[1])
+    with mock.patch.object(template_policy, 'template_seqres', return_value=(query, '')):
+      out = template_policy.apply(inp, dict(rank=True))
+    self.assertEqual([t.mmcif for t in out.chains[0].templates], ['2', '0'])
+
   def test_first_altloc(self):
     out = template_policy.rewrite_mmcif(_ATOM_SITE, first_altloc=True)
     rows = [l for l in out.splitlines() if l.startswith(('ATOM', 'HETATM'))]

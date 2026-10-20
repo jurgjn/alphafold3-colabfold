@@ -338,8 +338,15 @@ class SingleTemplateEmbedding(hk.Module):
       dense_atom_positions = templates.atom_positions
       dense_atom_positions *= dense_atom_mask[..., None]
 
+      # the restype the geometry is read through: an UNK residue through ALA's slots (N, CA, C, CB) for the models
+      # that read template geometry by atom name (model_config.TEMPLATE_UNK_BACKBONE)
+      geometry_aatype = templates.aatype
+      if self.global_config.model in model_config.TEMPLATE_UNK_BACKBONE:
+        geometry_aatype = jnp.where(
+            geometry_aatype == residue_names.PROTEIN_TYPES_WITH_UNKNOWN.index(residue_names.UNK),
+            residue_names.PROTEIN_TYPES_WITH_UNKNOWN.index('ALA'), geometry_aatype)
       pseudo_beta_positions, pseudo_beta_mask = scoring.pseudo_beta_fn(
-          templates.aatype, dense_atom_positions, dense_atom_mask
+          geometry_aatype, dense_atom_positions, dense_atom_mask
       )
       pseudo_beta_mask_2d = (
           pseudo_beta_mask[:, None] * pseudo_beta_mask[None, :]
@@ -402,7 +409,7 @@ class SingleTemplateEmbedding(hk.Module):
 
       template_group_indices = jnp.take(
           protein_data_processing.RESTYPE_RIGIDGROUP_DENSE_ATOM_IDX,
-          templates.aatype,
+          geometry_aatype,
           axis=0,
       )
       rigid, backbone_mask = make_backbone_rigid(

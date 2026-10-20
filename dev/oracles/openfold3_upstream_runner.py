@@ -188,11 +188,22 @@ def _of3_query(j, msa_root):
       if e.get('templates'):
         # OF3's query format takes template CIFs per chain (template_cif_paths,
         # template_cif_chain_ids) and aligns them itself
-        d = os.path.join(msa_root, ids[0])
+        # Where the CIF must live: stock OF3 (0.4.5 and v0.5.0 alike) only takes
+        # the entry id from the path (its stem) and then reads
+        # template_preprocessor_settings.structure_directory/<id>.cif, fetching
+        # <id> from the RCSB when that file is missing -- the TemplateCacheEntry
+        # never carries cif_path ("TODO: this will never read cif_path from the
+        # cache"). A stem with an '_' cannot work at all: the template id is
+        # split('_') into (pdb_id, chain_id). So each template is written
+        # straight into that directory as t<chain><k>.cif, and fetching is off
+        # (_runner_yaml): a 'template_0.cif' was silently DROPPED, the vendor
+        # folded with no template and the template cases compared ours with a
+        # template against OF3 without one.
+        d = os.path.join(os.path.dirname(msa_root), 'of3_templates')
         os.makedirs(d, exist_ok=True)
         paths, tchains = [], []
         for k, t in enumerate(e['templates']):
-          p = os.path.join(d, 'template_%d.cif' % k)
+          p = os.path.join(d, 't%s%d.cif' % (ids[0].lower(), k))
           with open(p, 'w') as f:
             f.write(t['mmcif'])
           import gemmi
@@ -247,7 +258,16 @@ def _runner_yaml(model, out_dir, recycles):
     # min = max = 1024): a draw, which the harness lifts on every side -- all rows, as ours takes them
     custom.setdefault('architecture', {})['msa'] = {'msa_module_embedder': {
         'min_subsampled_all_msa': 1 << 20, 'max_subsampled_all_msa': 1 << 20}}
+  tdir = os.path.join(out_dir, 'of3_templates')
   return {
+      # The template CIFs _of3_query wrote ARE the structure directory; nothing
+      # is fetched, and the cache is this run's own (the default is a shared
+      # /tmp/of3-of-<user>, keyed on sequence + paths).
+      'template_preprocessor_settings': {
+          'structure_directory': tdir,
+          'cache_directory': os.path.join(tdir, 'cache'),
+          'output_directory': tdir,
+          'fetch_missing_structures': False},
       # 'predict' is the CLI default preset (InferenceExperimentConfig);
       # passing model_update replaces the default, so it is restated.
       'model_update': {'presets': ['predict'], 'custom': custom},

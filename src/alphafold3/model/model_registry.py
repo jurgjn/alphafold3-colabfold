@@ -375,6 +375,11 @@ TEMPLATE_POLICIES = {
     # rf3 reads its template structure through atomworks, whose parser keeps the first altloc (io/parser.py
     # altloc="first"); 5K9P's LYS 29 / GLY 76 move 0.09 / 0.17 A and the template case read trunk pair 2.47
     'rosettafold3': dict(altloc='first'),
+    # OpenFold3 (0.4.5 and v0.5.0 alike) in CIF-direct mode: kalign of the query to the chain's whole canonical
+    # (parent-letter) sequence, templates ranked by seq_id * q_cov, and a modified template residue typed UNK on its
+    # own backbone (vendor_native_parity template / multi_template: SEP 20 read UNK; the 11-60 hit realigned to 1-76)
+    **{m: dict(modified='unk_restype', realign='whole_chain', hit_letter='parent', rank=True)
+       for m in ('openfold3', 'openbind0')},
 }
 
 

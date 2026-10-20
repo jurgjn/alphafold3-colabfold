@@ -282,6 +282,12 @@ MSA_UPDATE_BEFORE_OPM = ('opendde', 'boltz2')
 # the cell for them rather than running all-ones twice and calling it a pass.
 MASK_TRANSITIONS = ('openfold3', 'openbind0')
 
+# OpenFold3 reads a template residue's frame and pseudo-beta by atom NAME (N, CA, C; CB, CA for GLY), whatever its
+# restype, so a modified residue typed UNK keeps its geometry (template_policy modified='unk_restype' puts those atoms
+# in the dense slots every standard residue shares); template_modules reads an UNK template residue through ALA's
+# layout for these models. AF3's own layout for UNK is N in every slot.
+TEMPLATE_UNK_BACKBONE = ('openfold3', 'openbind0')
+
 # The Protenix family. Its model types differ from one another ONLY in counts
 # and widths (converters/protenix2.derive_dims reads both off the checkpoint), so
 # every FORWARD branch that protenix2 takes, the others take too. Keeping the

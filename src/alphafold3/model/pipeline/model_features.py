@@ -2113,6 +2113,11 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _crop_msa_padding(batch)
   if knobs.get('native_rng') and seed is not None and fold_input is not None:
     _native_rng(batch, seed, knobs['native_rng'], fold_input)
+  if knobs.get('templates') and fold_input is not None:
+    # template_policy's one batch-level rule (modified='unk_restype'), before the gap fill reads the atom masks
+    from alphafold3.model.pipeline import template_policy
+    if template_policy.resolve(knobs['templates'])['modified'] == 'unk_restype':
+      template_policy.unknown_restype_templates(batch, fold_input)
   if knobs.get('empty_template_gap'):
     _empty_template_gap(batch, slots=knobs.get('empty_template_gap_slots',
                                                'first'))
