@@ -787,6 +787,9 @@ class Model(hk.Module):
     the result. Propagation runs fused only.
     """
     f = {k[len('bioemu2/'):]: v for k, v in batch.items() if k.startswith('bioemu2/')}
+    steer = {k[len('bioemu2steer/'):]: v for k, v in batch.items() if k.startswith('bioemu2steer/')}
+    preset = next((k[len('preset_'):] for k in steer if k.startswith('preset_')), 'edm')
+    steer = {k: v for k, v in steer.items() if not k.startswith('preset_')}
     for k in ('atom_pad_mask', 'token_pad_mask', 'atom_mask', 'is_dynamics_conditioned'):
       f[k] = jnp.asarray(f[k]).astype(bool)
     af3_index = f.pop('af3_index')
@@ -839,8 +842,8 @@ class Model(hk.Module):
 
     # -- staged ---------------------------------------------------------------
     if stage != 'all':
-      if n_prop:
-        raise NotImplementedError('bioemu2 propagation runs fused only, not staged')
+      if n_prop or preset != 'edm':
+        raise NotImplementedError('bioemu2 propagation and steering run fused only, not staged')
       if stage == 'embed':
         s_inputs = b.input_embedder(f)
         s_init, z_init = b.trunk_init(f, s_inputs)
@@ -887,6 +890,43 @@ class Model(hk.Module):
     ctx = b.static_context(f, s, z)
     denoising_step = denoising_step_for(ctx, s_inputs, s)
     extra = {}
+    if preset != 'edm':
+      from .network import bioemu2_steering as steering
+      flat_mask = f['atom_mask']
+
+      def denoise_particles(x, sigma, comp):
+        sig = jnp.broadcast_to(jnp.asarray(sigma, jnp.float32), x.shape[:1])
+
+        def one(xp, sp, cp):
+          fs = f if cp is None else {**f, 'coords_cond': cp}
+          return b.denoise(fs, ctx, s_inputs, s, xp, sp)
+        if comp is None:
+          return jax.vmap(lambda xp, sp: one(xp, sp, None))(x, sig)
+        return jax.vmap(one)(x, sig, comp)
+
+      def sample_steered(k, comp):
+        kw = dict(num_steps=config.steps, companion=comp,
+                  injected=steering.INJECT)
+        if preset == 'edm_fkc':
+          return steering.fkc_sample(denoise_particles, steer, flat_mask, config.num_samples, k, **kw)
+        return steering.steered_sample(
+            denoise_particles, steer, flat_mask, config.num_samples, k,
+            step_scale=config.step_scale, noise_scale=config.noise_scale,
+            resampling_interval=None if preset == 'edm_gd' else 3, **kw)
+      if not n_prop:
+        flat = sample_steered(key, None)[:, :, None]
+      else:
+        w = flat_mask[:, None, None].astype(jnp.float32)
+        prev = jnp.broadcast_to(x0[None], (config.num_samples,) + x0.shape)
+        frames = []
+        for k in range(n_prop):
+          centre = (prev * w[:, :, 0][None]).sum(1, keepdims=True) / w.sum()
+          end = sample_steered(jax.random.fold_in(key, k), (prev - centre) * w[:, :, 0][None])
+          end = steering._rigid_align(end, prev, flat_mask)   # pylint: disable=protected-access
+          frames.append(end)
+          prev = end
+        flat = jnp.stack(frames, 1).reshape((-1,) + x0.shape)[:, :, None]
+      return result(flat, s, z, s_inputs, extra)
     if not n_prop:
       sample = diffusion_head.sample(
           denoising_step=denoising_step, batch=_Info, key=key,

@@ -1960,6 +1960,8 @@ def _bioemu2_features(batch, fold_input, cyclic=None):
   `af3_token`: each AF3 token -> a BioEmu2 token or -1).
 
   BIOEMU2_MODE picks the mode (`structure`, the default, or `equilibrium`);
+  BIOEMU2_SAMPLER=edm_gd|edm_fk|edm_fkc steers sampling with BioEmu2's physicality
+  potentials (network/bioemu2_steering.py) -- its presets of the same names;
   BIOEMU2_CONTACTS=<json> conditions on contacts (bioemu2_features.load_contacts);
   BIOEMU2_X0=<mmCIF> propagates from that structure instead (equilibrium mode),
   BIOEMU2_LAG_NS (default 1) later, chained BIOEMU2_STEPS times (default 1);
@@ -1980,8 +1982,11 @@ def _bioemu2_features(batch, fold_input, cyclic=None):
   ccd = chemical_components.Ccd(user_ccd=fold_input.user_ccd)
   contacts = (bf.load_contacts(os.environ['BIOEMU2_CONTACTS'])
               if os.environ.get('BIOEMU2_CONTACTS') else None)
-  f, keys = bf.featurise(fold_input, ccd, mode=mode, smiles_templates=bf.SMILES_TEMPLATES,
-                         contacts=contacts)
+  preset = os.environ.get('BIOEMU2_SAMPLER', 'edm')
+  if preset not in ('edm', 'edm_gd', 'edm_fk', 'edm_fkc'):
+    raise ValueError(f'BIOEMU2_SAMPLER={preset!r}: want edm, edm_gd, edm_fk or edm_fkc')
+  f, keys, topo = bf.featurise(fold_input, ccd, mode=mode, smiles_templates=bf.SMILES_TEMPLATES,
+                               contacts=contacts, return_topology=True)
   if os.environ.get('BIOEMU2_X0'):
     # propagation: from this frame, BIOEMU2_LAG_NS later, BIOEMU2_STEPS times
     f = bf.add_propagation(f, bf.x0_from_mmcif(os.environ['BIOEMU2_X0'], keys),
@@ -2020,6 +2025,16 @@ def _bioemu2_features(batch, fold_input, cyclic=None):
                        tok_of_atom[np.minimum(first, len(tok_of_atom) - 1)], -1).astype(np.int32)
   for k, v in f.items():
     batch['bioemu2/' + k] = np.asarray(v)
+  if preset != 'edm':
+    # steering: every potential's tables, on BioEmu2's (padded) atom axis
+    from alphafold3.model.network import bioemu2_steering as ns
+    from alphafold3.model.pipeline import bioemu2_steering as st
+    topo = dict(topo, n_pad=f['template_coords'].shape[0])
+    t = ns.host_tables(st.tables(topo, ccd, ligand_tables=bf.STEERING_LIGAND_TABLES or None))
+    for k, v in t.items():
+      if k != 'graph_bonds':
+        batch['bioemu2steer/' + k] = np.asarray(v)
+    batch['bioemu2steer/preset_' + preset] = np.zeros(0, np.int32)
   batch['bioemu2/af3_index'] = af3_index
   batch['bioemu2/af3_token'] = af3_token
   return batch

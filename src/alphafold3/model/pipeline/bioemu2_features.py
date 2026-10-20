@@ -255,10 +255,12 @@ class _Residue:
   restype: int
   per_atom_tokens: bool
   centre: str | None         # the centre atom of a single-token residue
+  label: str = 'UNK'         # residue_labels: what the vendor's topology names it
 
 
 def _polymer_residues(ccd, kind, sequence, mods):
   """inference_input_structure_from_{protein,rna,dna}_sequence (with mods)."""
+  has_mods = bool(mods)
   mods = dict((pos, code) for code, pos in mods)
   table = {'protein': _PROT, 'rna': _RNA, 'dna': _DNA}[kind]
   unk_letter = 'X' if kind == 'protein' else 'N'
@@ -269,18 +271,23 @@ def _polymer_residues(ccd, kind, sequence, mods):
       code = _UNKNOWN_CCD[kind]
     if code is not None and code != _UNKNOWN_CCD[kind]:
       t = _drop(ccd_template(ccd, code), _CAPPING)          # a modified residue: atom tokens
-      out.append(_Residue(t, UNK_PROT, True, None))
+      out.append(_Residue(t, UNK_PROT, True, None, code))
       continue
     if kind == 'protein':
       ccd_code = 'ALA' if code is not None or letter not in _THREE else _THREE[letter]
       t = _drop(ccd_template(ccd, ccd_code), ('OXT',))
-      out.append(_Residue(t, table.get(letter, UNK_PROT) if code is None else UNK_PROT, False, 'CA'))
+      restype = table.get(letter, UNK_PROT) if code is None else UNK_PROT
+      out.append(_Residue(t, restype, False, 'CA', 'UNK' if restype == UNK_PROT else ccd_code))
     else:
       ccd_code = letter if kind == 'rna' else 'D' + letter
       if code is not None:
         ccd_code = _UNKNOWN_CCD[kind]
       t = _drop(ccd_template(ccd, ccd_code), ('OP3',))
-      out.append(_Residue(t, table[letter] if code is None else table['N'], False, "C1'"))
+      unknown = code is not None or letter == 'N'
+      # an unknown nucleotide is labelled by index_to_pdb_resname ('UNK') unless the
+      # chain has modifications, when the mods path labels it with its CCD code
+      label = ((ccd_code if has_mods else 'UNK') if unknown else ccd_code)
+      out.append(_Residue(t, table['N'] if unknown else table[letter], False, "C1'", label))
   return out
 
 
@@ -312,13 +319,15 @@ def _entities(fold_input):
 # --- the whole system -----------------------------------------------------------------
 
 def featurise(fold_input, ccd, mode='structure', smiles_templates=None, pad_atoms_to=None,
-              pad_tokens_to=None, contacts=None):
+              pad_tokens_to=None, contacts=None, return_topology=False):
   """fold input -> (BioEmu2 feature dict without a batch axis, atom keys).
 
   smiles_templates: {chain id: Template} to use instead of a fresh RDKit draw
   (the parity harness passes the vendor's own draw here). atom keys are
   (chain id, 1-based residue index, atom name) for every real atom, in order --
-  how an output is mapped back onto the structure.
+  how an output is mapped back onto the structure. return_topology adds a third
+  value: the per-atom topology steering builds its tables from (see
+  pipeline/bioemu2_steering.py).
   """
   smiles_templates = smiles_templates or {}
   bonds = fold_input.bonded_atom_pairs or []
@@ -326,6 +335,7 @@ def featurise(fold_input, ccd, mode='structure', smiles_templates=None, pad_atom
                            'residue_idx', 'token_idx_at_atom', 'mol_type', 'residue_type')}
   tok = {k: [] for k in ('asym_id', 'entity_id', 'sym_id', 'centre')}
   bond_index, atom_keys, chain_info = [], [], []
+  labels, ligand_ccd = [], {}
   n_atoms = n_tokens = n_res = 0
   chain_order = []
   for entity_id, ((kind, payload, mods), chains) in enumerate(_entities(fold_input)):
@@ -335,7 +345,7 @@ def featurise(fold_input, ccd, mode='structure', smiles_templates=None, pad_atom
         residues = _polymer_residues(ccd, kind, payload, mods)
         mol = {'protein': 0, 'dna': 1, 'rna': 2}[kind]
       elif kind == 'ccd':
-        residues = [_Residue(ccd_template(ccd, payload), UNK_PROT, True, None)]
+        residues = [_Residue(ccd_template(ccd, payload), UNK_PROT, True, None, payload)]
         mol = 3
       elif kind == 'smiles':
         t = smiles_templates.get(ch.id) or smiles_template(payload)
@@ -348,11 +358,15 @@ def featurise(fold_input, ccd, mode='structure', smiles_templates=None, pad_atom
             if c == ch.id:
               atoms_by_res.setdefault(r - 1, []).append(a)
         residues = [_Residue(ccd_template(ccd, code, remove_leaving=is_leaving_atom_donor(
-            ccd, code, atoms_by_res.get(i, [])) if i in atoms_by_res else False), UNK_PROT, True, None)
+            ccd, code, atoms_by_res.get(i, [])) if i in atoms_by_res else False), UNK_PROT, True,
+                             None, code)
                     for i, code in enumerate(payload)]
         mol = 3
+      if kind == 'ccd':
+        ligand_ccd[len(chain_order) - 1] = payload
       chain_tokens_start = n_tokens
       for r_local, res in enumerate(residues):
+        labels.extend([res.label] * len(res.t.names))
         t = res.t
         n = len(t.names)
         feats['template_coords'].append(t.coords)
@@ -435,12 +449,23 @@ def featurise(fold_input, ccd, mode='structure', smiles_templates=None, pad_atom
   })
   if pad_tokens_to:
     out = pad_tokens(out, pad_tokens_to)
-  return out, atom_keys
+  if not return_topology:
+    return out, atom_keys
+  topology = {
+      'names': [k[2] for k in atom_keys], 'labels': labels, 'element': f['element'],
+      'residue_idx': f['residue_idx'], 'mol_type': f['mol_type'], 'residue_type': f['residue_type'],
+      'token_idx_at_atom': f['token_idx_at_atom'], 'atom_asym': np.array(tok['asym_id'], np.int64)[
+          f['token_idx_at_atom']], 'asym_id': out['asym_id'][:T], 'entity_id': out['entity_id'][:T],
+      'bond_index': bond_index, 'ligand_ccd': ligand_ccd, 'n_pad': out['template_coords'].shape[0]}
+  return out, atom_keys, topology
 
 
 # {chain id: Template}: a SMILES ligand's conformer to use instead of a fresh draw
 # (the parity harness sets the vendor's own here; a run leaves it empty).
 SMILES_TEMPLATES = {}
+# The steering potentials' RDKit ligand tables to use instead of building them
+# (the harness sets the vendor's: RDKit releases differ in bounds and CIP ranks).
+STEERING_LIGAND_TABLES = {}
 
 
 def pad_atoms(f, n):

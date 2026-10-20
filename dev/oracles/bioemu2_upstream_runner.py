@@ -128,6 +128,8 @@ def featurise(model, case_json, out_dir):
   with open(case_json) as fh:
     j = json.load(fh)
   system, msa = system_and_msa(j)
+  with open(os.path.join(out_dir, 'case.json'), 'w') as fh:
+    json.dump(j, fh)
   mode = os.environ.get('BIOEMU2_MODE', 'structure')
   contacts = []
   if os.environ.get('BIOEMU2_CONTACTS'):
@@ -220,7 +222,8 @@ def trajectory(model, out_dir, in_npz, out_npz):
   mode = os.environ.get('BIOEMU2_MODE', 'structure')
   sampler = EDMSampler(step_scale=1.5 if mode == 'structure' else 1.0)
   with torch.no_grad():
-    emb = m.compute_trunk_embeddings(batch)
+    # the harness's recycle count, as `forward` -- not load_model's default 3
+    emb = m.score_model.compute_trunk_embeddings(batch, int(z['recycling_steps']))
     if 'x0_frame' in z:
       # propagate_with_embeddings, for one frame given in angstrom: coords_cond
       # the frame centred, the flag, dt in ps; then the endpoint superposed on it
@@ -233,9 +236,9 @@ def trajectory(model, out_dir, in_npz, out_npz):
                             dt=torch.full((1, 1), float(z['lag_ns']) * 1000.0, device=m.device))
     out = sampler(batch=batch, score_model=m, trunk_embeddings=emb, batch_size=1)
     if 'x0_frame' in z:
-      n = x.shape[1]
-      end = out.coords[:, :n].float()
-      w = torch.ones((1, n), device=m.device)
+      n_real = x.shape[1]
+      end = out.coords[:, :n_real].float()
+      w = torch.ones((1, n_real), device=m.device)
       end, _, _ = weighted_rigid_align(end, x, w, w)
       out = out.replace(coords=end)
   sched = m.edm_schedule
@@ -245,6 +248,90 @@ def trajectory(model, out_dir, in_npz, out_npz):
   np.savez(out_npz, sigmas=sig, steps=n['aug'], final=out.coords[0].float().cpu().numpy())
 
 
+def steer(model, out_dir, in_npz, out_npz):
+  """A steering preset (BIOEMU2_SAMPLER: edm_gd, edm_fk, edm_fkc) over P particles,
+  every draw the harness's: x0 (P, N, 3); per step rot (P, 3, 3), trans (P, 3),
+  eps (P, N, 3); and the resampling uniforms -- by call for edm_gd/edm_fk, by step
+  for edm_fkc, whose resampling is adaptive. Also writes the potentials' ligand
+  (RDKit) tables, which ours takes from here."""
+  import torch
+  from bioemu2.denoising import edm as E
+  from bioemu2.denoising.steering import edm_fkc as FKC
+  from bioemu2.denoising.steering import edm_steered as ST
+  from bioemu2.denoising.steering import feats as F
+  from bioemu2.denoising.samplers import FKCSampler, GuidedFKSampler
+  from bioemu2.denoising.steering.potentials import get_default_potentials
+  z = np.load(in_npz)
+  m = _load()
+  with open(os.path.join(out_dir, 'case.json')) as fh:
+    system, _ = system_and_msa(json.load(fh))
+  batch = torch.load(os.path.join(out_dir, 'batch.pt'), weights_only=False).to(m.device)
+  dev = m.device
+  x0 = torch.tensor(z['x0'], device=dev)
+  rot, trans = torch.tensor(z['rot'], device=dev), torch.tensor(z['trans'], device=dev)
+  eps, uni = torch.tensor(z['eps'], device=dev), torch.tensor(z['uniform'], device=dev)
+  preset = os.environ['BIOEMU2_SAMPLER']
+  n = {'randn': 0, 'aug': 0, 'rand': 0}
+
+  def randn(shape, **kw):
+    k = n['randn']
+    n['randn'] += 1
+    return (x0 if k == 0 else eps[k - 1]).reshape(shape).to(kw.get('dtype') or torch.float32)
+
+  def aug(multiplicity, *a, **kw):
+    k = n['aug']
+    n['aug'] += 1
+    return rot[k], trans[k].reshape(-1, 1, 3)
+
+  class _Sync:
+    def __getattr__(self, k):
+      return getattr(E.cp_sync, k)
+
+    def randn(self, shape, device=None, dtype=None):
+      return randn(shape, dtype=dtype)
+
+    def random_augmentation(self, multiplicity, device=None, dtype=torch.float32):
+      return aug(multiplicity)
+
+  class _Torch:
+    def __getattr__(self, k):
+      return getattr(torch, k)
+
+    def randn_like(self, x):
+      return randn(x.shape, dtype=x.dtype)
+
+    def rand(self, *a, **kw):
+      k = n['rand']
+      n['rand'] += 1
+      # by call for the fixed-interval sampler; by step (the augmentation just drawn) for fkc
+      return uni[n['aug'] - 1 if preset == 'edm_fkc' else k].reshape(()).to(kw.get('dtype') or torch.float32)
+
+  ST.cp_sync = _Sync()
+  FKC.torch = _Torch()
+  FKC.compute_random_augmentation = aug
+  F.torch = _Torch()
+  potentials = get_default_potentials()
+  for p in potentials:
+    p.prepare(system)
+  P = x0.shape[0]
+  mode = os.environ.get('BIOEMU2_MODE', 'structure')
+  if preset == 'edm_fkc':
+    sampler = FKCSampler(potentials=potentials)
+  else:
+    sampler = GuidedFKSampler(step_scale=1.5 if mode == 'structure' else 1.0, potentials=potentials,
+                              resampling_interval=None if preset == 'edm_gd' else 3)
+  with torch.no_grad():
+    emb = m.score_model.compute_trunk_embeddings(batch, int(z['recycling_steps']))
+    out = sampler(batch=batch, score_model=m, trunk_embeddings=emb, batch_size=P)
+  pb = potentials[2].feats
+  np.savez(out_npz, final=out.coords.float().cpu().numpy(), steps=n['aug'],
+           **{'lig.' + k: pb[k][0].cpu().numpy() for k in (
+               'rdkit_bounds_index', 'rdkit_lower_bounds', 'rdkit_upper_bounds',
+               'rdkit_bounds_bond_mask', 'rdkit_bounds_angle_mask', 'chiral_atom_index',
+               'chiral_atom_orientations', 'stereo_bond_index', 'stereo_bond_orientations',
+               'planar_bond_index')})
+
+
 if __name__ == '__main__':
   cmd, *rest = sys.argv[1:]
-  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory}[cmd](*rest)
+  {'featurise': featurise, 'forward': forward, 'trajectory': trajectory, 'steer': steer}[cmd](*rest)

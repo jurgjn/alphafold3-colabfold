@@ -470,6 +470,8 @@ def trajectory_case(model, name, j, recycles):
   augmentation convention then shows up as a different trajectory.
   """
   if model == 'bioemu2':
+    if os.environ.get('BIOEMU2_SAMPLER'):
+      return bioemu2_steer(name, j, recycles)
     return bioemu2_trajectory(name, j, recycles)
   import jax.numpy as jnp
   from alphafold3.model.network import diffusion_head as dh
@@ -754,6 +756,9 @@ def _bioemu2_draws(seed, n_v):
 def _bioemu2_trajectory(name, j, recycles, lag, rows, dh):
   with tempfile.TemporaryDirectory() as tmp:
     bdir, ref, batch, cfg, model_dir = _bioemu2_setup(j, recycles, tmp)
+    # graded here, before propagation adds the conditioning frame that stock BioEmu2
+    # only sets at sampling time
+    rows += _bioemu2_feature_rows(ref, batch)
     extra = {}
     if lag:
       n_v = ref['template_coords'].shape[0]
@@ -769,7 +774,6 @@ def _bioemu2_trajectory(name, j, recycles, lag, rows, dh):
       batch, raw, cfg, model_dir = featurise_ours('bioemu2', j, recycles, 'none')
       extra = dict(x0_frame=start, lag_ns=float(lag))
       rows.append(('traj', 'propagation by %s ns from a stock equilibrium sample' % lag, 'INFO'))
-    rows += _bioemu2_feature_rows(ref, batch)
     n_v = ref['template_coords'].shape[0]
     real = ref['atom_pad_mask'].astype(bool)
     x0, rot, trans, eps = _bioemu2_draws(int(os.environ.get('INJECT_SEED', 0)), n_v)
@@ -816,6 +820,67 @@ def _bioemu2_trajectory(name, j, recycles, lag, rows, dh):
   rows.append(('traj', 'superposed rms %.4f A (raw rms %.4f A; rigid rotation %.3f deg)'
                % (np.sqrt((((a @ rot_k) - v) ** 2).sum(-1).mean()), np.sqrt(((fin_o - fin_v) ** 2).sum(-1).mean()),
                   np.degrees(np.arccos(np.clip((np.trace(rot_k) - 1) / 2, -1, 1)))), 'INFO'))
+  return rows
+
+
+def bioemu2_steer(name, j, recycles):
+  """A steering preset (BIOEMU2_SAMPLER=edm_gd|edm_fk|edm_fkc) on both sides over
+  STEER_PARTICLES particles, every draw injected, the vendor's RDKit ligand tables
+  handed to ours; graded on each particle's final coordinates."""
+  from alphafold3.model.network import bioemu2_steering as ns
+  from alphafold3.model.pipeline import bioemu2_features as bf
+  preset = os.environ['BIOEMU2_SAMPLER']
+  n_part = int(os.environ.get('STEER_PARTICLES', 4))
+  steps = 200
+  rows = []
+  with tempfile.TemporaryDirectory() as tmp:
+    os.environ.pop('BIOEMU2_SAMPLER')          # featurise the vendor side plainly
+    try:
+      bdir, ref, batch, cfg, model_dir = _bioemu2_setup(j, recycles, tmp)
+    finally:
+      os.environ['BIOEMU2_SAMPLER'] = preset
+    n_v = ref['template_coords'].shape[0]
+    real = ref['atom_pad_mask'].astype(bool)
+    rng = np.random.default_rng(int(os.environ.get('INJECT_SEED', 0)))
+    x0 = rng.normal(size=(n_part, n_v, 3)).astype(np.float32)
+    rot = np.stack([_rotations(rng, n_part) for _ in range(steps)])
+    trans = rng.normal(size=(steps, n_part, 3)).astype(np.float32)
+    eps = rng.normal(size=(steps, n_part, n_v, 3)).astype(np.float32)
+    uni = rng.uniform(size=(steps, 1)).astype(np.float32)
+    inp = os.path.join(tmp, 'steer.npz')
+    np.savez(inp, x0=x0, rot=rot, trans=trans, eps=eps, uniform=uni, recycling_steps=recycles)
+    _vendor('bioemu2', 'steer', bdir, inp, os.path.join(tmp, 'b.npz'))
+    b = dict(np.load(os.path.join(tmp, 'b.npz')))
+    bf.STEERING_LIGAND_TABLES.clear()
+    bf.STEERING_LIGAND_TABLES.update({k[4:]: v for k, v in b.items() if k.startswith('lig.')})
+    try:
+      batch, raw, cfg, model_dir = featurise_ours('bioemu2', j, recycles, 'none')
+    finally:
+      bf.STEERING_LIGAND_TABLES.clear()
+    n_o = np.asarray(batch['bioemu2/template_coords']).shape[0]
+
+    def pad(x):
+      out = np.zeros(x.shape[:-2] + (n_o, 3), np.float32)
+      out[..., :n_v, :] = x
+      return out
+    ns.INJECT = dict(x0=pad(x0), rot=rot, trans=trans, eps=pad(eps), uniform=uni)
+    cfg.heads.diffusion.eval.num_samples = n_part
+    try:
+      ours = forward_ours(batch, cfg, model_dir, None, None, None, real_sampler=True)
+    finally:
+      ns.INJECT = None
+  fin_o = np.asarray(ours['diffusion_samples/bioemu2_flat'])[:, :n_v][:, real]
+  fin_v = np.asarray(b['final'])[:, :n_v][:, real]
+  rows.append(('traj', '%s: %d particles, vendor %d steps' % (preset, n_part, int(b['steps'])), 'INFO'))
+  for i in range(n_part):
+    c, ratio = P.compare(fin_o[i], fin_v[i])
+    a = fin_o[i].astype(np.float64) - fin_o[i].mean(0)
+    v = fin_v[i].astype(np.float64) - fin_v[i].mean(0)
+    u, _, vt = np.linalg.svd(a.T @ v)
+    rk = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+    rows.append(('traj', 'particle %d final corr %.6f max|d|/rms %.2e (max |d| %.3f A; superposed rms %.4f A)'
+                 % (i, c, ratio, np.abs(fin_o[i] - fin_v[i]).max(),
+                    np.sqrt((((a @ rk) - v) ** 2).sum(-1).mean())), P.grade(c, ratio)))
   return rows
 
 
