@@ -208,8 +208,11 @@ _SHIPPED_BUCKETS = [32, 64, 128, 256, 384, 512, 768, 1024, 1280, 1536, 2048, 256
                     3072, 3584, 4096, 4608, 5120]
 
 
-# Vendors whose input takes a cyclic polymer (boltz-schema `cyclic: true`).
-CYCLIC_VENDORS = ('boltz2', 'intellifold2')
+# Vendors whose MODEL wraps a cyclic polymer (boltz-schema `cyclic: true`).
+# IntelliFold-2 parses the flag into cyclic_period, but its
+# RelativePositionEncoding never reads it: stock, cyclic is a no-op there.
+CYCLIC_VENDORS = ('boltz2',)
+_CYCLIC_IGNORED = {'intellifold2': 'its RelativePositionEncoding ignores cyclic_period'}
 
 
 def _cyclic_chains(j):
@@ -833,7 +836,7 @@ def main(argv):
     print('== %s %s' % (model, n), flush=True)
     try:
       if _cyclic_chains(allc[n]) and model not in CYCLIC_VENDORS:
-        raise VendorNA('%s takes no cyclic polymer input' % model)
+        raise VendorNA(_CYCLIC_IGNORED.get(model, '%s takes no cyclic polymer input' % model))
       rows = (trajectory_case(model, n, allc[n], rec) if trajectory
               else run_case(model, n, allc[n], rec, bf16, graded=graded))
     except VendorNA as e:   # the vendor cannot take this input: N/A, not FAIL
