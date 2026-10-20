@@ -252,6 +252,12 @@ scheme (before 2026-09-18) still load. `fp16` is the same idea at half precision
 | `opendde` | 2.47 GB | 0.94 GB | 0.54 GB |
 | `esmfold2` | 0.87 GB | 0.43 GB | 0.23 GB |
 | `bioemu2` | 1.90 GB | 0.95 GB | 0.49 GB |
+| `helixfold3` | 1.37 GB | 0.68 GB | 0.36 GB |
+
+HelixFold3's trunk is chaotic under recycling (stock's own trunk moves visibly under a 1e-6 nudge, see
+PARITY.md), so a storage rounding can carry a sample to a different nearby structure: on one test protein
+one of two samples landed 1.6 A (fp16) / 2.5 A (int8) CA RMSD from fp32's and the other 0.1 A, against
+0.3 A between fp32's own two samples, at the same ranking score. Use `fp32` where that matters.
 
 Each precision caches to its own directory (`<model>-int8/`), so asking for one
 never silently gets you the other, and switching back to a form you already have
