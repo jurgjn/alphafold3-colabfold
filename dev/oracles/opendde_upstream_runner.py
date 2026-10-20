@@ -187,6 +187,10 @@ def _configs(model, out_dir, dtype='fp32', n_cycle=None, n_sample=None):
   # config the runner builds the model from -- set through the CLI key.
   if n_cycle is not None:
     args += ' --model.N_cycle %d' % n_cycle
+  if os.environ.get('MSA_ALL_ROWS'):
+    # OpenDDE's MSA module draws a random msa_depth (1280) rows each pass (msa_sampling.py
+    # subsample_msa_feature_dict_valid_first, randperm): a draw, lifted on every side -- all rows, as ours takes them
+    args += ' --data.msa.msa_depth %d' % (1 << 20)
   if n_sample is not None:
     args += ' --sample_diffusion.N_sample %d' % n_sample
   if os.path.isdir(_template_dir(out_dir)):

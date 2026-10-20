@@ -553,6 +553,11 @@ def trajectory_case(model, name, j, recycles):
     rows.append(('traj', 'sigma schedule length ours %d vendor %d' % (len(levels), len(vs)), 'BAD'))
   fin_o = np.asarray(ours['diffusion_samples/atom_positions'])[0][idx[ok, 0], idx[ok, 1]]
   fin_v = np.asarray(b['final']).reshape(-1, 3)[ok]
+  if os.environ.get('TRAJ_DUMP'):
+    # both sides' final coordinates (vendor atom order), and the vendor's floor run, for a per-atom look
+    np.savez(os.environ['TRAJ_DUMP'], ours=fin_o, vendor=fin_v, floor=floor[ok] if floor is not None else fin_v,
+             **{k: np.asarray(v)[ok] for k, v in lay.items()
+                if np.asarray(v).ndim and np.asarray(v).shape[0] == ok.shape[0] and np.asarray(v).dtype.kind != 'O'})
   c, ratio = P.compare(fin_o, fin_v)
   rows.append(('traj', 'final coordinates corr %.6f max|d|/rms %.2e (max |d| %.3f A)'
                % (c, ratio, np.abs(fin_o - fin_v).max()), P.grade(c, ratio)))
