@@ -614,7 +614,8 @@ _BIOEMU2_PROPAGATE_FROM = flags.DEFINE_string(
 _BIOEMU2_LAG_NS = flags.DEFINE_float(
     'bioemu2_lag_ns', None, 'BioEmu2 propagation: the lag per step, in ns (default 1).')
 _BIOEMU2_PROPAGATION_STEPS = flags.DEFINE_integer(
-    'bioemu2_propagation_steps', None, 'BioEmu2 propagation: steps per trajectory (default 1).')
+    'bioemu2_propagation_steps', None, 'BioEmu2 propagation: steps per trajectory (default 1).',
+    lower_bound=1)
 _BIOEMU2_PHYSICALITY = flags.DEFINE_enum(
     'bioemu2_physicality', None,
     ['high_quality', 'no_violations', 'high_quality_per_residue', 'no_filter'],

@@ -796,8 +796,21 @@ class Model(hk.Module):
     af3_token = f.pop('af3_token')
     x0 = f.pop('x0', None)
     n_prop = f.pop('propagation_steps').shape[0] if 'propagation_steps' in f else 0
+
+    def _centre(x, m):
+      # bioemu2.sampling centres each sample on its real atoms (propagation,
+      # superposed on the previous frame instead, does not)
+      w = m[..., None].astype(jnp.float32)
+      return (x - (x * w).sum(-3, keepdims=True) / w.sum()) * w
     b = self.bioemu2
     config = self.config.heads.diffusion.eval
+    if config.steps < 2:   # edm_sample_schedule
+      raise ValueError(f'BioEmu2 samples with at least 2 steps, got {config.steps}')
+    if n_prop > 1 and preset in ('edm_fk', 'edm_fkc'):
+      # Resampling reorders particles mid-step, so trajectory i's next frame
+      # would come from another lineage; BioEmu2's propagation refuses it too.
+      raise ValueError(f'BioEmu2 multi-step propagation does not support {preset}'
+                       ' (it resamples); use edm or edm_gd, or one propagation step')
     mask = f['atom_mask'][:, None]
 
     class _Info:      # all the sampler reads of a batch
@@ -914,7 +927,7 @@ class Model(hk.Module):
             step_scale=config.step_scale, noise_scale=config.noise_scale,
             resampling_interval=None if preset == 'edm_gd' else 3, **kw)
       if not n_prop:
-        flat = sample_steered(key, None)[:, :, None]
+        flat = _centre(sample_steered(key, None)[:, :, None], flat_mask[:, None])
       else:
         w = flat_mask[:, None, None].astype(jnp.float32)
         prev = jnp.broadcast_to(x0[None], (config.num_samples,) + x0.shape)
@@ -931,7 +944,7 @@ class Model(hk.Module):
       sample = diffusion_head.sample(
           denoising_step=denoising_step, batch=_Info, key=key,
           config=config, global_config=self.global_config)
-      flat = sample['atom_positions']                          # (samples, N, 1, 3)
+      flat = _centre(sample['atom_positions'], mask)        # (samples, N, 1, 3)
       if 'trajectory' in sample:
         extra['trajectory'] = sample['trajectory']
     else:

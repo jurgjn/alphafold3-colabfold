@@ -105,6 +105,8 @@ def add_propagation(f, x0, lag_ns, steps=1):
   static shape."""
   if not (lag_ns > 0 and np.isfinite(lag_ns)):
     raise ValueError('the lag must be finite and positive')
+  if steps < 1:
+    raise ValueError(f'BioEmu2 propagation needs at least 1 step, got {steps}')
   g = dict(f)
   n_pad = f['template_coords'].shape[0]
   frame = np.zeros((n_pad, 3), np.float32)
@@ -155,7 +157,7 @@ def ccd_template(ccd, code, remove_leaving=False):
   except ValueError:
     xyz = np.array([[float(v) for v in d['_chem_comp_atom.model_Cartn_%s' % c]]
                     for c in 'xyz'], dtype=float).T
-  keep = np.array([s.upper() != 'H' for s in sym])
+  keep = np.array([s.upper() not in ('H', 'D') for s in sym])   # mdtraj: D is hydrogen too
   if remove_leaving:
     keep &= np.array([f != 'Y' for f in d['_chem_comp_atom.pdbx_leaving_atom_flag']])
   old_to_new = np.full(len(names), -1)
@@ -186,7 +188,7 @@ def is_leaving_atom_donor(ccd, code, bond_atom_names):
   d = ccd.get(code)
   heavy_leaving = {a for a, f, e in zip(d['_chem_comp_atom.atom_id'],
                                          d['_chem_comp_atom.pdbx_leaving_atom_flag'],
-                                         d['_chem_comp_atom.type_symbol']) if f == 'Y' and e != 'H'}
+                                         d['_chem_comp_atom.type_symbol']) if f == 'Y' and e.upper() not in ('H', 'D')}
   b1 = d.get('_chem_comp_bond.atom_id_1') or []
   b2 = d.get('_chem_comp_bond.atom_id_2') or []
   names = set(bond_atom_names)
@@ -352,10 +354,14 @@ def featurise(fold_input, ccd, mode='structure', smiles_templates=None, pad_atom
         residues = [_Residue(t, UNK_PROT, True, None)]
         mol = 3
       else:
+        # per entity, as all_atom_structure builds one Branched structure its
+        # chains share: a residue that donates in any copy loses its leaving
+        # atoms in every copy
+        entity_ids = {x.id for x in chains}
         atoms_by_res = {}
         for pair in bonds:
           for c, r, a in pair:
-            if c == ch.id:
+            if c in entity_ids:
               atoms_by_res.setdefault(r - 1, []).append(a)
         residues = [_Residue(ccd_template(ccd, code, remove_leaving=is_leaving_atom_donor(
             ccd, code, atoms_by_res.get(i, [])) if i in atoms_by_res else False), UNK_PROT, True,

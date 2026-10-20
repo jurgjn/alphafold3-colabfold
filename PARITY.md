@@ -190,7 +190,7 @@ These are the places where a vendor deliberately differs from AlphaFold 3, and w
 
 BioEmu2 shares no network stage with AF3, so its harness branch compares its own feature dict and outputs: `bioemu2_case`, `bioemu2_trajectory` and `bioemu2_steer` in `vendor_native_parity.py`, run against `dev/oracles/bioemu2_upstream_runner.py`. Stock BioEmu2 runs in float32 at `highest` matmul precision; its default is a bf16 trunk with a TF32 denoiser.
 
-**Features.** Every array of stock BioEmu2's feature dict equals ours on all 23 inputs. That covers CCD-ideal reference positions, OXT and OP3 dropped at every polymer position, atom tokens for ligands, modified residues and glycans, and Boltz-1 MSA pairing with `deletion_value = π/2·atan(d/3)`.
+**Features.** Every array of stock BioEmu2's feature dict equals ours on all 23 inputs, and on 28 of 30 further edge-case inputs (PTMs at chain ends, unknown nucleotides, MSA caps, partial pairing, glycans split across entries, deuterium, tricky SMILES). The other two use HEM, which RCSB revised after AF3's CCD snapshot; stock fetches its components live. That covers CCD-ideal reference positions, OXT and OP3 dropped at every polymer position, atom tokens for ligands, modified residues and glycans, and Boltz-1 MSA pairing with `deletion_value = π/2·atan(d/3)`.
 
 **Network.** Every case reads PARITY on `s_inputs`, the trunk single and pair, the distogram, the pair conditioning and one denoise step, at max\|d\|/rms ≤ 1.1e-4. The padded check (`OURS_BUCKET=shipped`) and contact conditioning (residue–residue, residue–ligand atom) pass too.
 
@@ -207,10 +207,15 @@ BioEmu2 shares no network stage with AF3, so its harness branch compares its own
 | `edm_fkc` (gradient through the denoiser), 4 particles | PARITY, 0.000 Å |
 | `edm_fk` / `edm_fkc` under a custom `--potentials` YAML | PARITY, ≤ 0.001 Å |
 | `edm_fk` steering a propagation | PARITY, ≤ 0.001 Å |
+| structure mode, homodimer | PARITY, 0.000 Å |
+| `edm_gd` / `edm_fkc`, homodimer | PARITY / CLOSE, ≤ 0.022 Å |
+| `edm_fk`, homodimer | LOOSE: a near-tie resample (below) |
 
 The ten steering potentials match stock directly as well. Energies agree to ≤ 1e-7 relative and gradients to ≤ 4.4e-5, at random coordinates and at a real ligand geometry. Every topology table is equal.
 
 **Steering a ligand is chaotic.** On the ATP case `edm_gd` reads LOOSE: 0.005–0.05 Å superposed against stock. `STEER_FLOOR` nudges stock's own x0 by 1e-5, and stock then moves 0.004–0.03 Å against itself. The flat-bottom restraints have step-function gradients, so a float-level difference that switches one restraint on or off changes a whole guidance step. This is the same class as protenix1's trajectory, and the raw grade is left as it is.
+
+**FK resampling on the homodimer meets a near-tie.** A trace of every resampling step (`BIOEMU2_FK_TRACE`) shows ours and stock drawing identical indices for 45 resamples. At step 135 the weights are ours [0, 0.216, 0.706, 0.078] against stock's [0, 0.207, 0.723, 0.070], and the systematic draw falls between 0.207 and 0.216, so one side keeps particle 1 and the other particle 2. The two lineages end 2.8 Å apart. Stock does the same to itself: with its x0 nudged by 1e-4 Å (`STEER_FLOOR_EPS`) it switches lineage, and in that run ours matched stock to 0.003 Å. Which side of the tie a run lands on is float noise. Each multi-chain potential alone (`SymmetricChainCOM`, `InterChainVDW`, `IntraChainVDW`) reads PARITY, and so does the default set without its four ligand potentials. Those potentials are empty here, but dropping them reorders the energy sum, which is enough to move the tie.
 
 **Physicality report.** Every stat, pass and reason equals stock's `check_physicality`. The check covered six structures (protein, homodimer, ligand, PTM, glycan, protein–DNA), each under 5–7 noise levels, in all three presets.
 

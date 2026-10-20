@@ -131,7 +131,20 @@ and Boltz-1's CCD molecules for ligand restraints. A potential written in
 Python is out of reach (the YAML can name BioEmu2's own potentials only), and
 `--cyclic` is refused, as BioEmu2 has no cyclic input.
 
-### AlphaFold 2 — a sibling network, not the AF3 graph### AlphaFold 2 — a sibling network, not the AF3 graph
+Where it differs from the BioEmu2 CLI:
+
+- Chemical components come from AF3's bundled CCD (or the input's `userCCD`),
+  not fetched live from RCSB. A component revised since AF3's CCD snapshot
+  (HEM, for one) gets the older reference geometry and charges.
+- The MSA is the input JSON's, not fetched from ColabFold.
+- Samples default to `--num_diffusion_samples` (5), not BioEmu2's 8. For the
+  steered samplers that is also the particle count.
+- Inputs BioEmu2 rejects (chain ids over 4 characters; B, Z, U, O, J in a
+  protein sequence) run here, the letters as unknown residues.
+- Multi-step propagation is refused under `edm_fk`/`edm_fkc`, as BioEmu2
+  refuses it; an empty potentials YAML is refused rather than run unsteered.
+
+### AlphaFold 2 — a sibling network, not the AF3 graph
 
 | `--model` | model | weights |
 |---|---|---|

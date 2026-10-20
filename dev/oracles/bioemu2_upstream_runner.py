@@ -52,7 +52,18 @@ def _chains(j):
   return out
 
 
-def system_and_msa(j):
+def _msa(e, key, base):
+  """An inline MSA, or the file its ...Path names (relative to the JSON), as AF3 reads it."""
+  if e.get(key):
+    return e[key]
+  path = e.get(key + 'Path')
+  if path:
+    with open(os.path.join(base, path)) as fh:
+      return fh.read()
+  return None
+
+
+def system_and_msa(j, base='.'):
   from bioemu2.data_interface import System
   from bioemu2.data_interface.structure_hierarchy import (
       Atom, Bond, Branched, DNA, Ligand, ModifiedResidue, Protein, RNA)
@@ -95,8 +106,8 @@ def system_and_msa(j):
         res_name[cid] = names
       if kind == 'protein':
         for cid, e in groups[key]:
-          unpaired[cid] = e.get('unpairedMsa') or '>query\n%s\n' % payload
-          paired[cid] = e.get('pairedMsa') or ''
+          unpaired[cid] = _msa(e, 'unpairedMsa', base) or '>query\n%s\n' % payload
+          paired[cid] = _msa(e, 'pairedMsa', base) or ''
     elif kind == 'smiles':
       entities.append(Ligand(smiles=payload, asym_ids=ids))
     elif kind == 'ccd':
@@ -127,7 +138,7 @@ def featurise(model, case_json, out_dir):
   os.makedirs(out_dir, exist_ok=True)
   with open(case_json) as fh:
     j = json.load(fh)
-  system, msa = system_and_msa(j)
+  system, msa = system_and_msa(j, os.path.dirname(os.path.abspath(case_json)))
   with open(os.path.join(out_dir, 'case.json'), 'w') as fh:
     json.dump(j, fh)
   mode = os.environ.get('BIOEMU2_MODE', 'structure')
@@ -186,6 +197,14 @@ def forward(model, out_dir, in_npz, out_npz):
            pair_cond=ctx.z[0].cpu().numpy(), denoised=den[0].cpu().numpy())
 
 
+def _centred(coords, batch):
+  """sampling.py's last step: each sample centred on its real atoms (they lead)."""
+  n_real = int(batch.atom_mask[0].sum())
+  c = coords.clone()
+  c[:, :n_real] = c[:, :n_real] - c[:, :n_real].mean(dim=1, keepdim=True)
+  return c
+
+
 def trajectory(model, out_dir, in_npz, out_npz):
   """BioEmu2's EDMSampler at its defaults for the mode (200 steps, step_scale
   1.5 structure / 1.0 equilibrium), every draw the harness's: the initial
@@ -241,6 +260,8 @@ def trajectory(model, out_dir, in_npz, out_npz):
       w = torch.ones((1, n_real), device=m.device)
       end, _, _ = weighted_rigid_align(end, x, w, w)
       out = out.replace(coords=end)
+    else:
+      out = out.replace(coords=_centred(out.coords, batch))
   sched = m.edm_schedule
   sig = E.edm_sample_schedule(sampler.num_steps, sigma_min=sched.sigma_min,
                               sigma_max=sched.sigma_max, sigma_data=sched.sigma_data,
@@ -307,6 +328,25 @@ def steer(model, out_dir, in_npz, out_npz):
       return uni[n['aug'] - 1 if preset == 'edm_fkc' else k].reshape(()).to(kw.get('dtype') or torch.float32)
 
   ST.cp_sync = _Sync()
+  trace = [] if os.environ.get('BIOEMU2_FK_TRACE') and 'floor' not in out_npz else None
+  if trace is not None:
+    # dev: each resampling step's weights, the indices drawn from them, and the energies
+    _gs, _sr, _lg = ST.grouped_softmax, ST.systematic_resample, ST.fk_log_increment
+
+    def _grouped(un, g):
+      w = _gs(un, g)
+      trace.append({'w': w.float().cpu().numpy()})
+      return w
+
+    def _resample(w, g):
+      idx = _sr(w, g)
+      trace[-1]['idx'] = idx.cpu().numpy()
+      return idx
+
+    def _increment(e, prev):
+      trace.append({'energy': e.float().cpu().numpy()})
+      return _lg(e, prev)
+    ST.grouped_softmax, ST.systematic_resample, ST.fk_log_increment = _grouped, _resample, _increment
   FKC.torch = _Torch()
   FKC.compute_random_augmentation = aug
   F.torch = _Torch()
@@ -343,12 +383,18 @@ def steer(model, out_dir, in_npz, out_npz):
       w = torch.ones((P, n_real), device=dev)
       end, _, _ = weighted_rigid_align(out.coords[:, :n_real].float(), x_frame, w, w)
       out = out.replace(coords=end)
+    else:
+      out = out.replace(coords=_centred(out.coords, batch))
   pb = next((p.feats for p in potentials if 'rdkit_bounds_index' in getattr(p, 'feats', {})),
             None)
   if pb is None:
     tmp_pb = get_default_potentials()[2]
     tmp_pb.prepare(system)
     pb = tmp_pb.feats
+  if trace:
+    rows = [{**a, **b} for a, b in zip(trace[0::2], trace[1::2])]
+    np.savez(os.environ['BIOEMU2_FK_TRACE'] + '.vendor.npz', w=np.stack([r['w'] for r in rows]),
+             idx=np.stack([r['idx'] for r in rows]), energy=np.stack([r['energy'] for r in rows]))
   np.savez(out_npz, final=out.coords.float().cpu().numpy(), steps=n['aug'],
            **{'lig.' + k: pb[k][0].cpu().numpy() for k in (
                'rdkit_bounds_index', 'rdkit_lower_bounds', 'rdkit_upper_bounds',

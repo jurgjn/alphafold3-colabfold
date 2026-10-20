@@ -869,10 +869,12 @@ def bioemu2_steer(name, j, recycles):
     b = dict(np.load(os.path.join(tmp, 'b.npz')))
     floor = None
     if os.environ.get('STEER_FLOOR'):
-      # the vendor against ITSELF with x0 nudged 1e-5: how far the steered sampler alone
-      # carries a difference of a port's size (its hinge potentials have step gradients)
+      # the vendor against ITSELF with x0 nudged (1e-5 A, or STEER_FLOOR_EPS): how far the
+      # steered sampler alone carries a difference of a port's size (its hinge potentials
+      # have step gradients, and FK resampling at a near-tie picks another lineage)
+      nudge = float(os.environ.get('STEER_FLOOR_EPS', 1e-5))
       fz = os.path.join(tmp, 'steer_floor.npz')
-      np.savez(fz, x0=x0 + 1e-5 * np.random.default_rng(7).normal(size=x0.shape).astype(np.float32),
+      np.savez(fz, x0=x0 + nudge * np.random.default_rng(7).normal(size=x0.shape).astype(np.float32),
                rot=rot, trans=trans, eps=eps, uniform=uni, recycling_steps=recycles)
       _vendor('bioemu2', 'steer', bdir, fz, os.path.join(tmp, 'b_floor.npz'))
       floor = np.asarray(np.load(os.path.join(tmp, 'b_floor.npz'))['final'])
@@ -890,10 +892,19 @@ def bioemu2_steer(name, j, recycles):
       return out
     ns.INJECT = dict(x0=pad(x0), rot=rot, trans=trans, eps=pad(eps), uniform=uni)
     cfg.heads.diffusion.eval.num_samples = n_part
+    trace = os.environ.get('BIOEMU2_FK_TRACE')
+    if trace:
+      ns.TRACE = []
     try:
       ours = forward_ours(batch, cfg, model_dir, None, None, None, real_sampler=True)
     finally:
       ns.INJECT = None
+      if trace:
+        rows_ = [r for r in ns.TRACE if bool(r[1])]
+        np.savez(trace + '.ours.npz', step=np.array([r[0] for r in rows_]),
+                 w=np.stack([r[2] for r in rows_]), idx=np.stack([r[3] for r in rows_]),
+                 energy=np.stack([r[4] for r in rows_]))
+        ns.TRACE = None
       for k in ('BIOEMU2_X0', 'BIOEMU2_LAG_NS') + (('BIOEMU2_MODE',) if lag else ()):
         os.environ.pop(k, None)
   fin_o = np.asarray(ours['diffusion_samples/bioemu2_flat'])[:, :n_v][:, real]
@@ -914,8 +925,8 @@ def bioemu2_steer(name, j, recycles):
       f = f - f.mean(0)
       u, _, vt = np.linalg.svd(f.T @ v)
       rf = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
-      rows.append(('traj', 'particle %d vendor vs itself (x0 nudged 1e-5): superposed rms %.4f A'
-                   % (i, np.sqrt((((f @ rf) - v) ** 2).sum(-1).mean())), 'INFO'))
+      rows.append(('traj', 'particle %d vendor vs itself (x0 nudged %g): superposed rms %.4f A'
+                   % (i, float(os.environ.get('STEER_FLOOR_EPS', 1e-5)), np.sqrt((((f @ rf) - v) ** 2).sum(-1).mean())), 'INFO'))
   return rows
 
 

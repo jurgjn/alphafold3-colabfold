@@ -27,6 +27,7 @@ import numpy as np
 # The parity harness's draws for one steered fold ({x0, rot, trans, eps,
 # uniform}); None in a run.
 INJECT = None
+TRACE = None     # dev: a list to collect each step's (k, resample?, FK weights, indices, energies) into
 
 SIGMA_DATA = 16.0
 SIGMA_MIN = 0.0004
@@ -109,8 +110,14 @@ def load_potentials(path):
   import yaml
   with open(path) as fh:
     raw = yaml.safe_load(fh)
+  if not isinstance(raw, dict) or 'potentials' not in raw:
+    raise ValueError(f'{path}: no potentials: list')
+  if not raw['potentials']:
+    # BioEmu2 runs an empty list as unsteered EDM (with a warning); refuse it
+    # rather than silently sampling without the steering asked for.
+    raise ValueError(f'{path}: the potentials list is empty; use --bioemu2_sampler edm')
   specs = []
-  for entry in raw.get('potentials', []):
+  for entry in raw['potentials']:
     entry = dict(entry)
     kind = entry.pop('_target_').rsplit('.', 1)[-1]
     if kind not in TYPES:
@@ -150,7 +157,7 @@ def host_tables(t, specs=None):
   """Host-side halves of `_compute_args`: the planar impropers, the chain-pair
   filter, and each Bond*/Angle spec's bounds at its own sigma_tolerance."""
   from alphafold3.model.pipeline import bioemu2_steering as st
-  specs = specs or DEFAULT
+  specs = DEFAULT if specs is None else specs
   t = dict(t)
   pb = np.asarray(t['planar_bond_index'], np.int64).reshape(6, -1).T          # (K, 6)
   imp = np.array([[1, 2, 3, 0], [4, 5, 0, 3]]).T                             # (4, 2)
@@ -331,7 +338,7 @@ def energy(kind, i, c, t, p):
 def energies(c, t, p, specs=None):
   """Every potential's per-particle energy, stacked (n_specs, P). `p` holds the
   step's parameters as {name: (n_specs,) array} (step_parameters)."""
-  specs = specs or DEFAULT
+  specs = DEFAULT if specs is None else specs
   return jnp.stack([energy(kind, i, c, t, {k: v[i] for k, v in p.items()})
                     for i, (kind, _, _) in enumerate(specs)])
 
@@ -343,7 +350,7 @@ def step_parameters(t_norm, specs=None):
   """Every spec's resolved parameters at normalised time t_norm, as arrays over
   the specs (absent ones NaN), plus the weights the samplers read
   (compute_parameters; guidance_weight 0 and resampling_weight 1 by default)."""
-  specs = specs or DEFAULT
+  specs = DEFAULT if specs is None else specs
   out = {'guidance_weight': np.array([_resolve(pr.get('guidance_weight', 0.0), t_norm)
                                       for _, pr, _ in specs], np.float32),
          'resampling_weight': np.array([_resolve(pr.get('resampling_weight', 1.0), t_norm)
@@ -353,8 +360,10 @@ def step_parameters(t_norm, specs=None):
   return out
 
 
-def guidance_interval(specs=None):
-  return np.array([pr.get('guidance_interval', 1) for _, pr, _ in (specs or DEFAULT)])
+def guidance_interval(t_norm, specs=None):
+  """Resolved at t_norm, as compute_parameters resolves every parameter."""
+  return np.array([int(_resolve(pr.get('guidance_interval', 1), t_norm))
+                   for _, pr, _ in (DEFAULT if specs is None else specs)])
 
 
 def _buffers(p):
@@ -365,6 +374,8 @@ def _buffers(p):
 
 def schedule(num_steps):
   """edm_sample_schedule: num_steps Karras levels (x sigma_data), then 0. float32."""
+  if num_steps < 2:
+    raise ValueError(f'BioEmu2 samples with at least 2 steps, got {num_steps}')
   inv = 1.0 / RHO
   steps = np.arange(num_steps, dtype=np.float32)
   s = (np.float32(SIGMA_MAX) ** inv + steps / np.float32(num_steps - 1)
@@ -478,12 +489,12 @@ def steered_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, 
   noise_var = (noise_scale ** 2 * np.maximum(t_hat.astype(np.float64) ** 2 - s_tm.astype(np.float64) ** 2, 0.0))
   resample = (np.zeros(num_steps, bool) if resampling_interval is None
               else (ks % resampling_interval == 0) | (ks == last))
-  specs = specs or DEFAULT
-  interval = guidance_interval(specs)
+  specs = DEFAULT if specs is None else specs
   prm = [step_parameters(1.0 - (k + 1) / num_steps, specs) for k in ks]
   coef = np.zeros((num_steps, max(num_gd_steps, 1), len(specs)), np.float32)
   for k in ks:
     if k < last:
+      interval = guidance_interval(1.0 - (k + 1) / num_steps, specs)
       for gs in range(num_gd_steps):
         active = (prm[k]['guidance_weight'] != 0) & (gs % interval == 0)
         coef[k, gs] = np.where(active, prm[k]['guidance_weight'], 0.0)
@@ -538,6 +549,9 @@ def steered_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, 
 
     u = _uniform(key, x_.get('inj'), x_['uniform_index'], P // group)
     idx = jnp.where(x_['resample'], systematic_resample(w, group, u), jnp.arange(P))
+    if TRACE is not None:
+      jax.debug.callback(lambda *a: TRACE.append([np.asarray(v) for v in a]),
+                         k, x_['resample'], w, idx, energy)
     x, noisy, x0, sgu, energy = x[idx], noisy[idx], x0[idx], sgu[idx], energy[idx]
     if comp is not None:
       comp = comp[idx]
@@ -590,7 +604,7 @@ def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamm
   if (resampling_interval is None) == (ess_threshold is None):
     raise ValueError('fkc: exactly one of resampling_interval and ess_threshold')
   t = {k: jnp.asarray(v) for k, v in tables.items()}
-  specs = specs or DEFAULT
+  specs = DEFAULT if specs is None else specs
   P = num_particles
   group = resampling_group_size or P
   sig = [float(v) for v in schedule(num_steps)]
