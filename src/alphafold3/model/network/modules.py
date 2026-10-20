@@ -578,6 +578,21 @@ class GridSelfAttention(hk.Module):
 TRIMUL_BLOCK_BYTES = 8 * 2 ** 30
 
 
+def _real_length(pair_mask, num_residues):
+  """The REAL token count rf3's triangle multiplication divides by.
+
+  rf3 runs unpadded, so its `L` is the number of real tokens. Ours may be padded
+  to a bucket, and dividing by the padded length is not a no-op in front of the
+  centre LayerNorm (its eps -- see model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH):
+  padding ligand_ccd 83 -> 128 tokens moved the trunk pair by 1e-2 on the real
+  tokens. pair_mask is the token pair mask (seq_mask outer seq_mask), so its
+  largest row sum is the real count, and exactly `num_residues` when nothing is
+  padded. An all-zero mask falls back to `num_residues`.
+  """
+  n = jnp.max(jnp.sum(pair_mask.astype(jnp.float32), axis=-1))
+  return jnp.where(n > 0, n, jnp.float32(num_residues))
+
+
 class TriangleMultiplication(hk.Module):
   """Triangle Multiplication."""
 
@@ -666,7 +681,7 @@ class TriangleMultiplication(hk.Module):
     # a LayerNorm because of the norm's epsilon -- see
     # model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH for the measurement.
     if self.global_config.model in model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH:
-      act = act / jnp.asarray(num_residues, act.dtype)
+      act = act / _real_length(mask[0], num_residues).astype(act.dtype)
     act = hm.LayerNorm(name='center_norm', axis=0, param_axis=0)(act)
 
     act = jnp.transpose(act, (1, 2, 0))
@@ -700,7 +715,7 @@ class TriangleMultiplication(hk.Module):
     zero = jnp.zeros((hidden_dim * 2,), act.dtype)
     tri = contract(act, *in_ln, ab(wp), zero, ab(wg), zero, mask.astype(act.dtype), equation=equation)
     if self.global_config.model in model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH:
-      tri = tri / jnp.asarray(n, tri.dtype)  # rf3, as in __call__
+      tri = tri / _real_length(mask, n).astype(tri.dtype)  # rf3, as in __call__
 
     final = self.global_config.final_init
     ln = _layer_norm_params('center_norm', hidden_dim)
