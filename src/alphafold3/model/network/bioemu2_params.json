@@ -1,0 +1,1028 @@
+{
+"distogram_module/distogram/bias": [
+64
+],
+"distogram_module/distogram/weight": [
+64,
+256
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/attention/attention_layer/pair_bias_attn/norm_z/weight": [
+16
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/attention/attention_layer/pair_bias_attn/proj_g/weight": [
+128,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/attention/attention_layer/pair_bias_attn/proj_o/weight": [
+128,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/attention/attention_layer/pair_bias_attn/proj_q_bias": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/attention/attention_layer/pair_bias_attn/proj_qkv/weight": [
+384,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/attention/attention_layer/pair_bias_attn/proj_z/weight": [
+4,
+16
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/cond_0/bias": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/cond_0/weight": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/cond_2/bias": [
+768
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/cond_2/weight": [
+768,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/transition/fc1/weight": [
+512,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/transition/fc2/weight": [
+512,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_0/transformer_layer/transition/fc3/weight": [
+128,
+512
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/attention/attention_layer/pair_bias_attn/norm_z/weight": [
+16
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/attention/attention_layer/pair_bias_attn/proj_g/weight": [
+128,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/attention/attention_layer/pair_bias_attn/proj_o/weight": [
+128,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/attention/attention_layer/pair_bias_attn/proj_q_bias": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/attention/attention_layer/pair_bias_attn/proj_qkv/weight": [
+384,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/attention/attention_layer/pair_bias_attn/proj_z/weight": [
+4,
+16
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/cond_0/bias": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/cond_0/weight": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/cond_2/bias": [
+768
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/cond_2/weight": [
+768,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/transition/fc1/weight": [
+512,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/transition/fc2/weight": [
+512,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_1/transformer_layer/transition/fc3/weight": [
+128,
+512
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/attention/attention_layer/pair_bias_attn/norm_z/weight": [
+16
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/attention/attention_layer/pair_bias_attn/proj_g/weight": [
+128,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/attention/attention_layer/pair_bias_attn/proj_o/weight": [
+128,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/attention/attention_layer/pair_bias_attn/proj_q_bias": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/attention/attention_layer/pair_bias_attn/proj_qkv/weight": [
+384,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/attention/attention_layer/pair_bias_attn/proj_z/weight": [
+4,
+16
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/cond_0/bias": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/cond_0/weight": [
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/cond_2/bias": [
+768
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/cond_2/weight": [
+768,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/transition/fc1/weight": [
+512,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/transition/fc2/weight": [
+512,
+128
+],
+"input_embedder/atom_attention_encoder/atom_encoder_layers_2/transformer_layer/transition/fc3/weight": [
+128,
+512
+],
+"input_embedder/atom_attention_encoder/atom_to_token_trans_0/weight": [
+384,
+128
+],
+"input_embedder/atom_attention_encoder/c_to_p_trans_k_1/weight": [
+16,
+128
+],
+"input_embedder/atom_attention_encoder/c_to_p_trans_q_1/weight": [
+16,
+128
+],
+"input_embedder/atom_attention_encoder/embed_atom_name_chars_0/weight": [
+64,
+128
+],
+"input_embedder/atom_attention_encoder/embed_atom_name_chars_1/weight": [
+64,
+128
+],
+"input_embedder/atom_attention_encoder/embed_atom_name_chars_2/weight": [
+64,
+128
+],
+"input_embedder/atom_attention_encoder/embed_atom_name_chars_3/weight": [
+64,
+128
+],
+"input_embedder/atom_attention_encoder/embed_atompair_mask/weight": [
+16,
+1
+],
+"input_embedder/atom_attention_encoder/embed_atompair_ref_dist/weight": [
+16,
+1
+],
+"input_embedder/atom_attention_encoder/embed_atompair_ref_pos/weight": [
+16,
+3
+],
+"input_embedder/atom_attention_encoder/embed_element/weight": [
+128,
+128
+],
+"input_embedder/atom_attention_encoder/p_mlp_1/weight": [
+16,
+16
+],
+"input_embedder/atom_attention_encoder/p_mlp_3/weight": [
+16,
+16
+],
+"input_embedder/atom_attention_encoder/p_mlp_5/weight": [
+16,
+16
+],
+"input_embedder/atom_attention_encoder/proj_atom_continuous/weight": [
+128,
+4
+],
+"rel_pos/embed_rel_chain/weight": [
+6,
+256
+],
+"rel_pos/embed_rel_pos/weight": [
+66,
+256
+],
+"rel_pos/embed_rel_token/weight": [
+66,
+256
+],
+"rel_pos/embed_same_entity/weight": [
+256,
+1
+],
+"sequence_embedder/contact_conditioning/encoder/bias": [
+256
+],
+"sequence_embedder/contact_conditioning/encoder/weight": [
+256,
+260
+],
+"sequence_embedder/contact_conditioning/encoding_unselected": [
+256
+],
+"sequence_embedder/contact_conditioning/encoding_unspecified": [
+256
+],
+"sequence_embedder/contact_conditioning/fourier_embedding/proj/bias": [
+256
+],
+"sequence_embedder/contact_conditioning/fourier_embedding/proj/weight": [
+256,
+1
+],
+"sequence_embedder/method_conditioning/embedding/weight": [
+17,
+384
+],
+"sequence_embedder/method_conditioning/pair_embedding/weight": [
+17,
+256
+],
+"sequence_embedder/msa_module/layers/msa_transition/fc1/weight": [
+4,
+512,
+128
+],
+"sequence_embedder/msa_module/layers/msa_transition/fc2/weight": [
+4,
+512,
+128
+],
+"sequence_embedder/msa_module/layers/msa_transition/fc3/weight": [
+4,
+128,
+512
+],
+"sequence_embedder/msa_module/layers/msa_transition/norm/bias": [
+4,
+128
+],
+"sequence_embedder/msa_module/layers/msa_transition/norm/weight": [
+4,
+128
+],
+"sequence_embedder/msa_module/layers/outer_product_mean/norm/bias": [
+4,
+128
+],
+"sequence_embedder/msa_module/layers/outer_product_mean/norm/weight": [
+4,
+128
+],
+"sequence_embedder/msa_module/layers/outer_product_mean/proj_ab/weight": [
+4,
+64,
+128
+],
+"sequence_embedder/msa_module/layers/outer_product_mean/proj_o/bias": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/outer_product_mean/proj_o/weight": [
+4,
+256,
+1024
+],
+"sequence_embedder/msa_module/layers/pair_weighted_averaging/norm_m/bias": [
+4,
+128
+],
+"sequence_embedder/msa_module/layers/pair_weighted_averaging/norm_m/weight": [
+4,
+128
+],
+"sequence_embedder/msa_module/layers/pair_weighted_averaging/norm_z/bias": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/pair_weighted_averaging/norm_z/weight": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/pair_weighted_averaging/proj_g/weight": [
+4,
+256,
+128
+],
+"sequence_embedder/msa_module/layers/pair_weighted_averaging/proj_m/weight": [
+4,
+256,
+128
+],
+"sequence_embedder/msa_module/layers/pair_weighted_averaging/proj_o/weight": [
+4,
+128,
+256
+],
+"sequence_embedder/msa_module/layers/pair_weighted_averaging/proj_z/weight": [
+4,
+8,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_in/g_in/weight": [
+4,
+512,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_in/g_out/weight": [
+4,
+256,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_in/norm_in/bias": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_in/norm_in/weight": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_in/norm_out/bias": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_in/norm_out/weight": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_in/p_in/weight": [
+4,
+512,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_in/p_out/weight": [
+4,
+256,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_out/g_in/weight": [
+4,
+512,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_out/g_out/weight": [
+4,
+256,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_out/norm_in/bias": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_out/norm_in/weight": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_out/norm_out/bias": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_out/norm_out/weight": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_out/p_in/weight": [
+4,
+512,
+256
+],
+"sequence_embedder/msa_module/layers/tri_mul_out/p_out/weight": [
+4,
+256,
+256
+],
+"sequence_embedder/msa_module/layers/z_transition/fc1/weight": [
+4,
+1024,
+256
+],
+"sequence_embedder/msa_module/layers/z_transition/fc2/weight": [
+4,
+1024,
+256
+],
+"sequence_embedder/msa_module/layers/z_transition/fc3/weight": [
+4,
+256,
+1024
+],
+"sequence_embedder/msa_module/layers/z_transition/norm/bias": [
+4,
+256
+],
+"sequence_embedder/msa_module/layers/z_transition/norm/weight": [
+4,
+256
+],
+"sequence_embedder/msa_module/msa_proj/weight": [
+128,
+36
+],
+"sequence_embedder/msa_module/s_proj/weight": [
+128,
+455
+],
+"sequence_embedder/pairmixer_module/layers/transition_z/fc1/weight": [
+48,
+1024,
+256
+],
+"sequence_embedder/pairmixer_module/layers/transition_z/fc2/weight": [
+48,
+1024,
+256
+],
+"sequence_embedder/pairmixer_module/layers/transition_z/fc3/weight": [
+48,
+256,
+1024
+],
+"sequence_embedder/pairmixer_module/layers/transition_z/norm/bias": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/transition_z/norm/weight": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_in/g_in/weight": [
+48,
+512,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_in/g_out/weight": [
+48,
+256,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_in/norm_in/bias": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_in/norm_in/weight": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_in/norm_out/bias": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_in/norm_out/weight": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_in/p_in/weight": [
+48,
+512,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_in/p_out/weight": [
+48,
+256,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_out/g_in/weight": [
+48,
+512,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_out/g_out/weight": [
+48,
+256,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_out/norm_in/bias": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_out/norm_in/weight": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_out/norm_out/bias": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_out/norm_out/weight": [
+48,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_out/p_in/weight": [
+48,
+512,
+256
+],
+"sequence_embedder/pairmixer_module/layers/tri_mul_out/p_out/weight": [
+48,
+256,
+256
+],
+"sequence_embedder/rel_pos/embed_rel_chain/weight": [
+6,
+256
+],
+"sequence_embedder/rel_pos/embed_rel_pos/weight": [
+66,
+256
+],
+"sequence_embedder/rel_pos/embed_rel_token/weight": [
+66,
+256
+],
+"sequence_embedder/rel_pos/embed_same_entity/weight": [
+256,
+1
+],
+"sequence_embedder/s_init/weight": [
+384,
+455
+],
+"sequence_embedder/s_norm/bias": [
+384
+],
+"sequence_embedder/s_norm/weight": [
+384
+],
+"sequence_embedder/s_recycle/weight": [
+384,
+384
+],
+"sequence_embedder/token_bonds/weight": [
+256,
+1
+],
+"sequence_embedder/uncond_transition/fc1/weight": [
+1024,
+256
+],
+"sequence_embedder/uncond_transition/fc2/weight": [
+1024,
+256
+],
+"sequence_embedder/uncond_transition/fc3/weight": [
+256,
+1024
+],
+"sequence_embedder/uncond_transition/norm/bias": [
+256
+],
+"sequence_embedder/uncond_transition/norm/weight": [
+256
+],
+"sequence_embedder/z_init_1/weight": [
+256,
+455
+],
+"sequence_embedder/z_init_2/weight": [
+256,
+455
+],
+"sequence_embedder/z_norm/bias": [
+256
+],
+"sequence_embedder/z_norm/weight": [
+256
+],
+"sequence_embedder/z_recycle/weight": [
+256,
+256
+],
+"structure_module/atom_feature_embedder/c_to_p_trans_k_1/weight": [
+16,
+128
+],
+"structure_module/atom_feature_embedder/c_to_p_trans_q_1/weight": [
+16,
+128
+],
+"structure_module/atom_feature_embedder/cond_to_q_trans/weight": [
+128,
+3
+],
+"structure_module/atom_feature_embedder/dt_gate_embed/taus": [
+32
+],
+"structure_module/atom_feature_embedder/dt_gate_log_w": [
+32
+],
+"structure_module/atom_feature_embedder/embed_atom_name_chars_0/weight": [
+64,
+128
+],
+"structure_module/atom_feature_embedder/embed_atom_name_chars_1/weight": [
+64,
+128
+],
+"structure_module/atom_feature_embedder/embed_atom_name_chars_2/weight": [
+64,
+128
+],
+"structure_module/atom_feature_embedder/embed_atom_name_chars_3/weight": [
+64,
+128
+],
+"structure_module/atom_feature_embedder/embed_atompair_mask/weight": [
+16,
+1
+],
+"structure_module/atom_feature_embedder/embed_atompair_ref_dist/weight": [
+16,
+1
+],
+"structure_module/atom_feature_embedder/embed_atompair_ref_pos/weight": [
+16,
+3
+],
+"structure_module/atom_feature_embedder/embed_element/weight": [
+128,
+128
+],
+"structure_module/atom_feature_embedder/p_mlp_1/weight": [
+16,
+16
+],
+"structure_module/atom_feature_embedder/p_mlp_3/weight": [
+16,
+16
+],
+"structure_module/atom_feature_embedder/p_mlp_5/weight": [
+16,
+16
+],
+"structure_module/atom_feature_embedder/proj_atom_continuous/weight": [
+128,
+4
+],
+"structure_module/atom_feature_embedder/r_to_q_trans/weight": [
+128,
+3
+],
+"structure_module/atom_feature_embedder/s_to_c_trans_0/bias": [
+384
+],
+"structure_module/atom_feature_embedder/s_to_c_trans_0/weight": [
+384
+],
+"structure_module/atom_feature_embedder/s_to_c_trans_1/weight": [
+128,
+384
+],
+"structure_module/atom_feature_embedder/z_to_p_trans_0/bias": [
+256
+],
+"structure_module/atom_feature_embedder/z_to_p_trans_0/weight": [
+256
+],
+"structure_module/atom_feature_embedder/z_to_p_trans_1/weight": [
+16,
+256
+],
+"structure_module/layers/atom_block/transformer_layer/attention/attention_layer/pair_bias_attn/norm_z/weight": [
+16,
+16
+],
+"structure_module/layers/atom_block/transformer_layer/attention/attention_layer/pair_bias_attn/proj_g/weight": [
+16,
+128,
+128
+],
+"structure_module/layers/atom_block/transformer_layer/attention/attention_layer/pair_bias_attn/proj_o/weight": [
+16,
+128,
+128
+],
+"structure_module/layers/atom_block/transformer_layer/attention/attention_layer/pair_bias_attn/proj_q_bias": [
+16,
+128
+],
+"structure_module/layers/atom_block/transformer_layer/attention/attention_layer/pair_bias_attn/proj_qkv/weight": [
+16,
+384,
+128
+],
+"structure_module/layers/atom_block/transformer_layer/attention/attention_layer/pair_bias_attn/proj_z/weight": [
+16,
+4,
+16
+],
+"structure_module/layers/atom_block/transformer_layer/cond_0/bias": [
+16,
+768
+],
+"structure_module/layers/atom_block/transformer_layer/cond_0/weight": [
+16,
+768
+],
+"structure_module/layers/atom_block/transformer_layer/cond_2/bias": [
+16,
+768
+],
+"structure_module/layers/atom_block/transformer_layer/cond_2/weight": [
+16,
+768,
+768
+],
+"structure_module/layers/atom_block/transformer_layer/transition/fc1/weight": [
+16,
+512,
+128
+],
+"structure_module/layers/atom_block/transformer_layer/transition/fc2/weight": [
+16,
+512,
+128
+],
+"structure_module/layers/atom_block/transformer_layer/transition/fc3/weight": [
+16,
+128,
+512
+],
+"structure_module/layers/coupling/q_coupling_cond_0/bias": [
+16,
+768
+],
+"structure_module/layers/coupling/q_coupling_cond_0/weight": [
+16,
+768
+],
+"structure_module/layers/coupling/q_coupling_cond_2/bias": [
+16,
+1920
+],
+"structure_module/layers/coupling/q_coupling_cond_2/weight": [
+16,
+1920,
+768
+],
+"structure_module/layers/coupling/q_to_s_mixer/fc1/weight": [
+16,
+1792,
+896
+],
+"structure_module/layers/coupling/q_to_s_mixer/fc2/weight": [
+16,
+1792,
+896
+],
+"structure_module/layers/coupling/q_to_s_mixer/fc3/weight": [
+16,
+768,
+1792
+],
+"structure_module/layers/coupling/s_coupling_cond_0/bias": [
+16,
+768
+],
+"structure_module/layers/coupling/s_coupling_cond_0/weight": [
+16,
+768
+],
+"structure_module/layers/coupling/s_coupling_cond_2/bias": [
+16,
+2560
+],
+"structure_module/layers/coupling/s_coupling_cond_2/weight": [
+16,
+2560,
+768
+],
+"structure_module/layers/coupling/s_to_q_mixer/fc1/weight": [
+16,
+1792,
+896
+],
+"structure_module/layers/coupling/s_to_q_mixer/fc2/weight": [
+16,
+1792,
+896
+],
+"structure_module/layers/coupling/s_to_q_mixer/fc3/weight": [
+16,
+128,
+1792
+],
+"structure_module/layers/token_block/attention/pair_bias_attn/norm_z/weight": [
+16,
+256
+],
+"structure_module/layers/token_block/attention/pair_bias_attn/proj_g/weight": [
+16,
+768,
+768
+],
+"structure_module/layers/token_block/attention/pair_bias_attn/proj_o/weight": [
+16,
+768,
+768
+],
+"structure_module/layers/token_block/attention/pair_bias_attn/proj_q_bias": [
+16,
+768
+],
+"structure_module/layers/token_block/attention/pair_bias_attn/proj_qkv/weight": [
+16,
+2304,
+768
+],
+"structure_module/layers/token_block/attention/pair_bias_attn/proj_z/weight": [
+16,
+16,
+256
+],
+"structure_module/layers/token_block/cond_0/bias": [
+16,
+768
+],
+"structure_module/layers/token_block/cond_0/weight": [
+16,
+768
+],
+"structure_module/layers/token_block/cond_2/bias": [
+16,
+4608
+],
+"structure_module/layers/token_block/cond_2/weight": [
+16,
+4608,
+768
+],
+"structure_module/layers/token_block/transition/fc1/weight": [
+16,
+3072,
+768
+],
+"structure_module/layers/token_block/transition/fc2/weight": [
+16,
+3072,
+768
+],
+"structure_module/layers/token_block/transition/fc3/weight": [
+16,
+768,
+3072
+],
+"structure_module/pairwise_conditioner/dim_pairwise_init_proj_0/bias": [
+512
+],
+"structure_module/pairwise_conditioner/dim_pairwise_init_proj_0/weight": [
+512
+],
+"structure_module/pairwise_conditioner/dim_pairwise_init_proj_1/weight": [
+256,
+512
+],
+"structure_module/pairwise_conditioner/transitions_0/fc1/weight": [
+512,
+256
+],
+"structure_module/pairwise_conditioner/transitions_0/fc2/weight": [
+512,
+256
+],
+"structure_module/pairwise_conditioner/transitions_0/fc3/weight": [
+256,
+512
+],
+"structure_module/pairwise_conditioner/transitions_0/norm/bias": [
+256
+],
+"structure_module/pairwise_conditioner/transitions_0/norm/weight": [
+256
+],
+"structure_module/pairwise_conditioner/transitions_1/fc1/weight": [
+512,
+256
+],
+"structure_module/pairwise_conditioner/transitions_1/fc2/weight": [
+512,
+256
+],
+"structure_module/pairwise_conditioner/transitions_1/fc3/weight": [
+256,
+512
+],
+"structure_module/pairwise_conditioner/transitions_1/norm/bias": [
+256
+],
+"structure_module/pairwise_conditioner/transitions_1/norm/weight": [
+256
+],
+"structure_module/r_token_to_a/weight": [
+768,
+3
+],
+"structure_module/readout/q_to_hidden/weight": [
+384,
+128
+],
+"structure_module/readout/s_to_hidden/weight": [
+384,
+768
+],
+"structure_module/readout/to_out_0/weight": [
+384
+],
+"structure_module/readout/to_out_1/weight": [
+3,
+384
+],
+"structure_module/s_trunk_to_a_0/bias": [
+384
+],
+"structure_module/s_trunk_to_a_0/weight": [
+384
+],
+"structure_module/s_trunk_to_a_1/weight": [
+768,
+384
+],
+"structure_module/single_conditioner/dt_embed/quality_factors": [
+4
+],
+"structure_module/single_conditioner/dt_embed/taus": [
+32
+],
+"structure_module/single_conditioner/dt_embed_to_single/weight": [
+768,
+288
+],
+"structure_module/single_conditioner/fourier_embed/proj/bias": [
+256
+],
+"structure_module/single_conditioner/fourier_embed/proj/weight": [
+256,
+1
+],
+"structure_module/single_conditioner/fourier_to_single/weight": [
+768,
+256
+],
+"structure_module/single_conditioner/norm_fourier/bias": [
+256
+],
+"structure_module/single_conditioner/norm_fourier/weight": [
+256
+],
+"structure_module/single_conditioner/norm_single/bias": [
+839
+],
+"structure_module/single_conditioner/norm_single/weight": [
+839
+],
+"structure_module/single_conditioner/single_embed/bias": [
+768
+],
+"structure_module/single_conditioner/single_embed/weight": [
+768,
+839
+],
+"structure_module/single_conditioner/transitions_0/fc1/weight": [
+1536,
+768
+],
+"structure_module/single_conditioner/transitions_0/fc2/weight": [
+1536,
+768
+],
+"structure_module/single_conditioner/transitions_0/fc3/weight": [
+768,
+1536
+],
+"structure_module/single_conditioner/transitions_0/norm/bias": [
+768
+],
+"structure_module/single_conditioner/transitions_0/norm/weight": [
+768
+],
+"structure_module/single_conditioner/transitions_1/fc1/weight": [
+1536,
+768
+],
+"structure_module/single_conditioner/transitions_1/fc2/weight": [
+1536,
+768
+],
+"structure_module/single_conditioner/transitions_1/fc3/weight": [
+768,
+1536
+],
+"structure_module/single_conditioner/transitions_1/norm/bias": [
+768
+],
+"structure_module/single_conditioner/transitions_1/norm/weight": [
+768
+]
+}

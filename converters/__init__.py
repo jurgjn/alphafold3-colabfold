@@ -29,6 +29,7 @@ _ENTRY_POINTS = {
     'protenix1': ('protenix2', 'convert_protenix1_weights'),
     'rosettafold3': ('rosettafold3', 'convert_rosettafold3_weights'),
     'chai1': ('chai1', 'convert_chai1_weights'),
+    'bioemu2': ('bioemu2', 'convert_bioemu2_weights'),
     # The two protein language models. Not AF3 models -- separate graphs with
     # their own loader -- but they convert the same way and were previously
     # reachable only by calling the function by hand.

@@ -73,6 +73,12 @@ SOURCES = {
         url='https://huggingface.co/aurekaresearch/OpenDDE/resolve/'
             'eddd563ce96571f784012edd8f045181c8f8627d/opendde.pt',
         file='opendde.pt'),
+    # BioEmu2 (Microsoft Research, MIT): the bioemu2-preview release. Its
+    # config.yaml lives beside it; the converter needs only the EMA weights.
+    'bioemu2': dict(
+        url='https://huggingface.co/microsoft/bioemu2/resolve/main/checkpoints/'
+            'bioemu2-preview/checkpoint.ckpt',
+        file='checkpoint.ckpt'),
     # Boltz-2 (jwohlwend/boltz, MIT).
     'boltz2': dict(
         url='https://huggingface.co/boltz-community/boltz-2/resolve/main/boltz2_conf.ckpt',
