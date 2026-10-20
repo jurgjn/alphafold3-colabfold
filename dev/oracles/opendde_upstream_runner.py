@@ -330,7 +330,8 @@ def forward(model, out_dir, in_npz, out_npz):
         if hasattr(x, 'float'):
           taps['tap.%s.%d' % (tag, k)] = x.detach().float().cpu().numpy().copy()
     return f
-  for name, m in net.named_children():
+  # VENDOR_NO_TAPS: localisation only, and on long_chain the per-recycle pair taps are gigabytes of npz
+  for name, m in ([] if os.environ.get('VENDOR_NO_TAPS') else net.named_children()):
     m.register_forward_hook(hook(name))
 
   pred = runner.predict(data)
