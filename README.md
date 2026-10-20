@@ -106,6 +106,8 @@ Supplying neither is the one broken configuration.
 Boltz-derived, but neither of its stages is AF3's: a PairMixer trunk (Boltz's
 MSA module without triangle attention, then 48 triangle-multiplication blocks)
 and a dual-stream denoiser that runs atom and token transformers side by side.
+The weights download on first use like the others' (int8 by default: 0.02-0.05 A
+CA RMSD from float32 on the same seed, against 0.9 A between two samples).
 It runs as its own network (`network/bioemu2.py`) on its own features
 (`pipeline/bioemu2_features.py`, built from the same input JSON) and shares
 the sampler and the output path. There is no confidence head, so confidence
@@ -230,6 +232,7 @@ scheme (before 2026-09-18) still load. `fp16` is the same idea at half precision
 | `boltz2` | 1.88 GB | 0.94 GB | 0.49 GB |
 | `opendde` | 2.47 GB | 0.94 GB | 0.54 GB |
 | `esmfold2` | 0.87 GB | 0.43 GB | 0.23 GB |
+| `bioemu2` | 1.90 GB | 0.95 GB | 0.49 GB |
 
 Each precision caches to its own directory (`<model>-int8/`), so asking for one
 never silently gets you the other, and switching back to a form you already have

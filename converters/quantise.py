@@ -139,6 +139,7 @@ def _quantisable(arr, min_elements):
 
 
 SCHEMES = ('fp32', 'fp16', 'bf16', 'int8', 'int8-bf16')
+_FP16_MAX = float(np.finfo(np.float16).max)
 
 
 def quantise_records(records, scheme, *, min_elements=MIN_ELEMENTS):
@@ -167,6 +168,11 @@ def quantise_records(records, scheme, *, min_elements=MIN_ELEMENTS):
       q, scale = quantise_int8(arr)
       out.append((scope, name, q))
       out.append((scope, name + SCALE_SUFFIX, scale))
+    elif half == 'fp16' and arr.size and np.abs(arr[np.isfinite(arr)]).max(initial=0) > _FP16_MAX:
+      # outside float16's range it would store inf: BioEmu2's time-embedding
+      # timescales reach 1e9. Such an array is a constant table, not a weight,
+      # so it keeps float32.
+      out.append((scope, name, arr))
     else:
       out.append((scope, name, to_half(arr, half)))
   return out
