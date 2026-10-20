@@ -190,16 +190,16 @@ def _of3_query(j, msa_root):
         # template_cif_chain_ids) and aligns them itself
         d = os.path.join(msa_root, ids[0])
         os.makedirs(d, exist_ok=True)
-        paths, chains = [], []
+        paths, tchains = [], []
         for k, t in enumerate(e['templates']):
           p = os.path.join(d, 'template_%d.cif' % k)
           with open(p, 'w') as f:
             f.write(t['mmcif'])
           import gemmi
           paths.append(p)
-          chains.append(gemmi.cif.read(p).sole_block().find_value('_entity_poly.pdbx_strand_id').split(',')[0].strip())
+          tchains.append(gemmi.cif.read(p).sole_block().find_value('_entity_poly.pdbx_strand_id').split(',')[0].strip())
         c['template_cif_paths'] = paths
-        c['template_cif_chain_ids'] = chains
+        c['template_cif_chain_ids'] = tchains
     elif kind == 'ligand':
       # An AF3 ligand, MG included, is a CCD (or SMILES) ligand chain; OF3's
       # query format has no separate ion type.
