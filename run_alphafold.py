@@ -29,6 +29,7 @@ https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 """
 
 from collections.abc import Callable, Sequence
+import json
 import csv
 import dataclasses
 import datetime
@@ -1281,6 +1282,10 @@ def predict_structure(
             result=result, num_tokens=num_tokens)
         distogram = model_runner.extract_distogram(
             result=result, num_tokens=num_tokens)
+    if model_runner.model_name == 'bioemu2':
+      # BioEmu2 reports each sample's protein physicality (bioemu2.physicality)
+      from alphafold3.model.pipeline import bioemu2_physicality
+      bioemu2_physicality.annotate(inference_results, fold_input)
     print(f'Extracting inference results with seed {seed} took'
           f' {time.time() - inference_start_time:.2f} seconds.')
     all_inference_results.append(
@@ -1322,6 +1327,7 @@ def write_outputs(
 ) -> None:
   """Writes outputs to the specified output directory."""
   ranking_scores = []
+  physicality = []
   max_ranking_score = None
   max_ranking_result = None
 
@@ -1340,6 +1346,11 @@ def write_outputs(
           name=f'{job_name}_seed-{seed}_sample-{sample_idx}',
           compress=compress_large_output_files,
       )
+      if 'physicality' in result.metadata:
+        (sample_dir / f'{job_name}_seed-{seed}_sample-{sample_idx}_physicality.json').write_text(
+            json.dumps(result.metadata['physicality'], indent=2) + '\n')
+        physicality.append({'seed': seed, 'sample': sample_idx, **{
+            k: result.metadata['physicality'][k] for k in ('status', 'reason')}})
       ranking_score = float(result.metadata['ranking_score'])
       # WHICH model produced it. The name is already in the sample's mmCIF
       # (`_software.version`, from InferenceResult.model_id), but finding out
@@ -1382,6 +1393,8 @@ def write_outputs(
     )
     # Save csv of ranking scores with seeds and sample indices, to allow easier
     # comparison of ranking scores across different runs.
+    if physicality:
+      (output_dir / f'{job_name}_physicality.json').write_text(json.dumps(physicality, indent=2) + '\n')
     ranking_scores_csv_path = output_dir / f'{job_name}_ranking_scores.csv'
     with ranking_scores_csv_path.open('w') as f:
       writer = csv.writer(f)

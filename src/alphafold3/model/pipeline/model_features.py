@@ -1961,7 +1961,8 @@ def _bioemu2_features(batch, fold_input, cyclic=None):
 
   BIOEMU2_MODE picks the mode (`structure`, the default, or `equilibrium`);
   BIOEMU2_SAMPLER=edm_gd|edm_fk|edm_fkc steers sampling with BioEmu2's physicality
-  potentials (network/bioemu2_steering.py) -- its presets of the same names;
+  potentials (network/bioemu2_steering.py) -- its presets of the same names --
+  or with the potentials of a BioEmu2 `--potentials` YAML (BIOEMU2_POTENTIALS);
   BIOEMU2_CONTACTS=<json> conditions on contacts (bioemu2_features.load_contacts);
   BIOEMU2_X0=<mmCIF> propagates from that structure instead (equilibrium mode),
   BIOEMU2_LAG_NS (default 1) later, chained BIOEMU2_STEPS times (default 1);
@@ -2030,7 +2031,8 @@ def _bioemu2_features(batch, fold_input, cyclic=None):
     from alphafold3.model.network import bioemu2_steering as ns
     from alphafold3.model.pipeline import bioemu2_steering as st
     topo = dict(topo, n_pad=f['template_coords'].shape[0])
-    t = ns.host_tables(st.tables(topo, ccd, ligand_tables=bf.STEERING_LIGAND_TABLES or None))
+    t = ns.host_tables(st.tables(topo, ccd, ligand_tables=bf.STEERING_LIGAND_TABLES or None),
+                       ns.active_specs())
     for k, v in t.items():
       if k != 'graph_bonds':
         batch['bioemu2steer/' + k] = np.asarray(v)

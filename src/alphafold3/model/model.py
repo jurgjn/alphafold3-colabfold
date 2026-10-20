@@ -906,7 +906,7 @@ class Model(hk.Module):
 
       def sample_steered(k, comp):
         kw = dict(num_steps=config.steps, companion=comp,
-                  injected=steering.INJECT)
+                  injected=steering.INJECT, specs=steering.active_specs())
         if preset == 'edm_fkc':
           return steering.fkc_sample(denoise_particles, steer, flat_mask, config.num_samples, k, **kw)
         return steering.steered_sample(

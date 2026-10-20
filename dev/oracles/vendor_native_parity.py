@@ -851,6 +851,15 @@ def bioemu2_steer(name, j, recycles):
     np.savez(inp, x0=x0, rot=rot, trans=trans, eps=eps, uniform=uni, recycling_steps=recycles)
     _vendor('bioemu2', 'steer', bdir, inp, os.path.join(tmp, 'b.npz'))
     b = dict(np.load(os.path.join(tmp, 'b.npz')))
+    floor = None
+    if os.environ.get('STEER_FLOOR'):
+      # the vendor against ITSELF with x0 nudged 1e-5: how far the steered sampler alone
+      # carries a difference of a port's size (its hinge potentials have step gradients)
+      fz = os.path.join(tmp, 'steer_floor.npz')
+      np.savez(fz, x0=x0 + 1e-5 * np.random.default_rng(7).normal(size=x0.shape).astype(np.float32),
+               rot=rot, trans=trans, eps=eps, uniform=uni, recycling_steps=recycles)
+      _vendor('bioemu2', 'steer', bdir, fz, os.path.join(tmp, 'b_floor.npz'))
+      floor = np.asarray(np.load(os.path.join(tmp, 'b_floor.npz'))['final'])
     bf.STEERING_LIGAND_TABLES.clear()
     bf.STEERING_LIGAND_TABLES.update({k[4:]: v for k, v in b.items() if k.startswith('lig.')})
     try:
@@ -881,6 +890,13 @@ def bioemu2_steer(name, j, recycles):
     rows.append(('traj', 'particle %d final corr %.6f max|d|/rms %.2e (max |d| %.3f A; superposed rms %.4f A)'
                  % (i, c, ratio, np.abs(fin_o[i] - fin_v[i]).max(),
                     np.sqrt((((a @ rk) - v) ** 2).sum(-1).mean())), P.grade(c, ratio)))
+    if floor is not None:
+      f = floor[i, :n_v][real].astype(np.float64)
+      f = f - f.mean(0)
+      u, _, vt = np.linalg.svd(f.T @ v)
+      rf = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+      rows.append(('traj', 'particle %d vendor vs itself (x0 nudged 1e-5): superposed rms %.4f A'
+                   % (i, np.sqrt((((f @ rf) - v) ** 2).sum(-1).mean())), 'INFO'))
   return rows
 
 

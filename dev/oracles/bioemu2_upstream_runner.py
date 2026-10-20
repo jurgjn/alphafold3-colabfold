@@ -310,7 +310,12 @@ def steer(model, out_dir, in_npz, out_npz):
   FKC.torch = _Torch()
   FKC.compute_random_augmentation = aug
   F.torch = _Torch()
-  potentials = get_default_potentials()
+  if os.environ.get('BIOEMU2_POTENTIALS'):
+    from pathlib import Path
+    from bioemu2.cli import _load_potentials
+    potentials = _load_potentials(preset, Path(os.environ['BIOEMU2_POTENTIALS']))
+  else:
+    potentials = get_default_potentials()
   for p in potentials:
     p.prepare(system)
   P = x0.shape[0]
@@ -323,7 +328,12 @@ def steer(model, out_dir, in_npz, out_npz):
   with torch.no_grad():
     emb = m.score_model.compute_trunk_embeddings(batch, int(z['recycling_steps']))
     out = sampler(batch=batch, score_model=m, trunk_embeddings=emb, batch_size=P)
-  pb = potentials[2].feats
+  pb = next((p.feats for p in potentials if 'rdkit_bounds_index' in getattr(p, 'feats', {})),
+            None)
+  if pb is None:
+    tmp_pb = get_default_potentials()[2]
+    tmp_pb.prepare(system)
+    pb = tmp_pb.feats
   np.savez(out_npz, final=out.coords.float().cpu().numpy(), steps=n['aug'],
            **{'lig.' + k: pb[k][0].cpu().numpy() for k in (
                'rdkit_bounds_index', 'rdkit_lower_bounds', 'rdkit_upper_bounds',

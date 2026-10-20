@@ -50,74 +50,126 @@ def piecewise(thresholds, values):
   return f
 
 
-def _const(v):
-  return lambda t: v
+def linear(start_t, end_t, start_val, end_val):
+  return lambda t: (0.0 if (t > start_t or t < end_t) else
+                    start_val - (start_val - end_val) * (start_t - t) / (start_t - end_t))
 
 
-# get_default_potentials: name -> {parameter: schedule}
+# get_default_potentials, as specs: (potential type, {parameter: value or
+# schedule}, {constructor argument: value}).
 DEFAULT = (
-    ('SymmetricChainCOMPotential', dict(guidance_interval=4, guidance_weight=_const(0.5),
-                                        resampling_weight=_const(0.5),
-                                        buffer=exponential(1.0, 5.0, -2.0))),
+    ('SymmetricChainCOMPotential', dict(guidance_interval=4, guidance_weight=0.5,
+                                        resampling_weight=0.5,
+                                        buffer=exponential(1.0, 5.0, -2.0)), {}),
     ('InterChainVDWOverlapPotential', dict(guidance_interval=5,
                                            guidance_weight=piecewise([0.4], [0.125, 0.0]),
                                            resampling_weight=piecewise([0.6], [0.01, 0.0]),
-                                           buffer=_const(0.225))),
-    ('PoseBustersPotential', dict(guidance_interval=1, guidance_weight=_const(0.10),
-                                  resampling_weight=_const(0.1))),
-    ('ChiralAtomPotential', dict(guidance_interval=1, guidance_weight=_const(0.20),
-                                 resampling_weight=_const(1.0))),
-    ('StereoBondPotential', dict(guidance_interval=1, guidance_weight=_const(0.10),
-                                 resampling_weight=_const(1.0))),
-    ('PlanarBondPotential', dict(guidance_interval=1, guidance_weight=_const(0.10),
-                                 resampling_weight=_const(1.0))),
+                                           buffer=0.225), {}),
+    ('PoseBustersPotential', dict(guidance_interval=1, guidance_weight=0.10, resampling_weight=0.1,
+                                  bond_buffer=0.20, angle_buffer=0.20, clash_buffer=0.15), {}),
+    ('ChiralAtomPotential', dict(guidance_interval=1, guidance_weight=0.20, resampling_weight=1.0,
+                                 buffer=0.52360), {}),
+    ('StereoBondPotential', dict(guidance_interval=1, guidance_weight=0.10, resampling_weight=1.0,
+                                 buffer=0.52360), {}),
+    ('PlanarBondPotential', dict(guidance_interval=1, guidance_weight=0.10, resampling_weight=1.0,
+                                 buffer=0.26180), {}),
     ('IntraChainVDWOverlapPotential', dict(guidance_interval=5,
                                            guidance_weight=piecewise([0.4], [0.125, 0.0]),
                                            resampling_weight=piecewise([0.6], [0.01, 0.0]),
-                                           buffer=_const(0.225))),
+                                           buffer=0.225), {}),
     ('PolymerLocalClashPotential', dict(guidance_interval=1,
                                         guidance_weight=piecewise([0.4], [0.125, 0.0]),
-                                        resampling_weight=_const(0.1),
-                                        minimum_distance=_const(2.0))),
-    ('BondLengthPotential', dict(guidance_interval=1, guidance_weight=_const(0.05),
-                                 resampling_weight=_const(0.1))),
-    ('BondAnglePotential', dict(guidance_interval=1, guidance_weight=_const(0.05),
-                                resampling_weight=_const(0.1))),
+                                        resampling_weight=0.1, minimum_distance=2.0), {}),
+    ('BondLengthPotential', dict(guidance_interval=1, guidance_weight=0.05, resampling_weight=0.1),
+     dict(sigma_tolerance=10.0)),
+    ('BondAnglePotential', dict(guidance_interval=1, guidance_weight=0.05, resampling_weight=0.1),
+     dict(sigma_tolerance=10.0)),
 )
-POSEBUSTERS_BUFFERS = dict(bond_buffer=0.20, angle_buffer=0.20, clash_buffer=0.15)
-CHIRAL_BUFFER, STEREO_BUFFER, PLANAR_BUFFER = 0.52360, 0.52360, 0.26180
+TYPES = ('SymmetricChainCOMPotential', 'InterChainVDWOverlapPotential', 'PoseBustersPotential',
+         'ChiralAtomPotential', 'StereoBondPotential', 'PlanarBondPotential',
+         'IntraChainVDWOverlapPotential', 'PolymerLocalClashPotential', 'BondLengthPotential',
+         'BondAnglePotential')
+# the parameters each type reads in `_compute_args` / `compute` (KeyError in BioEmu2 if absent)
+REQUIRED = {'SymmetricChainCOMPotential': ('buffer',), 'InterChainVDWOverlapPotential': ('buffer',),
+            'IntraChainVDWOverlapPotential': ('buffer',), 'PoseBustersPotential':
+            ('bond_buffer', 'angle_buffer', 'clash_buffer'), 'ChiralAtomPotential': ('buffer',),
+            'StereoBondPotential': ('buffer',), 'PlanarBondPotential': ('buffer',),
+            'PolymerLocalClashPotential': ('minimum_distance',)}
+_SCHEDULES = {'ExponentialInterpolation': lambda a: exponential(a['start'], a['end'], a['alpha']),
+              'PiecewiseStepFunction': lambda a: piecewise(a['thresholds'], a['values']),
+              'LinearInterpolation': lambda a: linear(a['start_t'], a['end_t'], a['start_val'], a['end_val'])}
 
 
-def host_tables(t):
-  """The fixed-parameter halves of `_compute_args`, on the host: PoseBusters'
-  buffered bounds, the chiral/stereo/planar intervals, the planar impropers."""
+def load_potentials(path):
+  """Potentials from a BioEmu2 `--potentials` YAML: {potentials: [{_target_:
+  ...potentials.<Type>, sigma_tolerance?, parameters: {name: value or
+  {_target_: ...<Schedule>, ...}}}]}. Replaces the defaults, as BioEmu2's does.
+  Only BioEmu2's own potential and schedule classes can be named: a potential
+  of your own is Python, which this cannot run."""
+  import yaml
+  with open(path) as fh:
+    raw = yaml.safe_load(fh)
+  specs = []
+  for entry in raw.get('potentials', []):
+    entry = dict(entry)
+    kind = entry.pop('_target_').rsplit('.', 1)[-1]
+    if kind not in TYPES:
+      raise ValueError(f'{path}: {kind} is not one of BioEmu2\'s ported potentials {TYPES}')
+    params = {}
+    for k, v in (entry.pop('parameters', None) or {}).items():
+      if isinstance(v, dict):
+        v = dict(v)
+        sk = v.pop('_target_').rsplit('.', 1)[-1]
+        if sk not in _SCHEDULES:
+          raise ValueError(f'{path}: unknown schedule {sk}')
+        v = _SCHEDULES[sk](v)
+      params[k] = v
+    for need in REQUIRED.get(kind, ()):
+      if need not in params:
+        raise ValueError(f'{path}: {kind} needs parameters[{need!r}]')
+    if kind in ('BondLengthPotential', 'BondAnglePotential') and 'sigma_tolerance' not in entry:
+      raise ValueError(f'{path}: {kind} needs sigma_tolerance')
+    if set(entry) - {'sigma_tolerance'}:
+      raise ValueError(f'{path}: {kind} takes no {sorted(set(entry) - {"sigma_tolerance"})}')
+    specs.append((kind, params, entry))
+  return tuple(specs)
+
+
+# The potential set a run steers with: DEFAULT, or BIOEMU2_POTENTIALS=<yaml>.
+def active_specs():
+  import os
+  path = os.environ.get('BIOEMU2_POTENTIALS')
+  return load_potentials(path) if path else DEFAULT
+
+
+def _resolve(v, t):
+  return v(t) if callable(v) else v
+
+
+def host_tables(t, specs=None):
+  """Host-side halves of `_compute_args`: the planar impropers, the chain-pair
+  filter, and each Bond*/Angle spec's bounds at its own sigma_tolerance."""
+  from alphafold3.model.pipeline import bioemu2_steering as st
+  specs = specs or DEFAULT
   t = dict(t)
-  lo = np.asarray(t['rdkit_lower_bounds'], np.float32).copy()
-  hi = np.asarray(t['rdkit_upper_bounds'], np.float32).copy()
-  bond = np.asarray(t['rdkit_bounds_bond_mask'], bool)
-  ang = np.asarray(t['rdkit_bounds_angle_mask'], bool)
-  b = POSEBUSTERS_BUFFERS
-  for m, s in ((bond & ~ang, b['bond_buffer']), (~bond & ang, b['angle_buffer']),
-               (bond & ang, min(b['bond_buffer'], b['angle_buffer']))):
-    lo[m] *= np.float32(1.0 - s)
-    hi[m] *= np.float32(1.0 + s)
-  m = ~bond & ~ang
-  lo[m] *= np.float32(1.0 - b['clash_buffer'])
-  hi[m] = np.inf
-  t['pb_lower'], t['pb_upper'] = lo, hi
-  o = np.asarray(t['chiral_atom_orientations'], bool)
-  t['chiral_lower'] = np.where(o, CHIRAL_BUFFER, -np.inf).astype(np.float32)
-  t['chiral_upper'] = np.where(o, np.inf, -CHIRAL_BUFFER).astype(np.float32)
-  o = np.asarray(t['stereo_bond_orientations'], bool)
-  t['stereo_lower'] = np.where(o, np.float32(np.pi - STEREO_BUFFER), -np.inf).astype(np.float32)
-  t['stereo_upper'] = np.where(o, np.inf, STEREO_BUFFER).astype(np.float32)
   pb = np.asarray(t['planar_bond_index'], np.int64).reshape(6, -1).T          # (K, 6)
   imp = np.array([[1, 2, 3, 0], [4, 5, 0, 3]]).T                             # (4, 2)
   t['planar_improper_index'] = pb[:, imp].swapaxes(0, 1).reshape(4, -1)       # (4, 2K)
-  # SymmetricChainCOMPotential: pairs of chains with more than one atom
   sym = np.asarray(t['symmetric_chain_index'], np.int64).reshape(2, -1)
   big = np.asarray(t['chain_sizes']) > 1
   t['symmetric_chain_pairs'] = sym[:, big[sym[0]] & big[sym[1]]] if sym.size else sym
+  for i, (kind, _, args) in enumerate(specs):
+    if kind == 'BondLengthPotential':
+      b = [st.geometry_bounds(r, args['sigma_tolerance']) for r in np.asarray(t['bond_ref']).tolist()]
+      t['bond_lower.%d' % i] = np.array([x[0] for x in b], np.float32).reshape(-1)
+      t['bond_upper.%d' % i] = np.array([x[1] for x in b], np.float32).reshape(-1)
+    elif kind == 'BondAnglePotential':
+      b = [st.geometry_bounds(r, args['sigma_tolerance'], angle=True)
+           for r in np.asarray(t['angle_ref']).tolist()]
+      t['angle_lower.%d' % i] = np.array([x[0] for x in b], np.float32).reshape(-1)
+      t['angle_upper.%d' % i] = np.array([x[1] for x in b], np.float32).reshape(-1)
+  for k in ('bond_lower', 'bond_upper', 'angle_lower', 'angle_upper', 'bond_ref', 'angle_ref'):
+    t.pop(k, None)
   return t
 
 
@@ -201,84 +253,112 @@ def _excluded_overlap(c, keys, n_pad, eligible, chain, radius, scale, same_chain
 
 # --- the potentials ---------------------------------------------------------------------------
 
-def energies(c, t, p):
-  """Every default potential's per-particle energy, stacked (10, P), at the
-  step's parameters `p` (buffers)."""
+def _f32(x):
+  return jnp.asarray(x, jnp.float32)
+
+
+def energy(kind, i, c, t, p):
+  """Potential spec `i` of type `kind`: per-particle energy (P,) at its
+  step parameters `p` (a dict of this spec's resolved values)."""
   P = c.shape[0]
   zero = jnp.zeros(P)
-  out = []
-  # 0 SymmetricChainCOMPotential
-  sp = t['symmetric_chain_pairs']
-  if sp.shape[1]:
+  n_pad = t['atom_pad_mask'].shape[0]
+  radius, chain = t['atom_vdw_radius'], t['atom_chain_id']
+  if kind == 'SymmetricChainCOMPotential':
+    sp = t['symmetric_chain_pairs']
+    if not sp.shape[1]:
+      return zero
     pad = t['atom_pad_mask']
-    chain = t['atom_chain_id']
     n_chain = t['chain_sizes'].shape[0]
     w = (pad[:, None] & (chain[:, None] == jnp.arange(n_chain)[None])).astype(c.dtype)   # (N, C)
     com = jnp.einsum('pna,nc->pca', c, w) / jnp.maximum(w.sum(0), 1)[None, :, None]
-    d = _norm(com[:, sp[0]] - com[:, sp[1]])
-    out.append(jax.nn.relu(p['sym_buffer'] - d).sum(-1))
-  else:
-    out.append(zero)
-  n_pad = t['atom_pad_mask'].shape[0]
-  radius, chain = t['atom_vdw_radius'], t['atom_chain_id']
-  # 1 InterChainVDWOverlapPotential
-  scale = 1.0 - p['inter_buffer']
-  e = t['interchain_steric_atom_mask']
-  out.append(_dense_overlap(c, e, chain, radius, scale, False)
-             - _excluded_overlap(c, t['interchain_bonded_pair_key'], n_pad, e, chain, radius, scale, False))
-  # 2 PoseBustersPotential
-  idx = t['rdkit_bounds_index']
-  out.append(_flat_bottom(_distance(c, idx), t['pb_lower'], t['pb_upper']).sum(-1)
-             if idx.shape[1] else zero)
-  # 3 ChiralAtomPotential
-  idx = t['chiral_atom_index']
-  out.append(_flat_bottom(_dihedral(c, idx), t['chiral_lower'], t['chiral_upper']).sum(-1)
-             if idx.shape[1] else zero)
-  # 4 StereoBondPotential
-  idx = t['stereo_bond_index']
-  out.append(_flat_bottom(jnp.abs(_dihedral(c, idx)), t['stereo_lower'], t['stereo_upper']).sum(-1)
-             if idx.shape[1] else zero)
-  # 5 PlanarBondPotential
-  idx = t['planar_improper_index']
-  out.append(_flat_bottom(jnp.abs(_dihedral(c, idx)), -jnp.inf, PLANAR_BUFFER).sum(-1)
-             if idx.shape[1] else zero)
-  # 6 IntraChainVDWOverlapPotential
-  scale = 1.0 - p['intra_buffer']
-  e = t['polymer_steric_atom_mask']
-  out.append(_dense_overlap(c, e, chain, radius, scale, True)
-             - _excluded_overlap(c, t['polymer_bonded_pair_key'], n_pad, e, chain, radius, scale, True))
-  # 7 PolymerLocalClashPotential
-  idx = t['polymer_local_clash_index']
-  out.append(_overlap(c, idx, p['minimum_distance']) if idx.shape[1] else zero)
-  # 8 BondLengthPotential
-  idx = t['bond_index']
-  out.append(_flat_bottom(_distance(c, idx), t['bond_lower'], t['bond_upper']).sum(-1)
-             if idx.shape[1] else zero)
-  # 9 BondAnglePotential
-  idx = t['angle_index']
-  out.append(_flat_bottom(_angle(c, idx), t['angle_lower'], t['angle_upper']).sum(-1)
-             if idx.shape[1] else zero)
-  return jnp.stack(out)
+    return jax.nn.relu(p['buffer'] - _norm(com[:, sp[0]] - com[:, sp[1]])).sum(-1)
+  if kind in ('InterChainVDWOverlapPotential', 'IntraChainVDWOverlapPotential'):
+    same = kind == 'IntraChainVDWOverlapPotential'
+    e = t['polymer_steric_atom_mask'] if same else t['interchain_steric_atom_mask']
+    keys = t['polymer_bonded_pair_key'] if same else t['interchain_bonded_pair_key']
+    scale = 1.0 - p['buffer']
+    return (_dense_overlap(c, e, chain, radius, scale, same)
+            - _excluded_overlap(c, keys, n_pad, e, chain, radius, scale, same))
+  if kind == 'PoseBustersPotential':
+    idx = t['rdkit_bounds_index']
+    if not idx.shape[1]:
+      return zero
+    bond, ang = t['rdkit_bounds_bond_mask'], t['rdkit_bounds_angle_mask']
+    lo, hi = _f32(t['rdkit_lower_bounds']), _f32(t['rdkit_upper_bounds'])
+    bb, ab, cb = _f32(p['bond_buffer']), _f32(p['angle_buffer']), _f32(p['clash_buffer'])
+    mb = jnp.minimum(bb, ab)
+    one = jnp.float32(1.0)
+    lo = jnp.where(bond & ~ang, lo * (one - bb), jnp.where(~bond & ang, lo * (one - ab),
+                   jnp.where(bond & ang, lo * (one - mb), lo * (one - cb))))
+    hi = jnp.where(bond & ~ang, hi * (one + bb), jnp.where(~bond & ang, hi * (one + ab),
+                   jnp.where(bond & ang, hi * (one + mb), jnp.inf)))
+    return _flat_bottom(_distance(c, idx), lo, hi).sum(-1)
+  if kind == 'ChiralAtomPotential':
+    idx = t['chiral_atom_index']
+    if not idx.shape[1]:
+      return zero
+    o = t['chiral_atom_orientations']
+    b = _f32(p['buffer'])
+    return _flat_bottom(_dihedral(c, idx), jnp.where(o, b, -jnp.inf), jnp.where(o, jnp.inf, -b)).sum(-1)
+  if kind == 'StereoBondPotential':
+    idx = t['stereo_bond_index']
+    if not idx.shape[1]:
+      return zero
+    o = t['stereo_bond_orientations']
+    b = _f32(p['buffer'])
+    return _flat_bottom(jnp.abs(_dihedral(c, idx)), jnp.where(o, jnp.float32(np.pi) - b, -jnp.inf),
+                        jnp.where(o, jnp.inf, b)).sum(-1)
+  if kind == 'PlanarBondPotential':
+    idx = t['planar_improper_index']
+    if not idx.shape[1]:
+      return zero
+    return _flat_bottom(jnp.abs(_dihedral(c, idx)), -jnp.inf, _f32(p['buffer'])).sum(-1)
+  if kind == 'PolymerLocalClashPotential':
+    idx = t['polymer_local_clash_index']
+    return _overlap(c, idx, p['minimum_distance']) if idx.shape[1] else zero
+  if kind == 'BondLengthPotential':
+    idx = t['bond_index']
+    return (_flat_bottom(_distance(c, idx), t['bond_lower.%d' % i], t['bond_upper.%d' % i]).sum(-1)
+            if idx.shape[1] else zero)
+  if kind == 'BondAnglePotential':
+    idx = t['angle_index']
+    return (_flat_bottom(_angle(c, idx), t['angle_lower.%d' % i], t['angle_upper.%d' % i]).sum(-1)
+            if idx.shape[1] else zero)
+  raise ValueError(kind)
 
 
-def step_parameters(t_norm):
-  """Every potential's resolved parameters at normalised time t_norm, as arrays."""
-  sched = dict(DEFAULT)
-  return {
-      'guidance_weight': np.array([s['guidance_weight'](t_norm) for _, s in DEFAULT], np.float32),
-      'resampling_weight': np.array([s['resampling_weight'](t_norm) for _, s in DEFAULT], np.float32),
-      'sym_buffer': np.float32(sched['SymmetricChainCOMPotential']['buffer'](t_norm)),
-      'inter_buffer': np.float32(sched['InterChainVDWOverlapPotential']['buffer'](t_norm)),
-      'intra_buffer': np.float32(sched['IntraChainVDWOverlapPotential']['buffer'](t_norm)),
-      'minimum_distance': np.float32(sched['PolymerLocalClashPotential']['minimum_distance'](t_norm)),
-  }
+def energies(c, t, p, specs=None):
+  """Every potential's per-particle energy, stacked (n_specs, P). `p` holds the
+  step's parameters as {name: (n_specs,) array} (step_parameters)."""
+  specs = specs or DEFAULT
+  return jnp.stack([energy(kind, i, c, t, {k: v[i] for k, v in p.items()})
+                    for i, (kind, _, _) in enumerate(specs)])
 
 
-GUIDANCE_INTERVAL = np.array([s['guidance_interval'] for _, s in DEFAULT])
+PARAMS = ('buffer', 'bond_buffer', 'angle_buffer', 'clash_buffer', 'minimum_distance')
+
+
+def step_parameters(t_norm, specs=None):
+  """Every spec's resolved parameters at normalised time t_norm, as arrays over
+  the specs (absent ones NaN), plus the weights the samplers read
+  (compute_parameters; guidance_weight 0 and resampling_weight 1 by default)."""
+  specs = specs or DEFAULT
+  out = {'guidance_weight': np.array([_resolve(pr.get('guidance_weight', 0.0), t_norm)
+                                      for _, pr, _ in specs], np.float32),
+         'resampling_weight': np.array([_resolve(pr.get('resampling_weight', 1.0), t_norm)
+                                        for _, pr, _ in specs], np.float32)}
+  for k in PARAMS:
+    out[k] = np.array([_resolve(pr[k], t_norm) if k in pr else np.nan for _, pr, _ in specs], np.float32)
+  return out
+
+
+def guidance_interval(specs=None):
+  return np.array([pr.get('guidance_interval', 1) for _, pr, _ in (specs or DEFAULT)])
 
 
 def _buffers(p):
-  return {k: p[k] for k in ('sym_buffer', 'inter_buffer', 'intra_buffer', 'minimum_distance')}
+  return {k: p[k] for k in PARAMS}
 
 
 # --- shared sampler pieces ------------------------------------------------------------------
@@ -376,7 +456,7 @@ def _per_step_injection(injected, steps, uniform_by):
 def steered_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, step_scale=1.0,
                    noise_scale=1.0, gamma_0=0.8, gamma_min=1.0, resampling_interval=3,
                    resampling_group_size=None, fk_lambda=4.0, num_gd_steps=20, companion=None,
-                   injected=None, scan=None):
+                   injected=None, scan=None, specs=None):
   """edm_steered_sampler. `denoise(x (P, N, 3), sigma, companion) -> x0_hat`.
   resampling_interval None is edm_gd (guidance only). Returns (P, N, 3).
 
@@ -398,19 +478,20 @@ def steered_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, 
   noise_var = (noise_scale ** 2 * np.maximum(t_hat.astype(np.float64) ** 2 - s_tm.astype(np.float64) ** 2, 0.0))
   resample = (np.zeros(num_steps, bool) if resampling_interval is None
               else (ks % resampling_interval == 0) | (ks == last))
-  prm = [step_parameters(1.0 - (k + 1) / num_steps) for k in ks]
-  coef = np.zeros((num_steps, max(num_gd_steps, 1), len(DEFAULT)), np.float32)
+  specs = specs or DEFAULT
+  interval = guidance_interval(specs)
+  prm = [step_parameters(1.0 - (k + 1) / num_steps, specs) for k in ks]
+  coef = np.zeros((num_steps, max(num_gd_steps, 1), len(specs)), np.float32)
   for k in ks:
     if k < last:
       for gs in range(num_gd_steps):
-        active = (prm[k]['guidance_weight'] != 0) & (gs % GUIDANCE_INTERVAL == 0)
+        active = (prm[k]['guidance_weight'] != 0) & (gs % interval == 0)
         coef[k, gs] = np.where(active, prm[k]['guidance_weight'], 0.0)
   xs = {'k': ks, 's_t': s_t, 't_hat': t_hat, 'noise_std': np.sqrt(noise_var).astype(np.float32),
         'noise_var': noise_var.astype(np.float32), 'resample': resample,
         'gd': (ks < last) & (num_gd_steps > 0), 'coef': coef,
         'rw': np.stack([p['resampling_weight'] for p in prm]),
-        **{b: np.array([p[b] for p in prm], np.float32)
-           for b in ('sym_buffer', 'inter_buffer', 'intra_buffer', 'minimum_distance')},
+        **{'p_' + b: np.stack([p[b] for p in prm]) for b in PARAMS},
         'uniform_index': np.cumsum(resample) - 1}
   inj = _per_step_injection(injected, num_steps, np.maximum(np.cumsum(resample) - 1, 0))
   if inj is not None:
@@ -428,10 +509,10 @@ def steered_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, 
     eps = x_['noise_std'] * eps
     noisy = x + eps
     x0 = denoise(noisy, x_['t_hat'], comp)
-    buffers = {b: x_[b] for b in ('sym_buffer', 'inter_buffer', 'intra_buffer', 'minimum_distance')}
+    buffers = {b: x_['p_' + b] for b in PARAMS}
 
     def fk_weights(_):
-      en = energies(x0, t, buffers)
+      en = energies(x0, t, buffers, specs)
       energy = (x_['rw'][:, None] * en).sum(0)
       log_g = jnp.where(has_prev, e_prev - energy, -energy)
       ll = jnp.where(gd_on & (x_['noise_var'] > 0),
@@ -448,7 +529,7 @@ def steered_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, 
         c = x_['coef'][gs]
 
         def total(cc):
-          e = energies(cc, t, buffers)
+          e = energies(cc, t, buffers, specs)
           return jnp.where(c[:, None] != 0, c[:, None] * e, 0.0).sum()
         return jnp.where(jnp.any(c != 0), upd - jax.grad(total)(x0 + upd), upd)
       upd = jax.lax.fori_loop(0, num_gd_steps, inner, jnp.zeros_like(x0))
@@ -495,7 +576,7 @@ def _beta(sigma, beta_power):
 def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamma_0=0.8,
                gamma_min=0.0, resampling_interval=None, resampling_group_size=None,
                ess_threshold=0.9, weight_update='guidance', beta_power=4.0, reheat='sigma',
-               companion=None, injected=None, scan=None, grad=None):
+               companion=None, injected=None, scan=None, grad=None, specs=None):
   """edm_fkc_sampler. `denoise(x, sigma (P,), companion)` must be differentiable
   in x and sigma: weight_update='guidance' takes dU(D(x, sigma))/dx and /dsigma.
   `grad` is the value_and_grad to take it with (hk.value_and_grad in a transform)."""
@@ -509,6 +590,7 @@ def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamm
   if (resampling_interval is None) == (ess_threshold is None):
     raise ValueError('fkc: exactly one of resampling_interval and ess_threshold')
   t = {k: jnp.asarray(v) for k, v in tables.items()}
+  specs = specs or DEFAULT
   P = num_particles
   group = resampling_group_size or P
   sig = [float(v) for v in schedule(num_steps)]
@@ -526,10 +608,10 @@ def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamm
         beta_n=_beta(s_n, beta_power), beta_hat=_beta(s_hat, beta_power), beta_c=_beta(s_c, beta_power),
         fixed=(((k + 1) % resampling_interval == 0) if resampling_interval else False) or k == nt - 1,
         last=k == nt - 1, has_next=s_n > 0,
-        **{'%s_%s' % (b, w): step_parameters(tt)[b] for w, tt in (('hat', t_hat), ('c', t_c), ('n', t_n))
-           for b in ('sym_buffer', 'inter_buffer', 'intra_buffer', 'minimum_distance')}))
-  xs = {k: np.array([r[k] for r in rows], np.float32 if isinstance(rows[0][k], float) else None)
-        for k in rows[0]}
+        **{'%s_%s' % (b, w): step_parameters(tt, specs)[b] for w, tt in (('hat', t_hat), ('c', t_c), ('n', t_n))
+           for b in PARAMS}))
+  xs = {k: np.array([r[k] for r in rows]) for k in rows[0]}
+  xs = {k: (v.astype(np.float32) if v.dtype == np.float64 else v) for k, v in xs.items()}
   inj = _per_step_injection(injected, nt, np.arange(nt))
   if inj is not None:
     xs['inj'] = inj
@@ -537,8 +619,7 @@ def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamm
   smc = weight_update == 'smc'
 
   def total(x0, x_, when):
-    return energies(x0, t, {b: x_['%s_%s' % (b, when)] for b in
-                            ('sym_buffer', 'inter_buffer', 'intra_buffer', 'minimum_distance')}).sum(0)
+    return energies(x0, t, {b: x_['%s_%s' % (b, when)] for b in PARAMS}, specs).sum(0)
 
   def body(carry, x_):
     x, logw, pot_c, comp = carry

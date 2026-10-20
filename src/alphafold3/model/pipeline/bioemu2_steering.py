@@ -484,15 +484,20 @@ def tables(topo, ccd, sigma_tolerance=10.0, ligand_tables=None):
     local = local[:, keep]
   out['polymer_local_clash_index'] = local
   # BondLengthPotential / BondAnglePotential
+  # references (lowest mean, highest mean, sigma) -- each Bond*/Angle potential
+  # applies its own sigma_tolerance (network/bioemu2_steering.host_tables) --
+  # and the bounds at `sigma_tolerance`, the default potentials'
   st = stereo_tables()
   pooled = {}
-  bl = [geometry_bounds(bond_reference(g, i, j, st, pooled), sigma_tolerance) for i, j in g.bonds]
+  out['bond_ref'] = np.array([bond_reference(g, i, j, st, pooled) for i, j in g.bonds], float).reshape(-1, 3)
+  pooled = {}
+  out['angle_ref'] = np.array([angle_reference(g, i, c, k, st, pooled) for i, k, c in g.angles],
+                              float).reshape(-1, 3)
+  bl = [geometry_bounds(r, sigma_tolerance) for r in out['bond_ref'].tolist()]
   out['bond_index'] = np.array(g.bonds, np.int64).reshape(-1, 2).T
   out['bond_lower'] = np.array([b[0] for b in bl], np.float32)
   out['bond_upper'] = np.array([b[1] for b in bl], np.float32)
-  pooled = {}
-  al = [geometry_bounds(angle_reference(g, i, c, k, st, pooled), sigma_tolerance, angle=True)
-        for i, k, c in g.angles]
+  al = [geometry_bounds(r, sigma_tolerance, angle=True) for r in out['angle_ref'].tolist()]
   out['angle_index'] = np.array(g.angles, np.int64).reshape(-1, 3).T
   out['angle_lower'] = np.array([a[0] for a in al], np.float32)
   out['angle_upper'] = np.array([a[1] for a in al], np.float32)
