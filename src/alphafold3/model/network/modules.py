@@ -341,7 +341,7 @@ class GridSelfAttention(hk.Module):
     # lacks. Dropping them halves the gate (weight inits to zeros, so the gate is
     # bias-dominated) and compounds across the 96 tri-attentions. Gated on
     # rosettafold3 so other families stay bias-free / byte-identical.
-    rosettafold3 = self.global_config.model == 'rosettafold3'
+    rosettafold3 = self.global_config.model in model_config.TRI_ATT_BIAS
     gate_values = hm.Linear(
         self.config.num_head * qkv_dim,
         use_bias=rosettafold3,
@@ -372,7 +372,7 @@ class GridSelfAttention(hk.Module):
   @hk.transparent
   def _qkvg_weights(self, act, h, d):
     """The q/k/v/gate projections stacked [C, 4, H, D], and the gate's bias [H, D]."""
-    rf3 = self.global_config.model == 'rosettafold3'
+    rf3 = self.global_config.model in model_config.TRI_ATT_BIAS
     get = lambda **kw: hm.haiku_linear_get_params(act, **kw)[0]
     wq = get(num_output=(h, d), transpose_weights=True, name='q_projection')
     wk = get(num_output=(h, d), transpose_weights=True, name='k_projection')
@@ -392,7 +392,7 @@ class GridSelfAttention(hk.Module):
     kernel = PACKED_ATTENTION(act.dtype, d)
     if kernel is None:
       return None
-    rf3 = self.global_config.model == 'rosettafold3'
+    rf3 = self.global_config.model in model_config.TRI_ATT_BIAS
     w, gb = self._qkvg_weights(act, h, d)
     out = kernel(jnp.einsum('xyc,cghd->xyghd', act, w), bias.astype(act.dtype), kmask.astype(jnp.bool_), gb,
                  sm_scale=d ** -0.5, column=self.transpose)
@@ -432,7 +432,7 @@ class GridSelfAttention(hk.Module):
     out = attention(p, bias, kmask.astype(jnp.bool_), gb, *([] if kv is None else [kv]), sm_scale=d ** -0.5,
                     column=self.transpose)
     wo, bo = hm.haiku_linear_get_params(jax.ShapeDtypeStruct((h * d,), act.dtype), num_output=c,
-                                        use_bias=self.global_config.model == 'rosettafold3',
+                                        use_bias=self.global_config.model in model_config.TRI_ATT_BIAS,
                                         initializer=self.global_config.final_init, name='output_projection')
     bo = jnp.zeros((c,), act.dtype) if bo is None else bo.astype(act.dtype)
     res = [] if residual is None else [residual.reshape(-1, c)]
@@ -535,6 +535,10 @@ class GridSelfAttention(hk.Module):
     if (self.transpose
         and self.global_config.model in model_config.TRANSPOSED_COLUMN_PAIR_BIAS):
       nonbatched_bias = jnp.swapaxes(nonbatched_bias, -1, -2)
+    if self.global_config.model in model_config.BF16_TRI_ATT_PAIR_BIAS:
+      # helixfold3 adds the pair bias as bfloat16 even in float32 (see
+      # model_config.BF16_TRI_ATT_PAIR_BIAS)
+      nonbatched_bias = nonbatched_bias.astype(jnp.bfloat16).astype(nonbatched_bias.dtype)
 
     if kernels is not None:
       out = self._ln_packed_attention(act, p, nonbatched_bias, kv, gate_bias, pair_mask, kernels, residual, keep)
@@ -641,7 +645,10 @@ class TriangleMultiplication(hk.Module):
 
     cb = self.config.channel_block
     blocked = cb and hidden_dim % cb == 0 and num_residues ** 2 * hidden_dim * 8 > TRIMUL_BLOCK_BYTES
-    if TRIMUL_KERNELS is not None and not blocked:
+    # helixfold3's six Linears carry trained biases (model_config.TRIMUL_BIAS),
+    # which no fused or GLU kernel takes: they run the plain einsum
+    biased = self.global_config.model in model_config.TRIMUL_BIAS
+    if TRIMUL_KERNELS is not None and not blocked and not biased:
       kernels = TRIMUL_KERNELS(act.dtype, num_channels, hidden_dim)
       if kernels is not None:
         return self._fused(act, mask[0], hidden_dim, equation, kernels, residual)
@@ -672,11 +679,11 @@ class TriangleMultiplication(hk.Module):
     input_act = act
 
     if blocked:
-      act = self._blocked_einsum(act, mask, hidden_dim, equation)
+      act = self._blocked_einsum(act, mask, hidden_dim, equation, biased)
     else:
       act = self._einsum(act, mask, hidden_dim, equation,
                          glu_ops='volta' if volta_ops else
-                         'pallas' if pallas_ops else None)
+                         'pallas' if pallas_ops else None, biased=biased)
     # rf3 divides by the sequence length here, and it is NOT a no-op in front of
     # a LayerNorm because of the norm's epsilon -- see
     # model_config.TRIANGLE_MUL_DIVIDE_BY_LENGTH for the measurement.
@@ -687,6 +694,7 @@ class TriangleMultiplication(hk.Module):
     act = jnp.transpose(act, (1, 2, 0))
     act = hm.Linear(
         num_channels,
+        use_bias=biased,
         initializer=self.global_config.final_init,
         name='output_projection',
     )(act)
@@ -694,6 +702,7 @@ class TriangleMultiplication(hk.Module):
     gate_out = hm.Linear(
         num_channels,
         name='gating_linear',
+        use_bias=biased,
         bias_init=1.0,
         initializer=self.global_config.final_init,
     )(input_act)
@@ -729,33 +738,41 @@ class TriangleMultiplication(hk.Module):
     return out if residual is None or residual is act else residual + out
 
   @hk.transparent
-  def _blocked_einsum(self, act, mask, hidden_dim, equation):
+  def _blocked_einsum(self, act, mask, hidden_dim, equation, biased=False):
     """The einsum one channel block at a time, so the [N, N, 2 * hidden] gated projection never exists whole."""
     cb = self.config.channel_block
     nb = hidden_dim // cb
     n = act.shape[0]
-    weights_projection, _ = hm.haiku_linear_get_params(
-        act, num_output=hidden_dim * 2, name='projection')
-    weights_gate, _ = hm.haiku_linear_get_params(
-        act, num_output=hidden_dim * 2, initializer=self.global_config.final_init, name='gate')
+    weights_projection, bias_projection = hm.haiku_linear_get_params(
+        act, num_output=hidden_dim * 2, use_bias=biased, name='projection')
+    weights_gate, bias_gate = hm.haiku_linear_get_params(
+        act, num_output=hidden_dim * 2, use_bias=biased, bias_init=1.0,
+        initializer=self.global_config.final_init, name='gate')
     # output channel 2c is a[c] and 2c + 1 is b[c]; regroup as [nb, K, cb] per operand
     blocks = lambda w: w.reshape(w.shape[0], nb, cb).transpose(1, 0, 2)
     wa, wb = blocks(weights_projection[:, 0::2]), blocks(weights_projection[:, 1::2])
     ga, gb = blocks(weights_gate[:, 0::2]), blocks(weights_gate[:, 1::2])
+    if biased:
+      bblocks = lambda v: v.reshape(nb, cb)
+      ba, bb = bblocks(bias_projection[0::2]), bblocks(bias_projection[1::2])
+      gba, gbb = bblocks(bias_gate[0::2]), bblocks(bias_gate[1::2])
+    else:
+      ba = bb = gba = gbb = jnp.zeros((nb, cb), act.dtype)
 
-    def gated(w, g):
-      return (jnp.einsum('ijk,kc->cij', act, w.astype(act.dtype))
-              * jax.nn.sigmoid(jnp.einsum('ijk,kc->cij', act, g.astype(act.dtype))) * mask)
+    def gated(w, g, bw, bg):
+      return ((jnp.einsum('ijk,kc->cij', act, w.astype(act.dtype)) + bw.astype(act.dtype)[:, None, None])
+              * jax.nn.sigmoid(jnp.einsum('ijk,kc->cij', act, g.astype(act.dtype))
+                               + bg.astype(act.dtype)[:, None, None]) * mask)
 
     def body(i, out):
-      block = jnp.einsum(equation, gated(wa[i], ga[i]), gated(wb[i], gb[i]))
+      block = jnp.einsum(equation, gated(wa[i], ga[i], ba[i], gba[i]), gated(wb[i], gb[i], bb[i], gbb[i]))
       return jax.lax.dynamic_update_slice(out, block.astype(out.dtype), (i * cb, 0, 0))
 
     return jax.lax.fori_loop(0, nb, body, jnp.zeros((hidden_dim, n, n), act.dtype))
 
   @hk.transparent
-  def _einsum(self, act, mask, hidden_dim, equation, glu_ops=None):
-    if self.config.use_glu_kernel:
+  def _einsum(self, act, mask, hidden_dim, equation, glu_ops=None, biased=False):
+    if self.config.use_glu_kernel and not biased:
       weights_projection, _ = hm.haiku_linear_get_params(
           act, num_output=hidden_dim * 2, name='projection'
       )
@@ -789,13 +806,14 @@ class TriangleMultiplication(hk.Module):
       projection = jnp.transpose(projection, (2, 0, 1))
       projection *= mask
     else:
-      projection = hm.Linear(hidden_dim * 2, name='projection')(act)
+      projection = hm.Linear(hidden_dim * 2, use_bias=biased, name='projection')(act)
       projection = jnp.transpose(projection, (2, 0, 1))
       projection *= mask
 
       gate = hm.Linear(
           hidden_dim * 2,
           name='gate',
+          use_bias=biased,
           bias_init=1.0,
           initializer=self.global_config.final_init,
       )(act)
@@ -841,7 +859,7 @@ class OuterProductMean(hk.Module):
     # is bilinear, so a dropped bias loses the two cross terms b_l (x) W_r x_m and
     # W_l x_l (x) b_r as well. It held the MSA module's outer product to corr 0.924
     # against native with otherwise near-exact inputs.
-    lr_bias = self.global_config.model == 'rosettafold3'
+    lr_bias = self.global_config.model in model_config.OPM_LR_BIAS
 
     left_act = mask * hm.Linear(
         self.config.num_outer_channel,

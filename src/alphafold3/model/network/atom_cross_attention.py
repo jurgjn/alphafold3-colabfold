@@ -283,7 +283,7 @@ def atom_cross_att_encoder(
   # boltz2/RF3/chai query on the per-atom features BEFORE s_trunk while the
   # conditioning is LayerNorm(a + token_to_atom_single(s_trunk)) -- the q != c
   # split those three need.
-  pre_trunk_query = global_config.model in ('boltz2', 'rosettafold3', 'chai1')
+  pre_trunk_query = global_config.model in ('boltz2', 'rosettafold3', 'chai1', 'helixfold3')
 
   # Everything to `query_base` reads only reference-structure features and the
   # trunk conditioning -- nothing position-, noise- or sample-dependent. In the
@@ -616,6 +616,20 @@ def atom_cross_att_encoder(
       swa_mask = jnp.abs(q_rank[:, :, None] - k_rank[:, None, :]) <= half
       swa_mask = swa_mask & queries_mask[:, :, None].astype(jnp.bool_)
       swa_mask = swa_mask & keys_mask[:, None, :].astype(jnp.bool_)
+    if global_config.model in model_config.SEQ_INDEX_ROPE and name == 'diffusion':
+      # helixfold3's diffusion atom attention rotates by each atom's SLOT: the
+      # query's place in its 32-block, the key's in its clipped window
+      # [max(32b - 48, 0), ...), which in our padded window (it starts at
+      # 32b - 48) is slot j + min(32b - 48, 0). Its input embedder does not.
+      head_dim = (c.atom_transformer.attention.key_dim
+                  or c.per_atom_channels) // c.atom_transformer.attention.num_head
+      n_sub, n_q = queries_mask.shape
+      n_k = keys_mask.shape[-1]
+      start = jnp.minimum(jnp.arange(n_sub) * n_q - (n_k - n_q) // 2, 0)
+      rope_q = diffusion_transformer.seq_index_rope(
+          jnp.broadcast_to(jnp.arange(n_q), (n_sub, n_q)), head_dim)
+      rope_k = diffusion_transformer.seq_index_rope(
+          jnp.arange(n_k)[None] + start[:, None], head_dim)
 
     offsets_valid = (
         queries_ref_space_uid[:, :, None] == keys_ref_space_uid[:, None, :]
@@ -676,10 +690,14 @@ def atom_cross_att_encoder(
     if not chai:
       # Embed pairwise inverse squared distances (chai folded these into the
       # distogram feature above)
-      sq_dists = jnp.sum(jnp.square(offsets), axis=-1)
+      if global_config.model in model_config.PER_AXIS_INV_SQ_DIST:
+        # helixfold3: 1/(1 + d^2) per axis, a (3, 16) projection
+        inv_sq = 1.0 / (1 + jnp.square(offsets))
+      else:
+        inv_sq = 1.0 / (1 + jnp.sum(jnp.square(offsets), axis=-1)[:, :, :, None])
       pair_act += (
           hm.Linear(c.per_atom_pair_channels, name=f'{name}_embed_pair_distances{suffix}')(
-              1.0 / (1 + sq_dists[:, :, :, None])
+              inv_sq
           )
           * offsets_valid[:, :, :, None]
       )
@@ -782,8 +800,14 @@ def atom_cross_att_decoder(
     global_config: model_config.GlobalConfig,
     batch: feat_batch.Batch,
     name: str,
+    return_features: bool = False,
 ):  # (num_tokens, max_atoms_per_token, 3)
-  """Mapping to per-atom features and self-attention on subsets."""
+  """Mapping to per-atom features and self-attention on subsets.
+
+  return_features: hand back the normalised per-atom features in the token-atoms
+  layout instead of projecting them to a position update (helixfold3's
+  confidence head reads its per-atom pLDDT / resolved logits off them).
+  """
   c = config
   # map per-token act down to per_atom channels
   token_act = hm.Linear(
@@ -845,6 +869,10 @@ def atom_cross_att_decoder(
           global_config.model, 'atom_features_layer_norm'),
       name=f'{name}_atom_features_layer_norm',
   )(queries_act)
+  if return_features:
+    return atom_layout.convert(
+        batch.atom_cross_att.queries_to_token_atoms, queries_act,
+        layout_axes=(-3, -2))
   queries_position_update = hm.Linear(
       3,
       initializer=global_config.final_init,

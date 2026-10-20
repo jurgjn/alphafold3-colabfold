@@ -497,8 +497,13 @@ def create_relative_encoding(
     max_relative_idx: int,
     max_relative_chain: int,
     chain_bucket_on_same_chain: bool = False,
+    rel_pos_same_residue: bool = False,
 ) -> jax.Array:
   """Add relative position encodings.
+
+  `rel_pos_same_residue` gates the relative-position block on an equal residue
+  index in ANY chain instead of on the same chain (HelixFold3's
+  RelativePositionEncoding; model_config.RELPOS_SAME_RESIDUE_INDEX).
 
   `chain_bucket_on_same_chain` selects ESMFold2's convention for the relative-
   chain block, which differs from AF3's in BOTH the predicate and the branch:
@@ -550,7 +555,8 @@ def create_relative_encoding(
   )
   asym_id_same = left_asym_id == right_asym_id
   final_offset = jnp.where(
-      asym_id_same,
+      (left_residue_index == right_residue_index) if rel_pos_same_residue
+      else asym_id_same,
       clipped_offset,
       (2 * max_relative_idx + 1) * jnp.ones_like(clipped_offset),
   )
@@ -603,6 +609,7 @@ def relative_encoding_segments(
     max_relative_idx: int,
     max_relative_chain: int,
     chain_bucket_on_same_chain: bool = False,
+    rel_pos_same_residue: bool = False,
 ):
   """The same encoding as INDICES, so a projection of it can be a gather.
 
@@ -637,7 +644,9 @@ def relative_encoding_segments(
     offset = offset - period[None, :] * jnp.round(offset / period[None, :])
     offset = offset.astype(residue_index.dtype)
   clipped = jnp.clip(offset + max_relative_idx, min=0, max=2 * max_relative_idx)
-  rel_pos_idx = jnp.where(asym_id_same, clipped, 2 * max_relative_idx + 1)
+  pos_gate = ((residue_index[:, None] == residue_index[None, :]) if rel_pos_same_residue
+              else asym_id_same)
+  rel_pos_idx = jnp.where(pos_gate, clipped, 2 * max_relative_idx + 1)
 
   token_offset = token_index[:, None] - token_index[None, :]
   clipped_token = jnp.clip(

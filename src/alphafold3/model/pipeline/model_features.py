@@ -867,6 +867,68 @@ def _dedupe_query_row(batch):
         np.asarray(batch['num_alignments']) - 1,
         dtype=np.asarray(batch['num_alignments']).dtype)
   return _rebuild_profile(batch)
+def _hf3_features(batch):
+  """HelixFold3's featuriser where it departs from AF3's on the same tokens
+  (stock-HelixFold3 comparison, vendor_native_parity dna / ligand_ccd / ion / ptm):
+    * the atom NAME characters of every atom token -- ligand atoms, ions, the
+      atoms of an atomised modified residue -- are blank (pipeline_aa_utils
+      fills ref_atom_name_chars only for standard residues);
+    * a ligand token's query MSA row reads UNK, not GAP.
+  Only the name FEATURE is blanked: the layout keeps its names, which are what
+  index the atoms (see _mask_atoms).
+  """
+  from alphafold3.constants import residue_names
+  vocab = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP)
+  gap, unk = vocab.index(residue_names.GAP), vocab.index(residue_names.UNK)
+  ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+  atom_token = ref_mask.sum(axis=1) == 1
+  if 'ref_atom_name_chars' in batch:
+    chars = np.array(batch['ref_atom_name_chars'])
+    chars[atom_token] = 0
+    batch['ref_atom_name_chars'] = chars
+  ligand = np.asarray(batch['is_ligand']).astype(bool).reshape(-1)
+  if ligand.any() and 'msa' in batch:
+    msa = np.array(batch['msa'])
+    # every copy of the query row (AF3 builds one per block), so they still dedupe
+    query = (msa[:, ~ligand] == msa[0, ~ligand]).all(-1)
+    msa[np.ix_(query, ligand)] = unk
+    batch['msa'] = msa
+  return batch
+
+
+def _hf3_profile(batch):
+  """HelixFold3's profile of a protein or RNA token: the class frequencies over the MERGED
+  MSA's rows -- paired block and every chain's unpaired block, gaps counted -- where AF3
+  takes each chain's own rows (stock-HelixFold3 paired_msa: 1/73 steps against our 1/49).
+  A DNA or ligand token's is the GAP one-hot. Runs after the MSA's final dedupe (which
+  rebuilds the profile), on the rows the model reads."""
+  # a DNA token's query row is its restype -- for a modified nucleotide the nucleic unknown,
+  # which a DNA token reads as DN -- where ours carried the parent base
+  dna = np.asarray(batch['is_dna']).astype(bool).reshape(-1)
+  if dna.any():
+    m = np.array(batch['msa'])
+    m[0, dna] = np.asarray(batch['aatype']).reshape(-1)[dna]
+    batch['msa'] = m
+  msa = np.asarray(batch['msa'])
+  live = np.asarray(batch['msa_mask']).astype(bool).any(-1)
+  prof = np.array(batch['profile'])
+  n_cls = prof.shape[-1]
+  counts = np.zeros(msa.shape[1:] + (n_cls,), np.float64)
+  rows = msa[live]
+  for c in range(n_cls):
+    counts[..., c] = (rows == c).sum(0)
+  freq = counts / max(int(live.sum()), 1)
+  keep = (np.asarray(batch['is_protein']).astype(bool) | np.asarray(batch['is_rna']).astype(bool)).reshape(-1)
+  prof[keep] = freq[keep]
+  # a DNA or ligand token's profile is the GAP one-hot: it has no MSA of its own
+  from alphafold3.constants import residue_names
+  gap = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(residue_names.GAP)
+  prof[~keep] = 0.0
+  prof[~keep, gap] = 1.0
+  batch['profile'] = prof.astype(np.asarray(batch['profile']).dtype)
+  return batch
+
+
 def _dna_gap_msa(batch):
   """OpenFold3 adds query rows for protein and RNA only (colabfold_msa_server): a DNA chain reads gap in every MSA row
   and a zero profile and deletion mean; a ligand token's profile is zero too (ours: a gap one-hot)."""
@@ -1832,6 +1894,9 @@ def _boltz_msa_dedupe(fold_input):
   return dataclasses.replace(fold_input, chains=chains)
 
 
+INPUT_HAD_TEMPLATES = False
+
+
 def prepare_input(fold_input, spec):
   """The input-side conventions, applied before featurisation: a copy of `fold_input` as the model's featuriser sees it.
 
@@ -1865,6 +1930,10 @@ def prepare_input(fold_input, spec):
                                       else None)
   if knobs.get('boltz_msa_dedupe'):
     fold_input = _boltz_msa_dedupe(fold_input)
+  # whether templates were SUPPLIED, before a policy prefilters them away (helixfold3 picks its
+  # featurisation mode on this); process-wide like ccd_unk
+  global INPUT_HAD_TEMPLATES
+  INPUT_HAD_TEMPLATES = any(getattr(c, 'templates', None) for c in fold_input.chains)
   if knobs.get('templates'):
     # how this model reads its templates (altloc, modified residues, alignment, prefilter): template_policy
     from alphafold3.model.pipeline import template_policy
@@ -2163,6 +2232,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _chai_msa(batch, fold_input)
   if knobs.get('dna_gap_msa'):
     _dna_gap_msa(batch)
+  if knobs.get('hf3_features'):
+    _hf3_features(batch)
   if knobs.get('boltz_msa') and fold_input is not None and 'msa' in batch:
     _boltz_msa(batch, fold_input, knobs['boltz_msa'] if isinstance(knobs['boltz_msa'], str) else 'boltz2')
   if knobs.get('rf3_msa') and fold_input is not None and 'msa' in batch:
@@ -2180,8 +2251,9 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _boltz_smiles_atom_names(batch, fold_input)
   if knobs.get('modified_restype') == 'protein_letter' and fold_input is not None:
     _modified_restype_protein_letter(batch, fold_input)
-  if knobs.get('modified_restype') == 'protein_unknown' and fold_input is not None:
-    _modified_restype_protein_unknown(batch, fold_input)
+  if knobs.get('modified_restype') in ('protein_unknown', 'hf3') and fold_input is not None:
+    _modified_restype_protein_unknown(batch, fold_input,
+                                      nucleic_unknown=knobs['modified_restype'] == 'hf3')
   if knobs.get('unresolved_leaving_atoms') and fold_input is not None:
     _unresolved_leaving_atoms(batch, fold_input)
   if knobs.get('declared_bond_charge') and fold_input is not None:
@@ -2200,6 +2272,8 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     for key in ('profile', 'deletion_mean'):
       if key in batch:
         batch[key] = np.zeros_like(np.asarray(batch[key]))
+  if knobs.get('hf3_features') and 'msa' in batch and 'profile' in batch:
+    _hf3_profile(batch)
   if knobs.get('full_msa') or knobs.get('native_rng'):
     _crop_msa_padding(batch)
   if knobs.get('native_rng') and seed is not None and fold_input is not None:
@@ -2209,7 +2283,12 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     from alphafold3.model.pipeline import template_policy
     if template_policy.resolve(knobs['templates'])['modified'] == 'unk_restype':
       template_policy.unknown_restype_templates(batch, fold_input)
-  if knobs.get('empty_template_gap'):
+  # 'no_msa': helixfold3 builds its GAP-typed mock templates only in its no-MSA mode; when it
+  # runs its MSA pipeline an absent template is four zero slots typed ALA, AF3's own padding
+  # (its MSA pipeline runs whenever a chain carries an alignment OR templates)
+  msa_mode = has_msa or INPUT_HAD_TEMPLATES or (
+      fold_input is not None and any(getattr(c, 'templates', None) for c in fold_input.chains))
+  if knobs.get('empty_template_gap') and not (knobs['empty_template_gap'] == 'no_msa' and msa_mode):
     _empty_template_gap(batch, slots=knobs.get('empty_template_gap_slots',
                                                'first'))
   if knobs.get('lm_pair') and lm_hidden is not None:
@@ -2233,7 +2312,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   return batch
 
 
-def _modified_restype_protein_unknown(batch, fold_input):
+def _modified_restype_protein_unknown(batch, fold_input, nucleic_unknown=False):
   """OpenFold3 types EVERY non-standard residue -- SEP, PSU, 5CM alike -- as the
   protein unknown (featurization/structure.py:85, residues.py:320), where we keep
   the parent or a nucleic unknown. Its MSA and profile already agree with ours,
@@ -2244,8 +2323,12 @@ def _modified_restype_protein_unknown(batch, fold_input):
   for index, chain in enumerate(fold_input.chains):
     mods = (getattr(chain, 'ptms', None)
             or getattr(chain, 'modifications', None) or ())
+    # helixfold3: a modified NUCLEOTIDE reads the nucleic unknown (30), which a DNA
+    # token then carries as HelixFold3's DN (model.hf3_dn_columns)
+    from alphafold3.common import folding_input as fi
+    nucleic = nucleic_unknown and not isinstance(chain, fi.ProteinChain)
     for _code, residue in mods:
-      aatype[(asym == index + 1) & (resi == int(residue))] = 20   # protein UNK
+      aatype[(asym == index + 1) & (resi == int(residue))] = 30 if nucleic else 20   # protein UNK
   batch['aatype'] = aatype
   return batch
 

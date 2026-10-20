@@ -74,6 +74,12 @@ one is a `sources.py` entry, a converter alias and a `MODELS` line.
 | `opendde` | [OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) (Aureka Research) | see upstream |
 | `rosettafold3` | [RoseTTAFold3](https://files.ipd.uw.edu/pub/rf3/) (RosettaCommons) | see upstream |
 | `chai1` | [chai-1](https://github.com/chaidiscovery/chai-lab) (Chai Discovery) | Apache 2.0 |
+| `helixfold3` | [HelixFold3](https://github.com/PaddlePaddle/PaddleHelix/tree/dev/apps/protein_folding/helixfold3) (Baidu PaddleHelix, 2025-07-14 weights) | **non-commercial** (NC-SA) |
+
+HelixFold3's code and weights are licensed for non-commercial use only, under
+Attribution-NonCommercial-ShareAlike terms that also forbid incorporating it into
+unauthorised automated systems (screening or design workflows). Its checkpoint is a
+PaddlePaddle `.pdparams`, converted without paddle (`converters/helixfold3.py`).
 
 ### ESMFold2 family — folds from ESM-C, not an MSA
 

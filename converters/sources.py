@@ -79,6 +79,11 @@ SOURCES = {
         url='https://huggingface.co/microsoft/bioemu2/resolve/main/checkpoints/'
             'bioemu2-preview/checkpoint.ckpt',
         file='checkpoint.ckpt'),
+    # HelixFold3 (Baidu PaddleHelix): the 2025-07-14 parameters, a zip holding
+    # one .pdparams (non-commercial terms -- see its LICENSE beside it).
+    'helixfold3': dict(
+        url='https://paddlehelix.bd.bcebos.com/HelixFold3/params/HelixFold3-params-20250714.zip',
+        file='HelixFold3-params-20250714.zip'),
     # Boltz-2 (jwohlwend/boltz, MIT).
     'boltz2': dict(
         url='https://huggingface.co/boltz-community/boltz-2/resolve/main/boltz2_conf.ckpt',

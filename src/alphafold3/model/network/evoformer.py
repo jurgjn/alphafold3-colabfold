@@ -449,6 +449,9 @@ class Evoformer(hk.Module):
             chain_bucket_on_same_chain=(
                 self.global_config.model
                 in model_config.CHAIN_BUCKET_ON_SAME_CHAIN),
+            rel_pos_same_residue=(
+                self.global_config.model
+                in model_config.RELPOS_SAME_RESIDUE_INDEX),
         ))
     pair_activations += _RelativeEncodingProjection(
         self.config.pair_channel, name='position_activations',
@@ -587,6 +590,9 @@ class Evoformer(hk.Module):
       # distogram + has_condition + noise_level), same fused forward; see
       # RoseTTAFold3TemplateEmbedding.
       template_module = template_modules.RoseTTAFold3TemplateEmbedding(
+          self.config.template, self.global_config)
+    elif self.global_config.model == 'helixfold3':
+      template_module = template_modules.HelixFold3TemplateEmbedding(
           self.config.template, self.global_config)
     elif self.global_config.model in model_config.PROTENIX_FAMILY:
       # Protenix rides the Boltz2 fused-template forward (same converter scopes) with
@@ -768,6 +774,12 @@ class Evoformer(hk.Module):
     msa_activations = hm.Linear(
         self.config.msa_channel, use_bias=chai1, name='msa_activations'
     )(msa_feat)
+    if self.global_config.model in model_config.HF3_DN_CLASS and is_dna is not None:
+      # helixfold3's DN in the MSA one-hot: a DNA column reading our nucleic
+      # unknown (30) takes DN's msa_project row, not its RNA N's
+      dn = hk.get_parameter('hf3_dn_msa', [self.config.msa_channel], jnp.float32, init=jnp.zeros)
+      at_dn = (msa_batch.rows == 30) & is_dna.astype(bool)[None, :]
+      msa_activations += at_dn.astype(dtype)[..., None] * dn.astype(dtype)
     if self.global_config.model == 'boltz2' and is_dna is not None:
       # Boltz's DN, the DNA unknown (its class 32), which our single nucleic unknown (30, Boltz's N) cannot tell from an
       # RNA one: the converter keeps the difference of its msa_proj columns, added where a DNA column reads 30. Zero (the
@@ -1040,6 +1052,7 @@ class Evoformer(hk.Module):
       if not pair_only:   # already run above, into the parcae injection
         # the MSA module's own before/after, so a divergence in the stock trunk
         # can be attributed to init / template / msa rather than to the stack
+        pair_before_msa = pair_activations
         pair_activations, key = self._embed_process_msa(
             msa_batch=batch.msa,
             pair_activations=pair_activations,
@@ -1059,6 +1072,9 @@ class Evoformer(hk.Module):
             rows_keep=(None if rng is None else
                        rng['msa_rows'][jnp.minimum(px_pass, rng['msa_rows'].shape[0] - 1)]),
         )
+        if self.global_config.model in model_config.MSA_STACK_OUTER_RESIDUAL:
+          # see model_config.MSA_STACK_OUTER_RESIDUAL
+          pair_activations = pair_before_msa + pair_activations
         _esm_tap('z_after_msa', pair_activations)
       del key  # Unused after this point.
 

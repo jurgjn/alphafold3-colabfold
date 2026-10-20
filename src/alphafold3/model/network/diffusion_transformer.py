@@ -275,6 +275,27 @@ def _apply_rope(x, cos, sin):
   return jnp.concatenate([x[..., :ro] * c + rot * s, x[..., ro:]], -1)
 
 
+def seq_index_rope(positions, head_dim, base=10000.0):
+  """Sequence-index rotary tables (cos, sin), each (..., head_dim // 2).
+
+  HelixFold3's RotaryPositionalEmbeddings: theta_i = base ** (-2i / head_dim) in
+  float32, angle = position * theta. Its rotation pairs channels (2i, 2i+1); the
+  converter permutes q/k columns so that `_apply_rope`'s half-split pairing
+  (i, i + head_dim / 2) is the same function. See model_config.SEQ_INDEX_ROPE.
+  """
+  theta = 1.0 / (jnp.float32(base) ** (jnp.arange(0, head_dim, 2, dtype=jnp.float32)
+                                        / jnp.float32(head_dim)))
+  angle = positions.astype(jnp.float32)[..., None] * theta
+  return jnp.cos(angle), jnp.sin(angle)
+
+
+def _rope_qk(q, k, rope_q, rope_k, global_config):
+  """Rotate q and k: ESMFold2 RMS-normalises them first, HelixFold3 does not."""
+  if global_config.model in model_config.SEQ_INDEX_ROPE:
+    return _apply_rope(q, *rope_q), _apply_rope(k, *rope_k)
+  return _apply_rope(_rms_norm(q), *rope_q), _apply_rope(_rms_norm(k), *rope_k)
+
+
 class SelfAttentionConfig(base_config.BaseConfig):
   num_head: int = 16
   key_dim: int | None = None
@@ -343,8 +364,7 @@ def self_attention(
     # k. Neither is expressible as a weight, so it enters here -- and only here;
     # the sliding window itself needs nothing new, because it is an additive
     # mask and `bias` already carries one. `rope` is None for every other model.
-    q = _apply_rope(_rms_norm(q), *rope)
-    k = _apply_rope(_rms_norm(k), *rope)
+    q, k = _rope_qk(q, k, rope, rope, global_config)
 
   # In some situations the gradient norms can blow up without running this
   # einsum in float32.
@@ -499,6 +519,12 @@ class Transformer(hk.Module):
       return _stack(num_super_blocks, super_block, False)(act)
 
     # Original AF3 mode: single shared pair LayerNorm precomputed before all blocks.
+    rope = None
+    if self.global_config.model in model_config.SEQ_INDEX_ROPE:
+      # helixfold3 rotates q/k by the token's index in the array
+      head_dim = (self.config.attention.key_dim or act.shape[-1]) // self.config.attention.num_head
+      rope = seq_index_rope(jnp.arange(act.shape[-2]), head_dim)
+
     def block(act, pair_logits):
       act += self_attention(
           act,
@@ -508,6 +534,7 @@ class Transformer(hk.Module):
           self.global_config,
           single_cond,
           name=self.name,
+          rope=rope,
       )
       act += transition_block(
           act,
@@ -671,8 +698,7 @@ def cross_attention(
     # DIFFERENT rotations because they are different atom subsets of the same
     # flat list -- passing one for both silently rotates the keys as if they sat
     # at the query positions. None for every other model.
-    q = _apply_rope(_rms_norm(q), *rope_q)
-    k = _apply_rope(_rms_norm(k), *rope_k)
+    q, k = _rope_qk(q, k, rope_q, rope_k, global_config)
 
   logits = jnp.einsum('...qhc,...khc->...hqk', q * key_dim ** (-0.5), k) + bias
   if pair_logits is not None:

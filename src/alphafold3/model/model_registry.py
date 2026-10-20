@@ -249,6 +249,28 @@ def _widen_protenix1(cfg):
   _apply_settings(cfg, PROTENIX1_SETTINGS, 'protenix1')
 
 
+# HelixFold3 (2025-07-14 weights): stock AlphaFold 3 widths except the MSA
+# pair-weighted averaging (8 heads x 32 where AF3 has 8 x 8), the 4096 MSA rows
+# it samples per pass, and protenix1's 128-wide template triangle
+# multiplication on its 64-channel template pair (with a 4x template
+# transition). Read off the checkpoint by converters/helixfold3.py, which
+# refuses a mismatch.
+HELIXFOLD3_SETTINGS = (
+    ('evoformer.msa_stack.msa_attention.value_dim', 32),
+    ('evoformer.num_msa', 4096),
+    ('evoformer.template.template_stack.triangle_multiplication_outgoing.hidden_dim', 128),
+    ('evoformer.template.template_stack.triangle_multiplication_incoming.hidden_dim', 128),
+    ('evoformer.template.template_stack.pair_transition.num_intermediate_factor', 4),
+    # PAE / PDE bin edges linspace(0, 32, 63): AF3's 31 A top edge is 32 here
+    ('heads.confidence.max_error_bin', 32.0),
+    ('heads.confidence.pae.max_error_bin', 32.0),
+)
+
+
+def _widen_helixfold3(cfg):
+  _apply_settings(cfg, HELIXFOLD3_SETTINGS, 'helixfold3')
+
+
 def _widen_protenix2(cfg):
   '''set cfg in place to Protenix-v2's c_z=256 trunk widening; raise on a missing path.'''
   for dotted, value in PROTENIX2_SETTINGS:
@@ -368,6 +390,12 @@ TEMPLATE_POLICIES = {
     # protenix's template featuriser (OpenDDE copies it): prefilter, kalign to the whole SEQRES, a modified residue UNK
     **{m: dict(modified='unk_n', realign='whole_chain', prefilter=True, hit_letter='X')
        for m in ('protenix1', 'protenix2', 'opendde')},
+    # HelixFold3 runs AlphaFold 2's template pipeline (TemplateHitFeaturizer): the same prefilter
+    # (_assess_hit: a near-duplicate of the query is dropped -- 5K9P on itself never reaches it),
+    # the hit's own alignment kept (AF2 realigns only on a sequence mismatch), a modified residue read as UNK
+    # (its SEQRES reads a modified residue as its parent's letter, so 5K9P's SEP is S and the hit is a duplicate)
+    # a modified residue reads as its PARENT, atoms by name (AF2's mmcif parser: SEP is S) -- AF3's own rule
+    'helixfold3': dict(prefilter=True, hit_letter='parent'),
     # IntelliFold: protenix's prefilter, but it re-aligns within the hit's range and maps a modified residue to its parent
     'intellifold2': dict(prefilter=True, hit_letter='parent'),
     # chai: a hit carrying any residue outside its standard codes (SEP, MSE, ...) is dropped
@@ -540,6 +568,7 @@ _WIDENERS = {
     'boltz2': _widen_boltz2,
     'protenix2': _widen_protenix2,
     'protenix1': _widen_protenix1,
+    'helixfold3': _widen_helixfold3,
     'rosettafold3': _widen_rosettafold3,
     'chai1': _widen_chai1,
 }
@@ -763,6 +792,25 @@ _FEATURISE = {
     # EXPERIMENT (see the if2 tail investigation): align the atom key window's
     # edge to the atom count rounded up to a whole query block, which is what
     # if2's own reshape-into-windows forces.
+    # HelixFold3: its featuriser keeps every CCD heavy atom (OXT on every amino
+    # acid, OP3 on every nucleotide, leaving atoms on modified residues and
+    # ligands -- dropped only at output); clamps its atom key window and masks the
+    # out-of-range keys (diffusion.py AttentionIndex, as protenix); and pads its
+    # four template slots with empty GAP-typed ones its template embedder reads.
+    'helixfold3': dict(padded_keys=True, ccd_leaving_atoms=True,
+                       drop_inner_terminal_atoms='keep_all',
+                       keep_ligand_leaving_atoms=True,
+                       empty_template_gap='no_msa', empty_template_gap_slots='atoms',
+                       # the query ONCE (a chain with no alignment is one row,
+                       # create_chain_features_without_real_msa; AF3 builds two), and
+                       # duplicate rows dropped ignoring insertions (AF2 make_msa_features)
+                       dedupe_self_msa='query', dedupe_unpaired_msa=True,
+                       # blank atom-token names, a DNA token's gap profile, a ligand's UNK msa row
+                       hf3_features=True,
+                       # a modified residue's tokens read the protein unknown; an unknown amino acid is
+                       # built from the CCD UNK (N CA C O CB CG)
+                       modified_restype='hf3', ccd_unk=True,
+                       mask_padded_atoms=True),
     'intellifold2': dict(qblock_keys=bool(__import__('os').environ.get('IF2_QBLOCK'))),
     # IntelliFold-2's atom key window edge is the atom count ROUNDED UP to a
     # whole query block, because it reshapes the flat atom axis into windows
@@ -1016,6 +1064,7 @@ _TRUNK_PASSES = {
     'esmfold2_lm600m': 20,
     'esmfold2_lm300m': 20,
     'bioemu2': 4,        # load_model num_steps_recycle=3; range(num_steps_recycle + 1)
+    'helixfold3': 10,    # config.py num_recycle 9; range(1 + num_recycle)
 }
 
 
@@ -1290,6 +1339,14 @@ MODEL_SPECS = {
                               weights_source='https://github.com/RosettaCommons/foundry'),
     'chai1': ModelSpec('chai1', weights_licence='the Apache License, Version 2.0',
                        weights_source='https://github.com/chaidiscovery/chai-lab'),
+    # its Fourier noise projection is the checkpoint's. NON-COMMERCIAL: code and
+    # weights carry the HelixFold3 terms (CC BY-NC-SA 4.0 style, with a ban on
+    # unauthorised automated screening/design systems).
+    'helixfold3': ModelSpec('helixfold3', trained_fourier=True,
+                            weights_licence='the HelixFold3 non-commercial licence '
+                                            '(Attribution-NonCommercial-ShareAlike)',
+                            weights_source='https://github.com/PaddlePaddle/PaddleHelix/'
+                                           'tree/dev/apps/protein_folding/helixfold3'),
     # its Fourier noise projection is the checkpoint's (a frozen draw, saved)
     'bioemu2': ModelSpec('bioemu2', trained_fourier=True, weights_licence='the MIT License',
                          weights_source='https://huggingface.co/microsoft/bioemu2'),
@@ -1316,6 +1373,7 @@ ALIASES = {
     'rf3': 'rosettafold3',
     'chai': 'chai1',
     'bioemu': 'bioemu2',
+    'hf3': 'helixfold3', 'helixfold': 'helixfold3',
     # OpenBind's own release is called "OpenBind 0"
     # (openbind.uk/news/blog-openbind-0-advancing-open-molecular-structure-prediction),
     # so the model key carries the version and leaves room for the next one.

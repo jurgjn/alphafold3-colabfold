@@ -71,6 +71,11 @@ MODELS = (
     # (pipeline/bioemu2_features.py) and shares only the sampler and the
     # output path. None of the per-model tuples in this file apply to it.
     'bioemu2',
+    # HelixFold3 (Baidu PaddleHelix, 2025-07-14 weights): an AF3 reproduction on
+    # this graph. Protenix-like trunk with biased triangle and OPM projections,
+    # stock-AF3 diffusion with sequence-index RoPE, and a confidence head that
+    # re-encodes the predicted atoms -- see the HELIXFOLD3_* tuples below.
+    'helixfold3',
 )
 
 # AlphaFold 2, which is NOT in MODELS above and must not be: every name there is
@@ -150,7 +155,7 @@ PER_ATOM_HEADS_BY_RANK = ('rosettafold3', 'intellifold2', 'openfold3', 'openbind
 # residue to its chain neighbours -- IntelliFold's featuriser fills both
 # directions of every recorded bond (66 entries on ATP where we had 33) and
 # adds no polymer links (SYMMETRIC_TOKEN_BONDS adds both).
-SYMMETRIC_UNLINKED_TOKEN_BONDS = ('intellifold2',)
+SYMMETRIC_UNLINKED_TOKEN_BONDS = ('intellifold2', 'helixfold3')
 # ...and the LayerNorms they do not have. boltz2 has none before ANY head;
 # ESMFold2's experimental line keeps plddt_ln but not pae_ln, so this is keyed
 # by head, not by model.
@@ -196,19 +201,19 @@ NO_CONFIDENCE_HEAD = ()
 AFFINE_LAYER_NORMS = {
     # diffusion conditioning
     'z_trunk_norm': ('boltz2', 'rosettafold3'),
-    'pair_cond_initial_norm': (('boltz2', 'rosettafold3', 'chai1')
+    'pair_cond_initial_norm': (('boltz2', 'rosettafold3', 'chai1', 'helixfold3')
                                + ESMFOLD2_FAMILY),
-    'single_cond_initial_norm': (('boltz2', 'rosettafold3', 'chai1')
+    'single_cond_initial_norm': (('boltz2', 'rosettafold3', 'chai1', 'helixfold3')
                                  + ESMFOLD2_FAMILY),
-    'noise_embedding_initial_norm': (('boltz2', 'rosettafold3', 'chai1')
+    'noise_embedding_initial_norm': (('boltz2', 'rosettafold3', 'chai1', 'helixfold3')
                                      + ESMFOLD2_FAMILY),
     # the diffusion head's own re-embedding and output
-    'single_cond_embedding_norm': ('boltz2', 'rosettafold3') + ESMFOLD2_FAMILY,
-    'output_norm': ('boltz2', 'rosettafold3', 'chai1') + ESMFOLD2_FAMILY,
+    'single_cond_embedding_norm': ('boltz2', 'rosettafold3', 'helixfold3') + ESMFOLD2_FAMILY,
+    'output_norm': ('boltz2', 'rosettafold3', 'chai1', 'helixfold3') + ESMFOLD2_FAMILY,
     # atom cross-attention (the names are suffixes: `<name>_lnorm_...`)
-    'lnorm_trunk_single_cond': ('boltz2', 'chai1', 'rosettafold3'),
-    'lnorm_trunk_pair_cond': ('boltz2', 'chai1', 'rosettafold3'),
-    'atom_features_layer_norm': (('boltz2', 'chai1', 'rosettafold3')
+    'lnorm_trunk_single_cond': ('boltz2', 'chai1', 'rosettafold3', 'helixfold3'),
+    'lnorm_trunk_pair_cond': ('boltz2', 'chai1', 'rosettafold3', 'helixfold3'),
+    'atom_features_layer_norm': (('boltz2', 'chai1', 'rosettafold3', 'helixfold3')
                                  + ESMFOLD2_FAMILY),
     # the diffusion transformer's shared pair bias norm (both call sites)
     'pair_input_layer_norm': ('chai1',),
@@ -346,7 +351,7 @@ PROTENIX_FAMILY = ('protenix1', 'protenix2')
 #   intellifold2   applies asinh INSIDE the module, so arcsinh here is right.
 #   protenix/of3/opendde  AF3's convention, and their charge arms are exact
 #                  (3.79e-06 / 2.02e-06), which is what says so.
-RAW_REF_CHARGE = ('chai1', 'boltz2', 'rosettafold3') + ESMFOLD2_FAMILY
+RAW_REF_CHARGE = ('chai1', 'boltz2', 'rosettafold3', 'helixfold3') + ESMFOLD2_FAMILY
 
 
 # Whose PDE head reads the pair AS IT IS -- no symmetrisation anywhere.
@@ -560,7 +565,7 @@ PER_BLOCK_PAIR_LAYER_NORM = (
 # DUPLICATED), which is why the registry test that caught boltz2 did not fire
 # here. The mask convention is independent of the window policy.
 KEY_MASKED_ATOM_ATTENTION = (
-    ('rosettafold3', 'opendde', 'boltz2', 'intellifold2') + PROTENIX_FAMILY)
+    ('rosettafold3', 'opendde', 'boltz2', 'intellifold2', 'helixfold3') + PROTENIX_FAMILY)
 
 
 # Models that recycle through a linear STATE-SPACE step instead of an addition.
@@ -832,7 +837,7 @@ NO_MSA_ROW_UPDATE = ()
 # error at load (267 vs 256) rather than a silent one -- which is why this list
 # was the third and last of the protenix_mini omissions to surface (mini itself
 # is gone, the lesson is not).
-DIFFUSION_PROJECTED_RELPOS = (('boltz2', 'rosettafold3') + ESMFOLD2_FAMILY
+DIFFUSION_PROJECTED_RELPOS = (('boltz2', 'rosettafold3', 'helixfold3') + ESMFOLD2_FAMILY
                               + PROTENIX_FAMILY)
 
 
@@ -843,7 +848,7 @@ DIFFUSION_PROJECTED_RELPOS = (('boltz2', 'rosettafold3') + ESMFOLD2_FAMILY
 # release (v0.5.0) computes this bias the OTHER way round. Both facts are
 # measured, against each release's own source tree -- see the note at modules.py,
 # where the derivation and the oracle bug that hid it for four days live.
-TRANSPOSED_COLUMN_PAIR_BIAS = ('openfold3', 'opendde', 'boltz2') + PROTENIX_FAMILY
+TRANSPOSED_COLUMN_PAIR_BIAS = ('openfold3', 'opendde', 'boltz2', 'helixfold3') + PROTENIX_FAMILY
 
 
 # Models whose template embedder averages over ALL template SLOTS, including the
@@ -872,7 +877,7 @@ TRANSPOSED_COLUMN_PAIR_BIAS = ('openfold3', 'opendde', 'boltz2') + PROTENIX_FAMI
 # openfold3, 9.53 for intellifold2 and 17.32 for protenix1 -- none of them zero,
 # so the claim in TemplateEmbedding's own comment that "the empty slots
 # contribute exactly zero" is wrong for every one of them.
-TEMPLATE_MEAN_OVER_ALL_SLOTS = PROTENIX_FAMILY
+TEMPLATE_MEAN_OVER_ALL_SLOTS = PROTENIX_FAMILY + ('helixfold3',)
 
 
 # Models whose TEMPLATE stack adds an OUTER residual around the whole pairformer
@@ -905,7 +910,9 @@ TEMPLATE_MEAN_OVER_ALL_SLOTS = PROTENIX_FAMILY
 # forward and got the wrong convention; rf3 escaped by not inheriting it. Either
 # a per-vendor convention is named -- as it now is here -- or the next subclass
 # gets whichever behaviour its parent happened to have.
-TEMPLATE_STACK_OUTER_RESIDUAL = ('boltz2',)
+# helixfold3 too: `v_t += residual` where residual is the stack's OUTPUT and
+# paddle's `+=` rebinds rather than mutating, so it is v + stack(v).
+TEMPLATE_STACK_OUTER_RESIDUAL = ('boltz2', 'helixfold3')
 
 # Models whose template FEATURE projection is one fused Linear WITH A BIAS.
 #
@@ -982,7 +989,7 @@ PER_BLOCK_ATOM_PAIR_LAYER_NORM = ('opendde', 'rosettafold3') + PROTENIX_FAMILY
 #
 # Reading the tensor name alone would have got two of the four wrong. The halving
 # lives in the converters, as a weight transform, so there is no forward branch.
-DISTOGRAM_BIAS = (('opendde', 'rosettafold3', 'boltz2') + ESMFOLD2_FAMILY
+DISTOGRAM_BIAS = (('opendde', 'rosettafold3', 'boltz2', 'helixfold3') + ESMFOLD2_FAMILY
                   + PROTENIX_FAMILY)
 
 
@@ -1005,7 +1012,7 @@ DISTOGRAM_BIAS = (('opendde', 'rosettafold3', 'boltz2') + ESMFOLD2_FAMILY
 # Found by dev/oracles/confidence_parity.py: pde read corr 0.87 while pae/plddt/
 # resolved were at parity, on protenix2. No fold caught it -- a symmetric,
 # plausibly-scaled error metric stays symmetric and plausible.
-PRE_SYMMETRISED_PDE = PROTENIX_FAMILY
+PRE_SYMMETRISED_PDE = PROTENIX_FAMILY + ('helixfold3',)
 
 
 # Models whose diffusion SINGLE conditioning normalises over the vendor's 833
@@ -1033,8 +1040,65 @@ PRE_SYMMETRISED_PDE = PROTENIX_FAMILY
 # conditioner. Its layout puts `a` LAST ([restype 31 | profile 31 | del 1 |
 # a 384]), but the pad goes in at the same two offsets, so the graph branch
 # needed no change.
-PADDED_SINGLE_COND = (('openfold3', 'openbind0', 'rosettafold3', 'opendde')
+PADDED_SINGLE_COND = (('openfold3', 'openbind0', 'rosettafold3', 'opendde', 'helixfold3')
                       + PROTENIX_FAMILY)
+
+
+# HelixFold3's trunk Linears that AF3 builds bias-free and it does not. Its
+# triangle multiplication has six biased Linears (left/right projection and
+# gate, output projection, gating), its triangle attention a gate and output
+# bias, and its outer product mean left/right biases (helixfold/model/
+# modules.py). rosettafold3 shares the last two.
+TRIMUL_BIAS = ('helixfold3',)
+TRI_ATT_BIAS = ('rosettafold3', 'helixfold3')
+OPM_LR_BIAS = ('rosettafold3', 'helixfold3')
+
+# Whose relative-POSITION one-hot is gated on the same RESIDUE INDEX rather than
+# the same chain. HelixFold3's RelativePositionEncoding (diffusion.py:1007) keys
+# `rel_pos` on `same_residue` -- residue indices equal, in ANY chain -- so every
+# other pair falls in the pad bucket (65) and only the equal-index one reads 32;
+# its checkpoint agrees, training only rows 32 and 65 of that block. Both the
+# trunk and the diffusion encodings use the class.
+RELPOS_SAME_RESIDUE_INDEX = ('helixfold3',)
+
+# Whose atom-pair embedding takes the inverse squared offset PER AXIS
+# (1/(1 + d_x^2), 1/(1 + d_y^2), 1/(1 + d_z^2) through a (3, 16) Linear) instead
+# of AF3's one 1/(1 + |d|^2) through (1, 16). HelixFold3 (diffusion.py:783)
+# applies the elementwise op to the 3-vector.
+PER_AXIS_INV_SQ_DIST = ('helixfold3',)
+
+# Whose diffusion transformers rotate q and k by a ROTARY embedding over the
+# token index (token transformer) and over each atom's slot in its query block
+# and key window (atom encoder/decoder): interleaved pairs, base 10000, no
+# RMSNorm (helixfold/model/rotary.py, enabled by the released `allatom_demo`
+# config). The converter permutes q/k columns so our half-split rotation is the
+# same function.
+SEQ_INDEX_ROPE = ('helixfold3',)
+
+# Whose template pairformer is masked by SAME CHAIN rather than by padding only
+# (HelixFold3: `({'pair': multichain_mask},)`, modules_all_atom.py:441).
+TEMPLATE_STACK_MULTICHAIN_MASK = ('helixfold3',)
+
+# Whose trunk ADDS the MSA module's output to the pair that entered it:
+# HelixFold3's `pair_act += self.msa_module(batch, pair_act, ...)` where the
+# module returns the FULL updated pair (its blocks are residual) and paddle's
+# `+=` rebinds rather than mutating, so the pair leaves as z + msa_stack(z) --
+# the template stack's quirk (TEMPLATE_STACK_OUTER_RESIDUAL) one module later.
+MSA_STACK_OUTER_RESIDUAL = ('helixfold3',)
+
+# Whose TRIANGLE attention rounds its pair bias to bfloat16 before adding it to
+# float32 logits, whatever the run's precision: HelixFold3's Attention does
+# `logits += nonbatched_bias.cast("bfloat16")` (helixfold/model/modules.py),
+# so the trained model always saw a bf16-rounded triangle bias. Without it the
+# starting-node attention reads corr 0.999998 against stock on one block.
+BF16_TRI_ATT_PAIR_BIAS = ('helixfold3',)
+
+# Whose target_feat carries HelixFold3's DNA unknown as two extra trailing
+# columns (model.hf3_dn_columns): 449 wide, not 447.
+HF3_DN_CLASS = ('helixfold3',)
+
+# gamma_0 forced to 0 above this many tokens (HelixFold3 diffusion.py:241).
+SAMPLER_GAMMA_TOKEN_CUTOFF = {'helixfold3': 1400}
 
 
 class GlobalConfig(base_config.BaseConfig):

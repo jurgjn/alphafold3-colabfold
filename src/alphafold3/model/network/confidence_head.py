@@ -28,6 +28,7 @@ from alphafold3.model.atom_layout import atom_layout
 from alphafold3.constants import atom_types
 from alphafold3.model.components import haiku_modules as hm
 from alphafold3.model.components import utils
+from . import atom_cross_attention
 from . import modules
 from . import template_modules
 import haiku as hk
@@ -38,6 +39,11 @@ import jax.numpy as jnp
 def _safe_norm(x, keepdims, axis, eps=1e-8):
   return jnp.sqrt(eps + jnp.sum(jnp.square(x), axis=axis, keepdims=keepdims))
 
+
+
+# The parity harness's draw for helixfold3's confidence augmentation: (R (3, 3),
+# t (3,)) applied as x @ R + t, as stock's CentreRandomAugmentation; None in a run.
+HF3_CONF_AUGMENT = None
 
 class ConfidenceHead(hk.Module):
   """Head to predict the distance errors in a prediction."""
@@ -245,6 +251,70 @@ class ConfidenceHead(hk.Module):
     z += hm.Linear(c, name='distogram_feat_project')(dgram * pair_mask[..., None])
     return z, single_act
 
+  @hk.transparent
+  def _helixfold3_embed(self, dense_atom_positions, pair_act, single_act,
+                        target_feat, batch):
+    """HelixFold3's re-embedding of a predicted structure (ConfidenceHead,
+    helixfold/model/modules_all_atom.py).
+
+    The predicted atoms are centred, randomly rotated and translated
+    (CentreRandomAugmentation), scaled by 1/sigma_data and run through an atom
+    encoder conditioned on the trunk single and RAW trunk pair, so -- unlike
+    AF3's distance features -- the result depends on the rotation drawn. Then
+      z += left(LN([a_conf, s_inputs]))_i + right(...)_j      (biased Linears)
+      z += Linear(one_hot(#{v in 0, .5, ..., 21.5 : d_ij > v}, 45))
+    with d over each token's CENTRE atom (CA, C1', or the atom of an atom
+    token), unmasked. Returns the pair and the encoder output, whose skips the
+    pLDDT/resolved decoder reads.
+    """
+    dtype = pair_act.dtype
+    c = pair_act.shape[-1]
+    mask = batch.predicted_structure_info.atom_mask.astype(jnp.float32)   # (N, A)
+    x = dense_atom_positions.astype(jnp.float32)
+    centre = (x * mask[..., None]).sum((0, 1)) / (mask.sum() + 1e-6)
+    x = x - centre
+    if HF3_CONF_AUGMENT is not None:
+      rot = jnp.asarray(HF3_CONF_AUGMENT[0], jnp.float32)
+      trans = jnp.asarray(HF3_CONF_AUGMENT[1], jnp.float32).reshape(3)
+    else:
+      from . import diffusion_head
+      key = hk.maybe_next_rng_key()
+      key = jax.random.PRNGKey(0) if key is None else key
+      k_rot, k_trans = jax.random.split(key)
+      rot = diffusion_head.random_rotation(k_rot)
+      trans = jax.random.normal(k_trans, (3,))
+    x = (jnp.einsum('nad,de->nae', x, rot) + trans) * mask[..., None]
+
+    enc = atom_cross_attention.atom_cross_att_encoder(
+        token_atoms_act=x / 16.0,
+        trunk_single_cond=single_act,
+        trunk_pair_cond=pair_act,
+        config=atom_cross_attention.AtomCrossAttEncoderConfig(
+            per_token_channels=single_act.shape[-1]),
+        global_config=self.global_config,
+        batch=batch,
+        name='confidence',
+    )
+    # LayerNorm over the vendor's 833 channels: ours [a 384 | target_feat 447]
+    # then its two unknown-DNA columns (converters/helixfold3.py)
+    # target_feat is [447 | restype DN, profile DN] (model.hf3_dn_columns)
+    feat = jnp.concatenate([enc.token_act.astype(dtype), target_feat.astype(dtype)], -1)
+    feat = hm.LayerNorm(name='hf3_single_norm', use_fast_variance=False)(feat)
+    z = pair_act + hm.Linear(c, use_bias=True, name='right_target_feat_project')(feat)[:, None]
+    z = z + hm.Linear(c, use_bias=True, name='left_target_feat_project')(feat)[None]
+
+    names = batch.ref_structure.atom_name_chars                         # (N, A, 4)
+    is_ca = jnp.all(names == jnp.asarray([35, 33, 0, 0]), -1)
+    is_c1 = jnp.all(names == jnp.asarray([35, 17, 7, 0]), -1)
+    hit = is_ca | is_c1
+    slot = jnp.where(hit.any(-1), jnp.argmax(hit, -1), 0)
+    rep_pos = jnp.take_along_axis(x, slot[:, None, None], axis=1)[:, 0]   # (N, 3)
+    d = jnp.sqrt(jnp.sum((rep_pos[:, None] - rep_pos[None]) ** 2, -1) + 1e-8)
+    bins = jnp.arange(44, dtype=jnp.float32) * 0.5
+    dgram = jax.nn.one_hot((d[..., None] > bins).sum(-1), 45)
+    z = z + hm.Linear(c, use_bias=True, name='distogram_feat_project')(dgram.astype(dtype))
+    return z.astype(dtype), enc
+
   def _embed_features(
       self,
       dense_atom_positions,
@@ -332,6 +402,7 @@ class ConfidenceHead(hk.Module):
       atom_name_chars: jnp.ndarray | None = None,
       use_dropout=False,
       return_logits=False,
+      batch=None,
   ) -> dict[str, jnp.ndarray]:
     """Builds ConfidenceHead module.
 
@@ -397,7 +468,12 @@ class ConfidenceHead(hk.Module):
       num_residues = seq_mask.shape[0]
       num_pair_channels = pair_act.shape[2]
 
-      if self.global_config.model in model_config.REEMBED_CONFIDENCE_PAIR:
+      hf3 = self.global_config.model == 'helixfold3'
+      hf3_enc = None
+      if hf3:
+        pair_act, hf3_enc = self._helixfold3_embed(
+            dense_atom_positions, pair_act, single_act, target_feat, batch)
+      elif self.global_config.model in model_config.REEMBED_CONFIDENCE_PAIR:
         positions = atom_layout.convert(
             token_atoms_to_pseudo_beta, dense_atom_positions, layout_axes=(-3, -2))
         pair_act, single_act = self._boltz2_reembed(
@@ -504,6 +580,7 @@ class ConfidenceHead(hk.Module):
         # inside the LayerNorm rather than outside the projection.
         distance_logits = hm.Linear(
             self.config.num_bins,
+            use_bias=hf3,
             initializer=self.global_config.final_init,
             name='left_half_distance_logits',
         )(self._head_norm('logits_ln',
@@ -557,6 +634,7 @@ class ConfidenceHead(hk.Module):
       else:
         pae_logits = hm.Linear(
             self.config.pae.num_bins,
+            use_bias=hf3,
             initializer=self.global_config.final_init,
             name='pae_logits',
         )(self._head_norm('pae_logits_ln', pair_act))
@@ -608,7 +686,16 @@ class ConfidenceHead(hk.Module):
     # builds them there and broadcasts slot 0, which every slot equals
     _n_w = 24 if self.global_config.model == 'boltz2' else _n_atom
     _widen = lambda x: x if _n_w == _n_atom else jnp.broadcast_to(x[:, :1], (x.shape[0], _n_atom) + x.shape[2:])
-    if self.global_config.model == 'chai1' and atom_name_chars is not None:
+    if hf3:
+      # helixfold3 predicts pLDDT and resolved PER ATOM, off its own atom
+      # decoder over LN(single) and the confidence encoder's skips
+      atom_feat = atom_cross_attention.atom_cross_att_decoder(
+          hm.LayerNorm(name='hf3_single_ln', use_fast_variance=False)(single_act),
+          hf3_enc, atom_cross_attention.AtomCrossAttDecoderConfig(),
+          self.global_config, batch, name='confidence', return_features=True)
+      plddt_logits = hm.Linear(self.config.num_plddt_bins, use_bias=True,
+                               name='hf3_plddt_logits')(atom_feat)
+    elif self.global_config.model == 'chai1' and atom_name_chars is not None:
       # chai predicts pLDDT over 37 slots and gathers per atom by the atom's index
       # in ITS table -- not by our dense slot (CB is slot 3 there and dense slot 4;
       # TRP's NE1 is 24), so the permutation is residue-type dependent and cannot
@@ -672,6 +759,9 @@ class ConfidenceHead(hk.Module):
     experimentally_resolved_logits = None
     if self.global_config.model in model_config.NO_RESOLVED_HEAD:
       pass          # no such head here; nothing to build
+    elif hf3:
+      experimentally_resolved_logits = hm.Linear(
+          2, use_bias=True, name='hf3_resolved_logits')(atom_feat)
     else:
       experimentally_resolved_logits = _widen(hm.Linear(
           (_n_w, 2),

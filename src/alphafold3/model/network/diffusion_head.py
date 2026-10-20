@@ -250,6 +250,9 @@ class DiffusionHead(hk.Module):
           chain_bucket_on_same_chain=(
               self.global_config.model
               in model_config.CHAIN_BUCKET_ON_SAME_CHAIN_DIFFUSION),
+          rel_pos_same_residue=(
+              self.global_config.model
+              in model_config.RELPOS_SAME_RESIDUE_INDEX),
       ).astype(pair_embedding.dtype)
       pc = self.config.conditioning.pair_channel
       if self.global_config.model == 'opendde':
@@ -338,6 +341,12 @@ class DiffusionHead(hk.Module):
       # weight converter emits its rows in this same order.
       num_af3_restypes = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP
       pad = jnp.zeros_like(features_1d[..., :1])
+      pad_profile = pad
+      if self.global_config.model in model_config.HF3_DN_CLASS:
+        # helixfold3's target_feat carries those two columns itself, at its end
+        # (model.hf3_dn_columns): they fill the pads instead of zeros
+        pad, pad_profile = features_1d[..., -2:-1], features_1d[..., -1:]
+        features_1d = features_1d[..., :-2]
       single_channels = single_embedding.shape[-1]
       aatype_end = single_channels + num_af3_restypes
       profile_end = aatype_end + num_af3_restypes
@@ -346,7 +355,7 @@ class DiffusionHead(hk.Module):
               features_1d[..., :aatype_end],
               pad,  # OF3 aatype UNK_DNA
               features_1d[..., aatype_end:profile_end],
-              pad,  # OF3 profile UNK_DNA
+              pad_profile,  # OF3 profile UNK_DNA
               features_1d[..., profile_end:],
           ],
           axis=-1,
@@ -671,7 +680,22 @@ def _kabsch(mob, ref, w):
   return ((mob - mc).reshape(-1, 3) @ rot).reshape(mob.shape) + rc
 
 
-def make_denoising_body(denoising_step, mask, config, global_config, chai):
+def gamma_scale_for(batch, global_config):
+  """0 where the model samples without churn at this size, else 1 (or None).
+
+  helixfold3 forces gamma_0 to 0 above 1400 real tokens
+  (model_config.SAMPLER_GAMMA_TOKEN_CUTOFF).
+  """
+  cutoff = (None if global_config is None
+            else model_config.SAMPLER_GAMMA_TOKEN_CUTOFF.get(global_config.model))
+  if cutoff is None:
+    return None
+  num_tokens = jnp.sum(batch.token_features.mask)
+  return jnp.where(num_tokens > cutoff, 0.0, 1.0)
+
+
+def make_denoising_body(denoising_step, mask, config, global_config, chai,
+                        gamma_scale=None):
   """The per-step body, shared by the scanned path and a Python-driven one.
 
   Lifted out of `sample` so a live animation runs the SAME step a normal
@@ -734,6 +758,8 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai):
           min(CHAI_S_CHURN / config.steps, 2.0 ** 0.5 - 1.0), 0.0)
     else:
       gamma = config.gamma_0 * (noise_level > config.gamma_min)
+      if gamma_scale is not None:   # model_config.SAMPLER_GAMMA_TOKEN_CUTOFF
+        gamma = gamma * gamma_scale
     t_hat = noise_level_prev * (1 + gamma)
 
     # Guard against -0.0 (IEEE negative zero) when gamma=0: t_hat ==
@@ -889,7 +915,8 @@ def sample(
   chai = global_config is not None and global_config.model == 'chai1'
 
   apply_denoising_step = make_denoising_body(
-      denoising_step, mask, config, global_config, chai)
+      denoising_step, mask, config, global_config, chai,
+      gamma_scale=gamma_scale_for(batch, global_config))
 
   num_samples = config.num_samples
   noise_levels = noise_schedule_for(config, chai)

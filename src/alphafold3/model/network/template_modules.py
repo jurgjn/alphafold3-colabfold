@@ -580,6 +580,9 @@ class Boltz2TemplateEmbedding(hk.Module):
     z_part = hm.Linear(c.num_channels, use_bias=False, name='z_proj')(
         hm.LayerNorm(name='z_norm', use_fast_variance=False)(z))       # (N,N,64)
     pair_mask = padding_mask_2d
+    if gc.model in model_config.TEMPLATE_STACK_MULTICHAIN_MASK:
+      # helixfold3 masks its template pairformer by same-chain
+      pair_mask = padding_mask_2d * multichain_mask_2d
 
     def per_template(aa, pos, am, vis):
       a_tij = self._features(aa, pos, am, vis).astype(dtype)
@@ -727,6 +730,57 @@ class Protenix2TemplateEmbedding(Boltz2TemplateEmbedding):
     # (2026-09-08). The docstring above lists them i,j in NATIVE's naming --
     # the tensors are named for which index they vary along.
     return jnp.concatenate([disto, pb_ch, rt_j, rt_i, uvec, bb_ch], -1)  # (N,N,108)
+
+
+class HelixFold3TemplateEmbedding(Protenix2TemplateEmbedding):
+  """HelixFold3's TemplateEmbedder (helixfold/model/modules_all_atom.py): the fused
+  forward protenix shares, on HelixFold3's own 108-d features in its own order:
+    [dgram(39), frame_mask_2d(1), unit_vector(3), pb_mask_2d(1),
+     restype "i"(32, varies along j), restype "j"(32, varies along i)]
+  with everything before the restypes masked by same-chain only -- the distogram
+  is NOT masked by the pseudo-beta mask, so an absent residue bins its distance
+  to the origin -- and the unit vector AF2's template feature
+  (pipeline_aa_utils.make_template_further_feature): residue i's frame with C on
+  the x axis and N in the xy plane, R_i^T (CA_j - CA_i) / sqrt(1e-6 + |.|^2),
+  times both frame masks. Template residue types are protein-only, where its
+  32-class alphabet agrees with ours index for index.
+  """
+
+  def _features(self, aatype, atom_positions, atom_mask, asym_mask_2d):
+    N = aatype.shape[0]
+    # an UNK template residue (a modified one, template_policy unk_restype) carries its N, CA,
+    # C and CB in the slots every standard residue shares: read its geometry through ALA's
+    geo = jnp.where(aatype == 20, 0, aatype)
+    cb, cb_mask = scoring.pseudo_beta_fn(geo, atom_positions, atom_mask, use_jax=True)
+    grp = jnp.take(protein_data_processing.RESTYPE_RIGIDGROUP_DENSE_ATOM_IDX,
+                   geo, axis=0).astype(jnp.int32)
+    bb = grp[:, 0]                                                    # [C, CA, N]
+    take = jax.vmap(lambda x, i: x[i])
+    c_at = take(atom_positions, bb[:, 0]); ca = take(atom_positions, bb[:, 1])
+    n_at = take(atom_positions, bb[:, 2])
+    frame_mask = (take(atom_mask, bb[:, 0]) * take(atom_mask, bb[:, 1])
+                  * take(atom_mask, bb[:, 2])).astype(jnp.float32)    # (N,)
+    v1 = c_at - ca; v2 = n_at - ca
+    e1 = v1 / jnp.sqrt(jnp.sum(v1 * v1, -1, keepdims=True) + 1e-20)
+    u2 = v2 - e1 * jnp.sum(e1 * v2, axis=-1, keepdims=True)
+    e2 = u2 / jnp.sqrt(jnp.sum(u2 * u2, -1, keepdims=True) + 1e-20)
+    e3 = jnp.cross(e1, e2)
+    rot = jnp.stack([e1, e2, e3], axis=-1)                           # (N,3,3), cols [e1,e2,e3]
+    diff = ca[None, :, :] - ca[:, None, :]                           # (N,N,3): ca_j - ca_i
+    vec = jnp.einsum('ilk,ijl->ijk', rot, diff)                      # R_i^T @ (ca_j - ca_i)
+    fr2d = frame_mask[:, None] * frame_mask[None]
+    uvec = vec / jnp.sqrt(1e-6 + jnp.sum(vec * vec, -1, keepdims=True)) * fr2d[..., None]
+    cb_d2 = jnp.sum((cb[:, None] - cb[None]) ** 2, -1)[..., None]
+    lower = jnp.square(jnp.linspace(3.25, 50.75, 39))
+    upper = jnp.concatenate([lower[1:], jnp.asarray([1e8], lower.dtype)])
+    disto = ((cb_d2 > lower) & (cb_d2 < upper)).astype(jnp.float32)   # (N,N,39)
+    pb2d = cb_mask[:, None] * cb_mask[None]
+    act = jnp.concatenate([disto, fr2d[..., None], uvec, pb2d[..., None]], -1)
+    act = act * asym_mask_2d[..., None]
+    rt = jax.nn.one_hot(aatype, 32)                                  # (N,32)
+    rt_varies_j = jnp.broadcast_to(rt[None, :, :], (N, N, 32))
+    rt_varies_i = jnp.broadcast_to(rt[:, None, :], (N, N, 32))
+    return jnp.concatenate([act, rt_varies_j, rt_varies_i], -1)      # (N,N,108)
 
 
 class RoseTTAFold3TemplateEmbedding(Boltz2TemplateEmbedding):

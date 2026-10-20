@@ -97,6 +97,10 @@ VENDORS = {
     # BioEmu2 @7846769: ~/bioemu2 installed into ~/venv_bioemu2 by its own lock
     # (`uv sync --frozen --extra cuda`), checkpoint ~/bioemu2_ckpt.
     'bioemu2': (_H + '/venv_bioemu2/bin/python', None, 'bioemu2_upstream_runner.py'),
+    # HelixFold3 (PaddleHelix @8e3991a, apps/protein_folding/helixfold3) in
+    # ~/venv_helixfold3 (python 3.10, paddlepaddle-gpu 3.1.0 cu126 + its
+    # requirements.txt); the runner puts the app on its own path.
+    'helixfold3': (_H + '/venv_helixfold3/bin/python', None, 'helixfold3_upstream_runner.py'),
 }
 
 
@@ -161,6 +165,11 @@ def _s_inputs_to_ours(model, x):
     # row reads as a disagreement.
     if model == 'rosettafold3':
       from converters.rosettafold3 import _AF3_TO_RF3_AATYPE as remap
+    if model == 'helixfold3':
+      # its DN rides two trailing columns of ours (model.hf3_dn_columns)
+      from converters.helixfold3 import AF3_TO_HF3 as remap, HF3_UNK_DNA as dn
+      return x[..., np.concatenate([384 + remap, 416 + remap, [448], np.arange(384),
+                                    [384 + dn, 416 + dn]])]
     idx = np.concatenate([384 + np.asarray(remap), 416 + np.asarray(remap),
                           [448], np.arange(384)])
     return x[..., idx]
@@ -375,6 +384,9 @@ def forward_ours(batch, cfg, model_dir, pos, pos_noisy, sigma, real_sampler=Fals
   from alphafold3.model import model as af3_model
   from alphafold3.model import params as afp
   from alphafold3.model import model_config
+  if os.environ.get('HF3_NO_BF16_BIAS'):
+    # diagnostic, paired with the runner's: no bf16 rounding of the triangle bias on either side
+    model_config.BF16_TRI_ATT_PAIR_BIAS = ()
   # ESMFold2's LM-pair dropout is a fresh random mask every pass at inference
   # (esm fold()'s lm_dropout 0.3); the vendor runner turns it off, so ours does
   model_config.LM_PAIR_DROPOUT = {m: 0.0 for m in model_config.LM_PAIR_DROPOUT}
@@ -534,7 +546,8 @@ def trajectory_case(model, name, j, recycles):
                x0 + 1e-4 * np.random.default_rng(7).normal(size=x0.shape).astype(np.float32),
                traj_rot=rot, traj_trans=trans, traj_eps=eps, recycling_steps=recycles, precision='fp32')
       if trunk:
-        os.environ['TRAJ_TRUNK_NUDGE'] = '1e-5'
+        # TRAJ_FLOOR_EPS sizes the nudge to match the trunk difference actually measured
+        os.environ['TRAJ_TRUNK_NUDGE'] = os.environ.get('TRAJ_FLOOR_EPS', '1e-5')
       try:
         _vendor(model, 'trajectory', bdir, fz, os.path.join(tmp, 'b_floor.npz'))
       finally:
@@ -596,14 +609,21 @@ def trajectory_case(model, name, j, recycles):
     u, _, vt = np.linalg.svd(f.T @ v)
     rot_f = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
     rows.append(('traj', 'vendor floor (%s) superposed rms %.4f A; rigid rotation %.3f deg'
-                 % ('trunk nudged 1e-5' if os.environ.get('TRAJ_FLOOR') == 'trunk' else 'x0 nudged 1e-4',
+                 % ('trunk nudged ' + os.environ.get('TRAJ_FLOOR_EPS', '1e-5') if os.environ.get('TRAJ_FLOOR') == 'trunk' else 'x0 nudged 1e-4',
                     np.sqrt((((f @ rot_f) - v) ** 2).sum(-1).mean()),
                     np.degrees(np.arccos(np.clip((np.trace(rot_f) - 1) / 2, -1, 1)))), 'INFO'))
     d_floor = np.abs(floor[ok] - fin_v).max()
     d_ours = np.abs(fin_o - fin_v).max()
     rows.append(('traj', 'vendor vs itself, %s: max |d| %.3f A; ours %.3f A (x%.2f)'
-                 % ('trunk nudged 1e-5' if os.environ.get('TRAJ_FLOOR') == 'trunk' else 'x0 nudged 1e-4',
+                 % ('trunk nudged ' + os.environ.get('TRAJ_FLOOR_EPS', '1e-5') if os.environ.get('TRAJ_FLOOR') == 'trunk' else 'x0 nudged 1e-4',
                     d_floor, d_ours, d_ours / max(d_floor, 1e-6)), 'INFO'))
+    # graded against that floor: a final structure no further from the vendor's than the vendor's
+    # own nudged run (raw max |d| and superposed rms both) is its sensitivity, not a port difference
+    sup_o = np.sqrt((((a @ rot_k) - v) ** 2).sum(-1).mean())
+    sup_f = np.sqrt((((f @ rot_f) - v) ** 2).sum(-1).mean())
+    if d_ours <= d_floor and sup_o <= sup_f:
+      rows = [(st, m, 'FLOOR' if m.startswith('final coordinates') and g not in ('PARITY', 'CLOSE') else g)
+              for st, m, g in rows]
   if 'plddt' in b:
     pl_b = b['plddt'].reshape(-1)
     if pl_b.shape[0] == n_v:
@@ -1011,6 +1031,23 @@ def run_case(model, name, j, recycles, bf16, graded=False):
              precision='bf16' if bf16 != 'none' and not graded else 'fp32')
     _vendor(model, 'forward', bdir, inp, os.path.join(tmp, 'b.npz'))
     b = dict(np.load(os.path.join(tmp, 'b.npz')))
+    b_floor = None
+    if os.environ.get('CASE_FLOOR'):
+      # the vendor against ITSELF with its initial pair nudged by CASE_FLOOR (relative; runners
+      # that honour VENDOR_NUDGE): a row ours misses by no more than this is the vendor's own
+      # sensitivity -- helixfold3 rounds its triangle bias to bfloat16, so a float-level
+      # difference flips roundings and recycling amplifies them
+      # CASE_FLOOR_N nudges (different seeds): one draw of a chaotic spread is not its width
+      os.environ['VENDOR_NUDGE'] = os.environ['CASE_FLOOR']
+      b_floor = []
+      try:
+        for seed in range(int(os.environ.get('CASE_FLOOR_N', 3))):
+          os.environ['VENDOR_NUDGE_SEED'] = str(7 + seed)
+          _vendor(model, 'forward', bdir, inp, os.path.join(tmp, 'b_floor.npz'))
+          b_floor.append(dict(np.load(os.path.join(tmp, 'b_floor.npz'))))
+      finally:
+        os.environ.pop('VENDOR_NUDGE', None)
+        os.environ.pop('VENDOR_NUDGE_SEED', None)
     b_half = None
     if graded:
       # the vendor again at its STOCK precision: its own bf16 error against its
@@ -1035,6 +1072,11 @@ def run_case(model, name, j, recycles, bf16, graded=False):
         # the same draw may land on a different but identical row -- the indices are information
         rows.append(('rng', 'MSA rows pass %d: native %d, replay %d, in common %d'
                      % (i, len(v), len(o), len(v & o)), 'INFO' if len(v) == len(o) else 'BAD'))
+    if 'conf_aug_rot' in b:
+      # helixfold3's confidence head re-encodes a randomly rotated copy of the
+      # structure: hand ours the vendor's draw
+      from alphafold3.model.network import confidence_head as _ch
+      _ch.HF3_CONF_AUGMENT = (b['conf_aug_rot'], b['conf_aug_trans'])
     if 'pair_state0' in b:
       # the vendor's random initial pair state (ESMFold2), injected like ref_pos
       batch = dict(batch, **{'inject/pair_state0': jnp.asarray(_pad_pair(b['pair_state0'], batch))})
@@ -1111,6 +1153,10 @@ def run_case(model, name, j, recycles, bf16, graded=False):
   if os.environ.get('B2_KEEP'):
     np.savez(os.path.join(os.environ['B2_KEEP'], model, name, 'ours_out.npz'),
              **{k: np.asarray(v) for k, v in ours.items()})
+  floors = {}
+  for bf in (b_floor or []):
+    for label, f in zip(labels, vendor_side(bf)):
+      floors.setdefault(label, []).append(f)
   for label, a, r in pairs:
     if r is None:   # the stock vendor has no such output (chai: no distogram)
       rows.append(('model', '%s: not produced by the stock vendor' % label, 'INFO'))
@@ -1124,8 +1170,16 @@ def run_case(model, name, j, recycles, bf16, graded=False):
                                                           r.shape), 'BAD'))
       continue
     c, ratio = P.compare(a, r)
-    rows.append(('model', '%s corr %.6f max|d|/rms %.2e' % (label, c, ratio),
-                 P.grade(c, ratio)))
+    g = P.grade(c, ratio)
+    fs = [x for x in floors.get(label, []) if x is not None]
+    if fs:
+      cmps = [P.compare(np.asarray(x, np.float32), r) for x in fs]
+      cf, rf = min(c_ for c_, _ in cmps), max(r_ for _, r_ in cmps)
+      rows.append(('floor', '%s: vendor vs itself (pair nudged %s, %d draws) worst corr %.6f max|d|/rms %.2e'
+                   % (label, os.environ['CASE_FLOOR'], len(fs), cf, rf), 'INFO'))
+      if g not in ('PARITY', 'CLOSE') and c >= cf and ratio <= rf:
+        g = 'FLOOR'
+    rows.append(('model', '%s corr %.6f max|d|/rms %.2e' % (label, c, ratio), g))
   return rows
 
 
@@ -1175,7 +1229,7 @@ def main(argv):
       continue
     for stage, msg, g in rows:
       print('  %-6s %-7s %s' % (stage, g, msg))
-    bad = [r for r in rows if r[2] not in ('PARITY', 'CLOSE', 'INFO')]
+    bad = [r for r in rows if r[2] not in ('PARITY', 'CLOSE', 'INFO', 'FLOOR')]
     print('  %s: %s' % (n, 'PASS' if not bad else 'FAIL (%d rows)' % len(bad)),
           flush=True)
     if bad:

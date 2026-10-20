@@ -32,6 +32,7 @@ from alphafold3.common import base_config
 from alphafold3.model import confidences
 from alphafold3.model import feat_batch
 from alphafold3.model import features
+from alphafold3.constants import residue_names
 from alphafold3.model import model_config
 from alphafold3.model.atom_layout import atom_layout
 from alphafold3.model.components import mapping
@@ -369,8 +370,29 @@ def create_target_feat_embedding(
     target_feat = jnp.concatenate([target_feat, enc.token_act], axis=-1).astype(
         dtype
     )
+    if global_config.model in model_config.HF3_DN_CLASS:
+      target_feat = hf3_dn_columns(target_feat, batch.token_features.is_dna)
 
   return target_feat
+
+
+def hf3_dn_columns(target_feat, is_dna):
+  """[447 | restype DN, profile DN]: HelixFold3's DNA unknown (DN, its class 26).
+
+  Our nucleic unknown (30) is one class for RNA and DNA; HelixFold3 keeps them
+  apart, and types a DNA N and every token of a modified DNA residue DN. So on a
+  DNA token the class-30 entry of the restype and profile one-hots MOVES into
+  two trailing columns, which the converter maps to HelixFold3's DN rows -- and
+  which fill the two unknown-DNA columns its diffusion and confidence
+  LayerNorms normalise over (model_config.HF3_DN_CLASS).
+  """
+  n = residue_names.POLYMER_TYPES_NUM_WITH_UNKNOWN_AND_GAP
+  dna = is_dna.astype(target_feat.dtype)[:, None]
+  rest_dn = target_feat[:, n - 1:n] * dna
+  prof_dn = target_feat[:, 2 * n - 1:2 * n] * dna
+  target_feat = target_feat.at[:, n - 1:n].multiply(1 - dna)
+  target_feat = target_feat.at[:, 2 * n - 1:2 * n].multiply(1 - dna)
+  return jnp.concatenate([target_feat, rest_dn, prof_dn], axis=-1)
 
 
 def _structure_only_results(result, pred_structure, num_tokens, chain_ids,
@@ -744,7 +766,8 @@ class Model(hk.Module):
       body = diffusion_head.make_denoising_body(
           denoising_step, batch.predicted_structure_info.atom_mask,
           sample_config, self.global_config,
-          self.global_config.model == 'chai1')
+          self.global_config.model == 'chai1',
+          gamma_scale=diffusion_head.gamma_scale_for(batch, self.global_config))
       body = hk.vmap(body, in_axes=(0, None), split_rng=not hk.running_init())
       if jnp.ndim(noise_level[0]) == 0:
         carry, (positions, denoised) = body(carry, noise_level)
@@ -1450,6 +1473,8 @@ class Model(hk.Module):
               atom_name_chars=diff_batch.ref_structure.atom_name_chars,
               use_dropout=use_dropout,
               return_logits=self.config.return_confidence_logits,
+              # helixfold3 re-encodes the predicted atoms with an atom encoder
+              batch=diff_batch,
           ),
           in_axes=0,
       )(samples['atom_positions'])

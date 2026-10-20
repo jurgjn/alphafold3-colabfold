@@ -11,6 +11,7 @@ Every model this fork runs is checked against its **own vendor's stock code**, n
 - [Vendor bugs the harness patches](#vendor-bugs-the-harness-patches)
 - [Vendor conventions the port reproduces](#vendor-conventions-the-port-reproduces)
 - [BioEmu2](#bioemu2)
+- [HelixFold3](#helixfold3)
 - [AlphaFold 2](#alphafold-2)
 - [Module-level gates (L0 to L7)](#module-level-gates-l0-to-l7)
 - [Fold accuracy](#fold-accuracy)
@@ -89,6 +90,7 @@ The vendor versions are the ones installed for the harness. All runs used float3
 | `esmfold2_lm600m` | Synthyra FastPLMs | 20/20, 3 N/A | — | PARITY, 0.000 Å |
 | `esmfold2_lm300m` | Synthyra FastPLMs | 20/20, 3 N/A | — | PARITY, 0.000 Å |
 | `bioemu2` | BioEmu2 @7846769 | 20/20, 3 N/A | PASS | PARITY, 0.000 Å ([modes](#bioemu2)) |
+| `helixfold3` | PaddleHelix @8e3991a (paddle 3.1) | 20/20, 4 N/A, graded [against its own spread](#helixfold3); one multi_ligand row at the edge | — | PARITY, 0.000 Å; 8/8 within its own spread ([see](#helixfold3)) |
 | `af2_ptm`, `af2_multimer` | DeepMind alphafold (AF2) | [18 gates, all green](#alphafold-2) | | |
 
 The padded runs cover `protein`, `ligand_ccd` and `heterodimer`.
@@ -185,6 +187,35 @@ These are the places where a vendor deliberately differs from AlphaFold 3, and w
 - **IntelliFold-2:** uses the boltz-fork MSA build, with a per-chain profile over `msa_valid_depths`.
 - **protenix:** the seed applies MC dropout on the recycled pair. Replaying it needs torch's fused-dropout vector width: 4 for float32, 8 for bfloat16.
 - **Padded atoms:** every non-AF3 model masks padded atom queries.
+
+## HelixFold3
+
+HelixFold3 runs on PaddlePaddle, so its runner (`dev/oracles/helixfold3_upstream_runner.py`) drives stock `inference.py`'s own featuriser and model in `~/venv_helixfold3`, with TF32 off. Every array of its `s_inputs` equals ours on every case, and with one trunk pass every stage (input embedding, template embedder, MSA module) matches to 1e-5. Getting there meant reproducing these stock conventions:
+
+- **Doubled residuals.** Paddle's `+=` rebinds rather than mutating, so `pair_act += msa_module(...)` and the template's `v_t += stack(v_t)` add each module's *full* output back to its input: z + MSA(z) and v + Stack(v) (`MSA_STACK_OUTER_RESIDUAL`, `TEMPLATE_STACK_OUTER_RESIDUAL`).
+- **A bf16 triangle bias.** Stock's attention does `logits += nonbatched_bias.cast("bfloat16")` even in fp32, so the triangle-attention pair bias is always bf16-rounded (`BF16_TRI_ATT_PAIR_BIAS`).
+- **Biased trunk Linears** in the triangle multiplication, triangle attention and outer product mean; the relative-position block gated on an equal residue index; a per-axis inverse squared distance; sequence-index RoPE in the diffusion transformers.
+- **Featurisation:** chains in stock order; every CCD heavy atom kept (OXT, OP3, leaving atoms); blank atom names on atom tokens; the query row once and duplicate rows dropped; the profile over the merged MSA; a GAP profile and UNK ligand row; DN, its separate unknown-DNA class, carried as two extra `target_feat` columns; empty templates GAP-typed only in its no-MSA mode; AF2's template prefilter and parent residue letters.
+
+**Graded against stock's own spread.** Stock HelixFold3 is chaotic under recycling. Nudging its own initial pair by 1e-6 moves its trunk pair by up to max|d|/rms 3.3 after two passes, and that holds with the bf16 cast removed too (0.7). Its rows are therefore graded with `CASE_FLOOR=1e-6`: stock is rerun against itself with that nudge (8–16 draws), and a row that misses PARITY but is no further from stock than stock's own worst draw (both corr and max|d|/rms) reads FLOOR. Every stock self-difference is printed beside the row it grades.
+
+- At one trunk pass with the bf16 cast removed on both sides (`HF3_NO_BF16_BIAS`), the configuration with no rounding boundary in it, the cases read PARITY or CLOSE on s_inputs, trunk, PAE, PDE, the denoise step and pLDDT; deep_msa reads 1e-6 everywhere.
+- At stock's settings (two passes, the cast on), every case passes, the recycled rows reading FLOOR, with one row over the line: multi_ligand's trunk pair reads max|d|/rms 2.75 against stock's worst 2.47 over 16 draws at a 1e-6 nudge, and 2.64 over 8 at 5e-5, the size of our input-level difference. Its correlation (0.99964) is better than stock's worst at either nudge (0.99943, 0.99879), the maximum sits on two protein tokens (32-33) rather than on the ligand, and the same case with the cast removed passes well inside its floor. It is graded BAD and left so; it is the bf16 rounding landing on the other side of a tie in a chaotic stack.
+
+N/A: `covalent` and `glycan` (no bond input), `rna_mod` (stock's featuriser asserts on a modified RNA residue), `cyclic`.
+
+**Full trajectory**, graded on the sampler alone (one trunk pass, cast removed; `TRAJ_FLOOR=trunk TRAJ_FLOOR_EPS=1e-4` reruns stock with its trunk nudged by 1e-4, the size of our trunk difference). 200 steps and the sigma schedule match on every case:
+
+| case | final coordinates | max \|d\| | superposed | stock vs itself |
+|---|---|---|---|---|
+| protein | PARITY | 0.000 Å | 0.0000 Å | 0.002 Å |
+| msa | PARITY | 0.002 Å | 0.0003 Å | 0.004 Å |
+| heterodimer | PARITY | 0.001 Å | 0.0002 Å | 0.004 Å |
+| rna | PARITY | 0.000 Å | 0.0000 Å | 0.003 Å |
+| dna | PARITY | 0.000 Å | 0.0000 Å | 0.004 Å |
+| ptm | PARITY | 0.006 Å | 0.0005 Å | 0.003 Å |
+| ion | PARITY | 0.000 Å | 0.0001 Å | 0.005 Å |
+| ligand_ccd | FLOOR | 0.244 Å | 0.0254 Å | 0.754 Å (0.0754 Å superposed) |
 
 ## BioEmu2
 

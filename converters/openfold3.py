@@ -152,7 +152,8 @@ def _reorder_aatype_weights(w: np.ndarray) -> np.ndarray:
 
 def _reorder_features_1d(arr: np.ndarray, c_single: int = 384,
                          pad_unk_dna: bool = True,
-                         remap: np.ndarray | None = None) -> np.ndarray:
+                         remap: np.ndarray | None = None,
+                         unk: int | None = None) -> np.ndarray:
     """Reorder features_1d (single_emb + target_feat) along axis 0 to AF3 layout.
 
     source layout: [single(c_single), atom_cross_att(384), aatype(32), profile(32), del_mean(1)]
@@ -182,7 +183,8 @@ def _reorder_features_1d(arr: np.ndarray, c_single: int = 384,
     # indices coincide, so no protein gate could see it. The unknown-DNA class
     # is index 30 in both alphabets, so `unk` needs no parameter.
     remap = _AF3_TO_OF3_AATYPE if remap is None else remap
-    unk = _OF3_UNK_DNA_AATYPE
+    # helixfold3 keeps its unknown-DNA class at 26, not 30
+    unk = _OF3_UNK_DNA_AATYPE if unk is None else unk
     aatype = [arr[c_single + 384 + remap]]
     profile = [arr[c_single + 416 + remap]]
     if pad_unk_dna:

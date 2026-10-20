@@ -511,6 +511,14 @@ class WholePdbPipeline:
           if INNER_TERMINAL_ATOMS is True:
             # a polymer residue keeps OXT only at its chain's end and OP3 only at its start, modified ones too
             drop = ({'OXT'} if r != ids[-1] else set()) | ({'OP3'} if r != ids[0] else set())
+          elif INNER_TERMINAL_ATOMS == 'keep_all':
+            # helixfold3 keeps EVERY CCD heavy atom: OXT on every amino acid, OP3 on every nucleotide, and a
+            # modified residue's leaving atoms ('!' cancels the AF3 link rule's drop)
+            entry = ccd.get(name) or {}
+            keep = {n for n, f, el in zip(entry.get('_chem_comp_atom.atom_id', ()),
+                                          entry.get('_chem_comp_atom.pdbx_leaving_atom_flag', ()),
+                                          entry.get('_chem_comp_atom.type_symbol', ())) if f == 'Y' and el not in ('H', 'D')}
+            drop = {'!' + n for n in keep | {'OXT', 'OP3'}}
           elif name in features._STANDARD_RESIDUES:
             continue
           elif INNER_TERMINAL_ATOMS == 'chai':
