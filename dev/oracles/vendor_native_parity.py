@@ -515,10 +515,20 @@ def trajectory_case(model, name, j, recycles):
       # units of the unit-normal draw): how far a 200-step chaotic sampler
       # carries a difference the size of a port's per-step error. Our distance
       # from the vendor is read against that.
+      # TRAJ_FLOOR=trunk instead nudges the vendor's TRUNK outputs by 1e-5 relative (TRAJ_TRUNK_NUDGE, in the runners
+      # that support it), the size of a port's trunk difference, with x0 as given: how far the sampler alone carries
+      # that, raw and as a rigid rotation.
+      trunk = os.environ.get('TRAJ_FLOOR') == 'trunk'
       fz = os.path.join(tmp, 'traj_floor.npz')
-      np.savez(fz, traj_x0=x0 + 1e-4 * np.random.default_rng(7).normal(size=x0.shape).astype(np.float32),
+      np.savez(fz, traj_x0=x0 if trunk else
+               x0 + 1e-4 * np.random.default_rng(7).normal(size=x0.shape).astype(np.float32),
                traj_rot=rot, traj_trans=trans, traj_eps=eps, recycling_steps=recycles, precision='fp32')
-      _vendor(model, 'trajectory', bdir, fz, os.path.join(tmp, 'b_floor.npz'))
+      if trunk:
+        os.environ['TRAJ_TRUNK_NUDGE'] = '1e-5'
+      try:
+        _vendor(model, 'trajectory', bdir, fz, os.path.join(tmp, 'b_floor.npz'))
+      finally:
+        os.environ.pop('TRAJ_TRUNK_NUDGE', None)
       floor = np.asarray(np.load(os.path.join(tmp, 'b_floor.npz'))['final']).reshape(-1, 3)
     if 'pair_state0' in b:
       # the vendor's random initial pair state (ESMFold2), injected as run_case does
@@ -572,10 +582,18 @@ def trajectory_case(model, name, j, recycles):
                % (np.sqrt((((a @ rot_k) - v) ** 2).sum(-1).mean()), np.sqrt(((fin_o - fin_v) ** 2).sum(-1).mean()),
                   np.degrees(np.arccos(np.clip((np.trace(rot_k) - 1) / 2, -1, 1)))), 'INFO'))
   if floor is not None:
+    f = floor[ok].astype(np.float64) - floor[ok].mean(0)
+    u, _, vt = np.linalg.svd(f.T @ v)
+    rot_f = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+    rows.append(('traj', 'vendor floor (%s) superposed rms %.4f A; rigid rotation %.3f deg'
+                 % ('trunk nudged 1e-5' if os.environ.get('TRAJ_FLOOR') == 'trunk' else 'x0 nudged 1e-4',
+                    np.sqrt((((f @ rot_f) - v) ** 2).sum(-1).mean()),
+                    np.degrees(np.arccos(np.clip((np.trace(rot_f) - 1) / 2, -1, 1)))), 'INFO'))
     d_floor = np.abs(floor[ok] - fin_v).max()
     d_ours = np.abs(fin_o - fin_v).max()
-    rows.append(('traj', 'vendor vs itself, x0 nudged 1e-4: max |d| %.3f A; ours %.3f A (x%.2f)'
-                 % (d_floor, d_ours, d_ours / max(d_floor, 1e-6)), 'INFO'))
+    rows.append(('traj', 'vendor vs itself, %s: max |d| %.3f A; ours %.3f A (x%.2f)'
+                 % ('trunk nudged 1e-5' if os.environ.get('TRAJ_FLOOR') == 'trunk' else 'x0 nudged 1e-4',
+                    d_floor, d_ours, d_ours / max(d_floor, 1e-6)), 'INFO'))
   if 'plddt' in b:
     pl_b = b['plddt'].reshape(-1)
     if pl_b.shape[0] == n_v:

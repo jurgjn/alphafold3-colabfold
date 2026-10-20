@@ -382,6 +382,14 @@ def trajectory(model, out_dir, in_npz, out_npz):
 
   def sample_diffusion(**kw):
     got['sigmas'] = kw['noise_schedule'].detach().float().cpu().numpy()
+    nudge = float(os.environ.get('TRAJ_TRUNK_NUDGE', 0) or 0)
+    if nudge:
+      # the harness's trunk floor: the trunk outputs scaled by (1 + nudge * N(0,1)), a fixed draw
+      # (protenix hands the sampler its precomputed pair conditioning pair_z, with z_trunk None)
+      g = torch.Generator(device=kw['s_trunk'].device).manual_seed(7)
+      for k in ('s_trunk', 'z_trunk', 'pair_z'):
+        if torch.is_tensor(kw.get(k)):
+          kw[k] = kw[k] * (1 + nudge * torch.randn(kw[k].shape, generator=g, device=kw[k].device, dtype=kw[k].dtype))
     out = orig(**kw)
     got.setdefault('final', out.detach().float().cpu().numpy().reshape(-1, 3))
     return out
