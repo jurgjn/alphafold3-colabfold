@@ -117,7 +117,7 @@ def hooked(self, *a, **kw):
     # and its inputs are where a featurisation difference shows
     # the ATOM-level features too: with the trunk matching to 1e-6, what the
     # DIFFUSION is fed is the only thing left, and `ref_pos` is known to differ
-    # (our conformers are a different torsion draw -- see PARITY.md's
+    # (our conformers are a different torsion draw -- see docs/parity_log.md's
     # featurisation diff)
     for k in list(batch):
       if any(t in k for t in ('ref_', 'atom_', 'is_', 'residue_index',

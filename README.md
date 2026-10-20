@@ -55,15 +55,11 @@ Check `model_registry.get(name).engine` rather than testing the name.
 
 ### Protenix family
 
-Protenix publishes nine model types that differ only in counts and widths, so
-`derive_dims` + `PROTENIX_FAMILY` make each one close to a one-liner. This fork
-carried six of them and now runs **two**: `protenix2`, the flagship and the most
-completely gated model here, and `protenix1`. `protenix05`,
-`protenix1_20250630`, `protenix_mini` and `protenix_tiny` were removed on
-2026-09-08 — they differed from these only by training run or by size, and
-keeping them spread parity work across variants without adding coverage. The
-machinery that made them one-liners is untouched, so re-adding one is still a
-`sources.py` entry, a converter alias and a `MODELS` line.
+Protenix publishes nine model types that differ only in counts and widths;
+`derive_dims` + `PROTENIX_FAMILY` make each one close to a one-liner. Two are
+wired up. The others (`protenix05`, `protenix1_20250630`, `protenix_mini`,
+`protenix_tiny`) were dropped on 2026-09-08 to keep parity work focused; re-adding
+one is a `sources.py` entry, a converter alias and a `MODELS` line.
 
 | `--model` | model | weights |
 |---|---|---|
@@ -126,184 +122,32 @@ tools emit; feeding the wrong one is silent and costs about 1.2 Å.
 
 `--num_recycles` and `--dropout` reach AF2 exactly as they reach AF3.
 
-AF2 is measured single-seed at float32 with zero recycles, not best-of-5 at
-config defaults like the AF3 lineage, so read the two AF2 numbers in
-[Folds](#folds) against each other rather than against the rest.
+AF2 is measured single-seed at float32 with zero recycles, not best-of-5 like
+the AF3 lineage, so read its numbers in
+[PARITY.md](PARITY.md#fold-accuracy) against each other rather than against the rest.
 
-## Parity status
+## Parity
 
-This fork runs **16 model types**, and the question for every one is whether it
-reproduces its own vendor's implementation rather than merely producing a
-plausible structure. `PARITY.md` is the full record and `dev/oracles/HOLES.md`
-tracks what is still open; this is the current state.
+Each model is checked against **its own vendor's stock code**: both sides run their shipped entry points on the same input with the same random draws. Every model matches its vendor on every input that vendor can take, across 23 input types. The comparison covers the trunk, a denoise step, the confidence heads, padded inputs and the full diffusion trajectory. AlphaFold 3 is compared against DeepMind's own repository, and AlphaFold 2 passes 18 module gates against DeepMind's original code.
 
-Parity is measured level by level, from the weights inwards to the fold:
+| `--model` | stock reference | input types | full trajectory, final coordinates |
+|---|---|---|---|
+| `alphafold3` | DeepMind alphafold3 v3.0.4 | 23/23 | — |
+| `boltz2` | boltz 2.2.1 | 23/23 + cyclic | 0.025 Å |
+| `chai1` | chai_lab 0.6.1 | 20/20 (SMILES ligands only) | 0.001 Å |
+| `protenix2` / `protenix1` | Protenix v2.0.0 | 23/23 | 0.012 Å / 0.007 Å superposed* |
+| `opendde` | OpenDDE v1.1.0 | 23/23 | 0.000 Å |
+| `rosettafold3` | foundry (aad357b) | 21/21 | 0.007 Å |
+| `openfold3` / `openbind0` | OpenFold3 0.4.5 / v0.5.0 | 21/21 (no bond input) | 0.000 Å |
+| `intellifold2` | IntelliFold v2.0.4 | 23/23 | 0.005 Å |
+| `esmfold2` / `esmfold2_fast` | esm 3.4.1 | 23/23 | exact |
+| `esmfold2_lm600m` / `lm300m` | Synthyra FastPLMs | 20/20 (no MSA input) | exact |
 
-| level | what it compares |
-|---|---|
-| **L0** | conversion coverage — every checkpoint tensor accounted for, both directions |
-| **L1** | the trunk: z-init, pairformer, MSA module, template embedder, distogram |
-| **L1r** | the trunk on a REAL input: the input embedder, and recycling |
-| **L1x** | the same, on a COMPLEX — the cross-chain terms are constant on one chain |
-| **L2** | diffusion conditioning, token transformer, atom encoder and decoder |
-| **L3** | one full denoise step |
-| **L4** | the confidence head: PAE, PDE, pLDDT, resolved |
-| **L5** | an end-to-end fold, scored against an experimental structure |
-| **L5af2** | AlphaFold 2, module by module, against DeepMind's own repository |
-| **L6** | modality: RNA, DNA, ligands, complexes, modified residues |
-| **L7** | the OUTPUT side: fold, write the mmCIF, parse it back, compare |
-| **Lg** | is the model differentiable in the sequence? (the design path) |
+\* protenix1's final structure comes out rotated by 0.9° as a whole. Stock protenix1 rotates itself by 0.38° when its own trunk outputs are nudged by 1e-5, so this is the model's sensitivity, not a port difference.
 
-### Current numbers (2026-09-14)
+[PARITY.md](PARITY.md) has the method, the per-model results, which inputs each vendor cannot take, and the three stock OpenFold3 0.4.5 bugs the harness patches. It also has the module-level gates and fold accuracy. [docs/parity_log.md](docs/parity_log.md) is the dated notebook of how each finding was made.
 
-Every level has been driven to completion across every model it applies to, L6
-and L1x included. Grading each comparison on correlation **and** `max|d|/rms`:
-
-```
-369 cells                        295 OK   1 SKIP   73 N/A   0 FAIL
-346 comparisons in 167 logs
-PARITY=304   CLOSE=14   FLOOR=17   DIAG=6   LOOSE=5   BAD=0
-```
-
-The one SKIP is a real hole: `boltz2` has no in-process L3 adapter, so its
-denoise step is gated by injection (`L3.denoise_inject`) instead.
-
-**DIAG** is `L1r` and only `L1r`. Every other row compares one module on a
-bounded input, where `corr >= 0.99999` is the right bar; `L1r` is the whole
-trunk on a real featurisation with ten recycles, where 48 blocks × 10 passes
-amplify and a correlation below 1.0 is normal even when the fold is right —
-6MRR reads 0.991 on the pair while folding to 0.70 Å in agreement with native.
-It is read against its control case, not against a threshold. N/A means the
-model does not have that module at all — `gate_applies.py` decides, from the
-registry, so an empty cell can never quietly mean "not run".
-
-AlphaFold 2 is graded separately, because none of L0-L4 applies to a sibling
-network with no converter and no shared modules. **L5af2 is 18 gates, all
-green**, and thirteen of them compare us to DeepMind's own repository rather
-than to the port we inherited — the trunk end to end, the structure module as a
-stack of eight fold iterations, extra-MSA, IPA, all five heads, all three
-template paths and the MSA pipeline, on the monomer path and the multimer path
-both. That oracle found three real divergences that comparing against a sibling
-copy never could: a masked template distogram, BERT masking that was
-implemented and never called (so the seed did nothing on a shallow MSA), and —
-on the AF3 side — a confidence pairformer that never received the dropout flag.
-
-`bash dev/oracles/run_all_parity.sh all` re-runs everything;
-`dev/oracles/parity_audit.py <logdir>` grades it and
-`dev/oracles/gate_applies.py <gate> <model>` answers whether an empty cell is a
-hole or genuinely not applicable.
-
-**FLOOR** is not a pass. It means the cell has no resolution left: perturbing the
-gate's own input by 1e-6 moves its output further than our port differs, so the
-number cannot be read. All 17 are the trunk pairformer on synthetic input, where
-the stack is driven far outside its trained distribution — the shallower
-`L1.trunk1` is the measurement that counts. A cell only earns FLOOR by measuring
-it, so this cannot quietly excuse anything.
-
-**Nothing is BAD.** The last cluster — 14 cells across the OpenFold3 lineage's
-atom encoder, decoder and denoise — was a regression introduced by a terminal-atom
-drop that MASKED atoms where the vendors REMOVE them, leaving a hole in the flat
-atom axis that shifted every attention window after it and left the dropped atom
-in the mmCIF to be written at the origin. Fixed on 2026-09-13; those cells went
-from 1.21 Å per-atom back to 0.0002.
-
-**The 5 LOOSE** are all confidence tails — `chai1`'s injected PAE/PDE logits,
-`protenix2`'s PAE and PDE, `opendde`'s PDE — every one at corr ≥ 0.99994 with a
-`max|d|/rms` of a few percent in the distribution's tail. `esmfold2_fast`'s PAE
-and PDE, previously the 2 BAD, are understood the same way: native runs its
-confidence pairformer's triangle multiplications under `autocast(bfloat16)`
-while we run fp32, which costs ~0.5% per sub-module with bit-identical weights
-on identical inputs.
-
-### Folds
-
-`6MRR` is best-of-5 CA-RMSD, de novo from a single sequence, 68 aa — the shared
-regression gate, and the L5 row of the matrix above. It says how well a model
-folds, not how faithfully it was ported; that is what L0-L4 measure.
-
-| model | best Å | | model | best Å |
-|---|---|---|---|---|
-| `boltz2` | 0.459 | | `intellifold2` | 1.512 |
-| `alphafold3` | 0.628 | | `esmfold2_lm600m` | 1.522 |
-| `opendde` | 0.729 | | `openfold3` | 1.547 |
-| `rosettafold3` | 0.967 | | `protenix1` | 1.555 |
-| `protenix2` | 1.016 | | `openbind0` | 1.578 |
-| `esmfold2_fast` | 1.182 | | `esmfold2_lm300m` | 1.687 |
-| `esmfold2` | 1.330 | | `chai1` | 1.713 |
-
-AlphaFold 2 runs single-seed at float32 with zero recycles rather than
-best-of-5, so its numbers belong beside each other and not in the table above:
-`af2_ptm` 1.712, `af2_multimer` 1.788.
-
-Read these as a band, not a ranking. Several models are **nondeterministic run
-to run on the same seed** — three runs of `rosettafold3` seed 0 give 0.968,
-0.949 and 1.026, because one sample sits near a decision boundary — and
-best-of-5 is a TAIL statistic, so a single number to three decimals is not a
-gate. Two apparent regressions chased in 2026-09 were both one unlucky draw and
-dissolved at 20 samples. For a real comparison use means over ≥ 20 samples
-against native.
-
-### Modality
-
-| model | protein+ligand | complex | RNA | DNA | confidence |
-|---|---|---|---|---|---|
-| `intellifold2` | 0.301 / 0.881 | 0.92 | 1.621 | 1.95 | 90.4 / r .776 |
-| `boltz2` | 0.385 / 0.907 | 0.92 | 1.419 | 1.59 | 96.9 / r .830 |
-| `protenix2` | 2.497 / 1.147 | 1.02 | 2.062 | 2.21 | 92.7 / r .807 |
-| `rosettafold3` | 0.464 / 0.889 | 1.12 | 1.143 | 2.67 | 85.2 / r .708 |
-| `opendde` | 1.269 / 0.870 | 1.49 | 1.372 | 1.99 | 89.9 / r .635 |
-| `chai1` | 0.335 / 0.993 | 1.57 | 1.648 | 1.89 | 78.9 / r .543 |
-| `openfold3` | 0.348 / 0.894 | 1.60 | 1.441 | 2.22 | 83.2 / r .678 |
-
-`r` is the column that matters for confidence: a constant head reads r ≈ 0
-however plausible its mean looks. All seven predict error.
-`esmfold2_lm600m` and `esmfold2_lm300m` ship no confidence head by design.
-
-Every model is differentiable in the sequence — **16/16**, both engines, the
-`Lg` level (`dev/oracles/grad_check.py`), which is what the design path needs.
-The 24/24 this line used to claim counted a model list that has since lost the
-four extra protenix variants; nothing ran the script, so nothing noticed.
-
-### What is still open
-
-Tracked in `dev/oracles/HOLES.md` with the next measurement named for each:
-
-* ~~**`boltz2`'s denoise step**, 0.207 Å/atom~~ — **closed 2026-09-13**, and
-  not by work aimed at it: the terminal-atom drop fix removed the atom instead
-  of masking it, and the hole it had been leaving in the flat atom axis was
-  what shifted every attention window. Now 0.0003 Å/atom at the highest-noise
-  step and 0.0000 Å at the last one — both ends of the schedule are gated.
-* **the protenix lineage's confidence** — **attributed 2026-09-13**, and not to
-  what the last note guessed. It is `torch.cdist`: protenix feeds the raw
-  distance to an unbinned linear, and cdist's float32 expansion of
-  `||a-b||²` costs up to 1.6e-02 Å on these coordinates. Give native an exact
-  distance and all six CLOSE and three LOOSE rows collapse — protenix2 pae
-  2.30e-02 → 2.26e-04, opendde pde 1.58e-02 → 1.26e-04 — while `openfold3`,
-  `openbind0` and `boltz2` are bit-unchanged. The earlier "native's own float32"
-  story was tested directly (fp32 vs fp64 through the whole head) and is wrong
-  by three orders.
-* **`chai1`'s confidence**, two LOOSE rows — now has a **floor**, which the
-  previous note said was impossible: `forward` is undefined on the TorchScript
-  archive but `forward_256`…`forward_1024` are not, so native can be re-run.
-  The head runs in **bfloat16** with float32 geometry. Native against its own
-  capture reads 1.62e-02 (pae) where our gate reads 4.73e-02 — 2–3× the cell's
-  own resolution, so bounded rather than explained.
-* ~~three things no cell covers~~ — **closed 2026-09-13.**
-  `L1b.msa_nonuniform` reached one adapter of fourteen and duplicated the
-  uniform cell for the rest; given a mask that is actually non-uniform the
-  OpenFold3 lineage failed it (corr 0.9855, `max|d|/rms` 7.7) because of3
-  masks every transition's output and we did not. Fixed, and the membership of
-  `MASK_TRANSITIONS` is now measured per model rather than inherited — though
-  the divergence is dormant on our features, which was measured too.
-  `real_trunk_parity.py` is now the `L1r` level: the input embedder, the trunk
-  on a real featurisation, and recycling. `boltz2`'s template V2 was closed on
-  2026-09-12 and the bullet was stale.
-* **AlphaFold 2 against DeepMind**: the two whole-module cells are now built
-  and green (`native_trunk`, `native_structure`); what remains is the monomer's
-  TensorFlow row selection, which cannot be compared here (no tensorflow — we
-  use multimer's gumbel argsort on both paths). Two deliberate differences, not
-  unknowns: MSA sizes 512/1024 on both paths where stock is 512/5120 and
-  508/2048, and 11 trunk passes where of3/boltz2 run 4.
+## Running the other models
 
 ### Getting the weights
 
@@ -332,18 +176,10 @@ sampling noise on protein, ligand, RNA and a D/L peptide, with stereochemistry
 unchanged; on 6MRR the int8 blobs fold at float32's accuracy (boltz2 0.557 vs
 0.558, opendde 1.194 vs 1.197, openfold3 1.642 vs 1.639 CA-RMSD).
 
-Scales are per output channel AND per block of 128 rows down the reduction axis,
-halved until the tensor is within 1e-2 relative rms — one outlying row no longer
-sets the step for a whole column, which on a 250x-outlier tensor is a 10x lower
-weight error. **These blobs are bigger than the ones published before 2026-09-18
-(+30% overall), and that is the point:** under a single per-channel scale the
-other rows quantised toward zero and compressed away, so the old files were
-small partly because they were discarding information. Blobs written under the
-older scheme still load.
-
-`fp16` is the same idea at half precision, and it now exists for every model —
-it had been an accepted flag with nothing published behind it, so
-`--weights_precision fp16` was a 404 for all thirteen until 2026-09-16.
+Scales are per output channel and per block of 128 rows down the reduction axis,
+halved until the tensor is within 1e-2 relative rms, so one outlying row cannot
+set the step for a whole column. Blobs written under the older single-scale
+scheme (before 2026-09-18) still load. `fp16` is the same idea at half precision.
 
 | `--model` | fp32 | fp16 | int8 |
 |---|---|---|---|
@@ -444,8 +280,12 @@ states themselves rather than a fold.
 
 `--cyclic=A,B` (or `--cyclic=all`) makes those chains' relative-position
 encoding wrap, so they have no N- or C-terminus. This is not an AlphaFold 3
-feature — the input JSON has no way to say it — but the encoding is shared, so
-**every model here honours it**. A chain left out is byte-identical to before.
+feature (the input JSON has no way to say it), but the encoding is shared, so
+**every model here honours it**. Only Boltz-2 was trained with it, so for the
+others it is an extrapolation; stock IntelliFold accepts the flag and ignores
+it. A chain left out is byte-identical to before.
+
+### Licences and porting notes
 
 The terms of use written beside a prediction follow the weights that made it,
 not AlphaFold 3's. See [converters/README.md](converters/README.md) for what

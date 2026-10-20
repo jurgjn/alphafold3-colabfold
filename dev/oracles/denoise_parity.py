@@ -429,7 +429,7 @@ def native_rf3(model, fb, feats, pos_noisy, noise, s_inputs_449, s, z):
   # so the native side has to be handed OUR vector scattered into RF3's
   # positions, NOT the vendor array read at rf3's positions. Those two differ
   # in exactly the transposed columns, and doing it the wrong way costs ~2% on
-  # every token (it was worth 2.79 A -> see PARITY.md).
+  # every token (it was worth 2.79 A -> see docs/parity_log.md).
   from converters.openfold3 import _AF3_TO_OF3_AATYPE as _of3
   ours_idx = np.concatenate([384 + np.asarray(_of3), 416 + np.asarray(_of3),
                              [448], np.arange(384)])

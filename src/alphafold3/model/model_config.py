@@ -56,7 +56,7 @@ MODELS = (
     # The ESMFold2-Experimental and -Experimental-Cutoff2025 lines, and their
     # -Fast siblings, were ported and then DROPPED on 2026-09-09. They are gone
     # from the registry, the converters and the oracles; git history and
-    # PARITY.md hold what was learned from them, including the two fixes they
+    # docs/parity_log.md hold what was learned from them, including the two fixes they
     # were the only models to exercise (the experimental MSA block order and
     # its outer-product bias placement).
     'esmfold2_fast',

@@ -143,7 +143,7 @@ gmask = np.asarray(fb0.predicted_structure_info.atom_mask).astype(bool)
 # permutation (1.34 A/atom) and it looked like a port bug.
 #
 # Same lesson as the conformer Kabsch that read a flat ~0.9 A for everything:
-# match on `ref_atom_name_chars` (see PARITY.md, "the atom correspondence"), per
+# match on `ref_atom_name_chars` (see docs/parity_log.md, "the atom correspondence"), per
 # token, and compare only atoms both sides have.
 def _names(chars):
   ch = np.asarray(chars).astype(int)

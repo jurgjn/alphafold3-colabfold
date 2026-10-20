@@ -381,7 +381,7 @@ Not done here: it is a refactor of the gate's core and the level was mid-run.
     esmfold2        full_pae 5.68e-01  full_pde 2.75e-01  plddt 7.83e-02  resolved 4.58e-02
     esmfold2_fast   full_pae 5.23e-01  full_pde 3.71e-01  plddt 1.84e-01  resolved 1.01e-01
 
-and PARITY.md carried these as a characterised residual: "the two esmfold2
+and docs/parity_log.md carried these as a characterised residual: "the two esmfold2
 confidence heads at native's bf16 floor". `confidence_parity.ours()` even has a
 BF16 knob for this family, with the reasoning written out -- ESMFold2's own head
 casts under `autocast(bfloat16)` on a GPU and the dump was produced on one, so
@@ -403,7 +403,7 @@ reproducibility and it cannot be tested from our side at all --
 (bimodal ~6e-4 across processes, "hid_*.npz is one draw; measure the band
 first"). The test is two dumps from ~/venv_esm and the spread between them.
 Until that exists, these four rows are UNEXPLAINED, not characterised, and
-PARITY.md should not call them a bf16 floor.
+docs/parity_log.md should not call them a bf16 floor.
 
 ## protenix's L4 gap -- CLOSED 2026-09-13: it is `torch.cdist`
 
@@ -1987,7 +1987,7 @@ The trunk and the denoiser agree with native throughout, on the SAME MSA:
     denoise step 190   0.0007 A/atom (sigma ~0)
 
 and every per-atom feature is identical except `ref_pos`, whose conformer
-difference -- the one PARITY.md's featurisation diff has carried as an open
+difference -- the one docs/parity_log.md's featurisation diff has carried as an open
 "real input difference" since 2026-09-08 -- prices at **0.01 A** on this fold
 (substituting native's own ref_pos moves the result from 4.026 to 4.036).
 
@@ -2012,7 +2012,7 @@ removed: 1.83.
 **The tell was in the output from the first run: 75 CA matched where the native
 scorer matched 76.** A count that does not match the reference is a mapping
 error until proven otherwise -- this is the second time this project has been
-bitten by exactly this class (PARITY.md records matching by POSITION scoring
+bitten by exactly this class (docs/parity_log.md records matching by POSITION scoring
 ubiquitin at 12.4 A on every model), and the first time it cost an hour of
 ladder-climbing instead of being caught by the count.
 

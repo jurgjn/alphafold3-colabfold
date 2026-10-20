@@ -3,7 +3,7 @@
 The trunk gate (dev/oracles/trunk_parity.py) covers the pairformer stack and
 nothing else. Nine `model_config` tables feed the DIFFUSION path alone, and for
 most models not one of them has an activation-level check -- which is the
-largest unexamined exposure in PARITY.md. This is the first of those levels.
+largest unexamined exposure in docs/parity_log.md. This is the first of those levels.
 
   JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:<vendor> \
     python dev/oracles/diffusion_parity.py <model>
@@ -331,7 +331,7 @@ def native_if2(model, n):
 def native_rf3(model, n):
   """-> (a, s, z, ref, n_blocks) from RosettaFold3's own DiffusionTransformer.
 
-  PARITY.md called rf3 "blocked: no native installed". It is not: foundry
+  docs/parity_log.md called rf3 "blocked: no native installed". It is not: foundry
   imports as a PYTHONPATH overlay with its deps in `~/rf3_extra`, the trick the
   rf3 featurisation oracles already use.
 

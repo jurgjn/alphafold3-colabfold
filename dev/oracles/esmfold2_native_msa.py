@@ -12,7 +12,7 @@ built here from the same a3m our own fold reads.
     PYTHONPATH=src:. python dev/oracles/esmfold2_score_native.py
 
 This produced the measurement that turned esmfold2's MSA problem from a guess
-into a direction (PARITY.md, "the experimental line's MSA path is INVERTED"):
+into a direction (docs/parity_log.md, "the experimental line's MSA path is INVERTED"):
 
     ESMFold2-Experimental on 1STP (release dropped 2026-09-09)
                             no MSA      with MSA

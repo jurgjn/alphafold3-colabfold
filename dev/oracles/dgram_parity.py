@@ -2,7 +2,7 @@
 
 It appeared in confidence_parity.py only as a feature NAME
 (`distogram_rep_atom_mask`), never as a compared tensor -- so a divergence here
-was invisible to every number in PARITY.md. It matters out of proportion to its
+was invisible to every number in docs/parity_log.md. It matters out of proportion to its
 size: the distogram is the head design gradients flow through (zero recycles,
 backprop into the distogram and stop), so a silent error would corrupt the
 design path while every structural RMSD stayed green.
