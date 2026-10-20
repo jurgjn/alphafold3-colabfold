@@ -561,6 +561,16 @@ def trajectory_case(model, name, j, recycles):
   c, ratio = P.compare(fin_o, fin_v)
   rows.append(('traj', 'final coordinates corr %.6f max|d|/rms %.2e (max |d| %.3f A)'
                % (c, ratio, np.abs(fin_o - fin_v).max()), P.grade(c, ratio)))
+  # the same comparison after superposition: a sampler that is only approximately rotation-equivariant can carry
+  # per-step numeric differences into a rigid rotation of the whole sample (protenix1: 0.9 deg, 0.22 A raw, 0.007 A
+  # superposed), which says nothing about the structure itself
+  a = fin_o.astype(np.float64) - fin_o.mean(0)
+  v = fin_v.astype(np.float64) - fin_v.mean(0)
+  u, _, vt = np.linalg.svd(a.T @ v)
+  rot_k = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+  rows.append(('traj', 'superposed rms %.4f A (raw rms %.4f A; rigid rotation %.3f deg)'
+               % (np.sqrt((((a @ rot_k) - v) ** 2).sum(-1).mean()), np.sqrt(((fin_o - fin_v) ** 2).sum(-1).mean()),
+                  np.degrees(np.arccos(np.clip((np.trace(rot_k) - 1) / 2, -1, 1)))), 'INFO'))
   if floor is not None:
     d_floor = np.abs(floor[ok] - fin_v).max()
     d_ours = np.abs(fin_o - fin_v).max()

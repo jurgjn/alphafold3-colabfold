@@ -187,6 +187,10 @@ def _configs(model, out_dir, dtype='fp32', n_cycle=None, n_sample=None):
   # config the runner builds the model from -- set through the CLI key.
   if n_cycle is not None:
     args += ' --model.N_cycle %d' % n_cycle
+  if os.environ.get('OPENDDE_CHUNK'):
+    # memory only: under 1024 tokens OpenDDE's dynamic chunking runs the trunk unchunked, and fp32 triangle attention
+    # on long_chain then asks for one 30.8 GiB block -- a fixed chunk evaluates the same sums in pieces
+    args += ' --infer_setting.dynamic_chunk_size false --infer_setting.chunk_size %d' % int(os.environ['OPENDDE_CHUNK'])
   if os.environ.get('MSA_ALL_ROWS'):
     # OpenDDE's MSA module draws a random msa_depth (1280) rows each pass (msa_sampling.py
     # subsample_msa_feature_dict_valid_first, randperm): a draw, lifted on every side -- all rows, as ours takes them
