@@ -831,6 +831,8 @@ def bioemu2_steer(name, j, recycles):
   from alphafold3.model.pipeline import bioemu2_features as bf
   preset = os.environ['BIOEMU2_SAMPLER']
   n_part = int(os.environ.get('STEER_PARTICLES', 4))
+  if os.environ.get('BIOEMU2_PROPAGATE_NS'):
+    os.environ['BIOEMU2_MODE'] = 'equilibrium'      # propagation embeds in equilibrium mode
   steps = 200
   rows = []
   with tempfile.TemporaryDirectory() as tmp:
@@ -841,6 +843,20 @@ def bioemu2_steer(name, j, recycles):
       os.environ['BIOEMU2_SAMPLER'] = preset
     n_v = ref['template_coords'].shape[0]
     real = ref['atom_pad_mask'].astype(bool)
+    extra = {}
+    lag = os.environ.get('BIOEMU2_PROPAGATE_NS')
+    if lag:
+      # steered PROPAGATION: from a stock equilibrium sample, every particle
+      sx0, srot, strans, seps = _bioemu2_draws(int(os.environ.get('INJECT_SEED', 0)) + 1, n_v)
+      sin = os.path.join(tmp, 'start.npz')
+      np.savez(sin, traj_x0=sx0, traj_rot=srot, traj_trans=strans, traj_eps=seps, recycling_steps=recycles)
+      _vendor('bioemu2', 'trajectory', bdir, sin, os.path.join(tmp, 'start_out.npz'))
+      start = np.asarray(np.load(os.path.join(tmp, 'start_out.npz'))['final']).reshape(-1, 3)[real]
+      np.save(os.path.join(tmp, 'x0.npy'), start)
+      os.environ['BIOEMU2_X0'] = os.path.join(tmp, 'x0.npy')
+      os.environ['BIOEMU2_LAG_NS'] = lag
+      extra = dict(x0_frame=start, lag_ns=float(lag))
+      rows.append(('traj', 'steered propagation by %s ns from a stock equilibrium sample' % lag, 'INFO'))
     rng = np.random.default_rng(int(os.environ.get('INJECT_SEED', 0)))
     x0 = rng.normal(size=(n_part, n_v, 3)).astype(np.float32)
     rot = np.stack([_rotations(rng, n_part) for _ in range(steps)])
@@ -848,7 +864,7 @@ def bioemu2_steer(name, j, recycles):
     eps = rng.normal(size=(steps, n_part, n_v, 3)).astype(np.float32)
     uni = rng.uniform(size=(steps, 1)).astype(np.float32)
     inp = os.path.join(tmp, 'steer.npz')
-    np.savez(inp, x0=x0, rot=rot, trans=trans, eps=eps, uniform=uni, recycling_steps=recycles)
+    np.savez(inp, x0=x0, rot=rot, trans=trans, eps=eps, uniform=uni, recycling_steps=recycles, **extra)
     _vendor('bioemu2', 'steer', bdir, inp, os.path.join(tmp, 'b.npz'))
     b = dict(np.load(os.path.join(tmp, 'b.npz')))
     floor = None
@@ -878,8 +894,11 @@ def bioemu2_steer(name, j, recycles):
       ours = forward_ours(batch, cfg, model_dir, None, None, None, real_sampler=True)
     finally:
       ns.INJECT = None
+      for k in ('BIOEMU2_X0', 'BIOEMU2_LAG_NS') + (('BIOEMU2_MODE',) if lag else ()):
+        os.environ.pop(k, None)
   fin_o = np.asarray(ours['diffusion_samples/bioemu2_flat'])[:, :n_v][:, real]
-  fin_v = np.asarray(b['final'])[:, :n_v][:, real]
+  fin_v = np.asarray(b['final'])
+  fin_v = fin_v[:, :n_v][:, real] if fin_v.shape[1] == len(real) else fin_v   # a propagated endpoint: real atoms
   rows.append(('traj', '%s: %d particles, vendor %d steps' % (preset, n_part, int(b['steps'])), 'INFO'))
   for i in range(n_part):
     c, ratio = P.compare(fin_o[i], fin_v[i])

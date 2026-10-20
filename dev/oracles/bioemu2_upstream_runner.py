@@ -325,9 +325,24 @@ def steer(model, out_dir, in_npz, out_npz):
   else:
     sampler = GuidedFKSampler(step_scale=1.5 if mode == 'structure' else 1.0, potentials=potentials,
                               resampling_interval=None if preset == 'edm_gd' else 3)
+  x_frame = None
+  if 'x0_frame' in z:
+    # propagate_with_embeddings for P copies of one frame (angstrom)
+    x_frame = torch.tensor(z['x0_frame'], dtype=torch.float32, device=dev)[None].expand(P, -1, -1)
+    cond = x_frame.new_zeros(P, batch.atom_pad_mask.shape[1], 3)
+    cond[:, :x_frame.shape[1]] = x_frame - x_frame.mean(dim=1, keepdim=True)
+    batch = batch.replace(coords_cond=cond,
+                          is_dynamics_conditioned=torch.ones((1, P), dtype=torch.bool, device=dev),
+                          dt=torch.full((1, P), float(z['lag_ns']) * 1000.0, device=dev))
   with torch.no_grad():
     emb = m.score_model.compute_trunk_embeddings(batch, int(z['recycling_steps']))
     out = sampler(batch=batch, score_model=m, trunk_embeddings=emb, batch_size=P)
+    if x_frame is not None:
+      from bioemu2.denoising.rigid_align import weighted_rigid_align
+      n_real = x_frame.shape[1]
+      w = torch.ones((P, n_real), device=dev)
+      end, _, _ = weighted_rigid_align(out.coords[:, :n_real].float(), x_frame, w, w)
+      out = out.replace(coords=end)
   pb = next((p.feats for p in potentials if 'rdkit_bounds_index' in getattr(p, 'feats', {})),
             None)
   if pb is None:

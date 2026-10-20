@@ -1315,6 +1315,7 @@ ALIASES = {
     'protenix': 'protenix2',
     'rf3': 'rosettafold3',
     'chai': 'chai1',
+    'bioemu': 'bioemu2',
     # OpenBind's own release is called "OpenBind 0"
     # (openbind.uk/news/blog-openbind-0-advancing-open-molecular-structure-prediction),
     # so the model key carries the version and leaves room for the next one.

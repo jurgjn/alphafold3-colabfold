@@ -589,6 +589,36 @@ _CYCLIC = flags.DEFINE_list(
     ' any one model: the encoding is shared, so every model here honours it,'
     ' and a chain left out is byte-identical to before.',
 )
+# BioEmu2 (--model bioemu2). Each sets the BIOEMU2_* variable of the same name,
+# which the featuriser, the sampler and the physicality report read.
+_BIOEMU2_MODE = flags.DEFINE_enum(
+    'bioemu2_mode', None, ['structure', 'equilibrium'],
+    'BioEmu2: predict a structure (default) or sample its equilibrium ensemble.')
+_BIOEMU2_SAMPLER = flags.DEFINE_enum(
+    'bioemu2_sampler', None, ['edm', 'edm_gd', 'edm_fk', 'edm_fkc'],
+    'BioEmu2: steer sampling with its physicality potentials -- edm_gd (gradient'
+    ' guidance), edm_fk (and Feynman-Kac resampling), edm_fkc (the FK corrector).'
+    ' The samples of a fold are the particles.')
+_BIOEMU2_POTENTIALS = flags.DEFINE_string(
+    'bioemu2_potentials', None,
+    'BioEmu2: a --potentials YAML replacing the default steering potentials.')
+_BIOEMU2_CONTACTS = flags.DEFINE_string(
+    'bioemu2_contacts', None,
+    'BioEmu2: a JSON list of contacts to condition on, in its Contact form'
+    ' ([{"token1": {"asym_id": "A", "res_id": 12}, "token2": {...}, "max_distance": 6}]).')
+_BIOEMU2_PROPAGATE_FROM = flags.DEFINE_string(
+    'bioemu2_propagate_from', None,
+    'BioEmu2: propagate from this structure (an mmCIF of the same input, e.g. a'
+    ' sample) instead of sampling: each sample is a trajectory of'
+    ' --bioemu2_propagation_steps lag-time steps. Implies equilibrium mode.')
+_BIOEMU2_LAG_NS = flags.DEFINE_float(
+    'bioemu2_lag_ns', None, 'BioEmu2 propagation: the lag per step, in ns (default 1).')
+_BIOEMU2_PROPAGATION_STEPS = flags.DEFINE_integer(
+    'bioemu2_propagation_steps', None, 'BioEmu2 propagation: steps per trajectory (default 1).')
+_BIOEMU2_PHYSICALITY = flags.DEFINE_enum(
+    'bioemu2_physicality', None,
+    ['high_quality', 'no_violations', 'high_quality_per_residue', 'no_filter'],
+    'BioEmu2: the physicality report preset (default high_quality); nothing is removed.')
 _WEIGHTS_PRECISION = flags.DEFINE_enum(
     'weights_precision', 'int8', ['fp32', 'fp16', 'int8'],
     'Which published form of the weights to fetch. int8 is the DEFAULT: the same'
@@ -1794,6 +1824,15 @@ def main(_):
     data_pipeline_config = None
 
   model_name = _MODEL.value
+  for flag, var in ((_BIOEMU2_MODE, 'BIOEMU2_MODE'), (_BIOEMU2_SAMPLER, 'BIOEMU2_SAMPLER'),
+                    (_BIOEMU2_POTENTIALS, 'BIOEMU2_POTENTIALS'), (_BIOEMU2_CONTACTS, 'BIOEMU2_CONTACTS'),
+                    (_BIOEMU2_PROPAGATE_FROM, 'BIOEMU2_X0'), (_BIOEMU2_LAG_NS, 'BIOEMU2_LAG_NS'),
+                    (_BIOEMU2_PROPAGATION_STEPS, 'BIOEMU2_STEPS'),
+                    (_BIOEMU2_PHYSICALITY, 'BIOEMU2_PHYSICALITY')):
+    if flag.value is not None:
+      if model_registry.get(model_name).name != 'bioemu2':
+        raise app.UsageError(f'--{flag.name} applies to --model bioemu2 only')
+      os.environ[var] = str(flag.value)
   # chain ids -> asym_ids, which are 1-based and assigned in chain order.
   cyclic = _CYCLIC.value or False
   if cyclic and [c.lower() for c in cyclic] == ['all']:
