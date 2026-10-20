@@ -109,12 +109,27 @@ and a dual-stream denoiser that runs atom and token transformers side by side.
 It runs as its own network (`network/bioemu2.py`) on its own features
 (`pipeline/bioemu2_features.py`, built from the same input JSON) and shares
 the sampler and the output path. There is no confidence head, so confidence
-fields are written as NaN. `BIOEMU2_MODE=equilibrium` switches from structure
-prediction to BioEmu2's equilibrium ensemble sampling; its propagation mode is
-not ported yet. **Port in progress:** the network matches stock BioEmu2 on the
-vendor's own features, and the input-type parity sweep is under way.
+fields are written as NaN. Every sample also gets BioEmu2's protein physicality
+report (`<name>_physicality.json`).
 
-### AlphaFold 2 — a sibling network, not the AF3 graph
+BioEmu2 is more than a structure predictor, and its other modes are here too:
+
+| flag | what it does |
+|---|---|
+| `--bioemu2_mode=equilibrium` | sample its equilibrium ensemble instead of predicting a structure |
+| `--bioemu2_propagate_from=<cif>` | propagate from a structure: each sample a trajectory of `--bioemu2_propagation_steps` steps of `--bioemu2_lag_ns` |
+| `--bioemu2_sampler=edm_gd\|edm_fk\|edm_fkc` | steer sampling with its physicality potentials (gradient guidance, Feynman-Kac resampling, the FK corrector); the samples are the particles |
+| `--bioemu2_potentials=<yaml>` | steer with a BioEmu2 `--potentials` file instead of the default potentials |
+| `--bioemu2_contacts=<json>` | condition on contacts, in BioEmu2's `Contact` form |
+| `--bioemu2_physicality=<preset>` | the physicality report's thresholds (`high_quality` by default); nothing is removed |
+
+Steering fetches two pieces of reference data on first use rather than
+shipping them: the bond-geometry tables BioEmu2 bundles (CCP4 MON_LIB, LGPL)
+and Boltz-1's CCD molecules for ligand restraints. A potential written in
+Python is out of reach (the YAML can name BioEmu2's own potentials only), and
+`--cyclic` is refused, as BioEmu2 has no cyclic input.
+
+### AlphaFold 2 — a sibling network, not the AF3 graph### AlphaFold 2 — a sibling network, not the AF3 graph
 
 | `--model` | model | weights |
 |---|---|---|
@@ -159,8 +174,13 @@ Each model is checked against **its own vendor's stock code**: both sides run th
 | `intellifold2` | IntelliFold v2.0.4 | 23/23 | 0.005 Å |
 | `esmfold2` / `esmfold2_fast` | esm 3.4.1 | 23/23 | exact |
 | `esmfold2_lm600m` / `lm300m` | Synthyra FastPLMs | 20/20 (no MSA input) | exact |
+| `bioemu2` | BioEmu2 (7846769) | 20/20 (no template input) | 0.000 Å |
 
 \* protenix1's final structure comes out rotated by 0.9° as a whole. Stock protenix1 rotates itself by 0.38° when its own trunk outputs are nudged by 1e-5, so this is the model's sensitivity, not a port difference.
+
+BioEmu2's other modes are graded the same way: equilibrium sampling,
+propagation, all three steering presets with default and custom potentials,
+contact conditioning and the physicality report (see PARITY.md).
 
 [PARITY.md](PARITY.md) has the method, the per-model results, which inputs each vendor cannot take, and the three stock OpenFold3 0.4.5 bugs the harness patches. It also has the module-level gates and fold accuracy. [docs/parity_log.md](docs/parity_log.md) is the dated notebook of how each finding was made.
 
@@ -298,9 +318,9 @@ states themselves rather than a fold.
 `--cyclic=A,B` (or `--cyclic=all`) makes those chains' relative-position
 encoding wrap, so they have no N- or C-terminus. This is not an AlphaFold 3
 feature (the input JSON has no way to say it), but the encoding is shared, so
-**every model here honours it**. Only Boltz-2 was trained with it, so for the
-others it is an extrapolation; stock IntelliFold accepts the flag and ignores
-it. A chain left out is byte-identical to before.
+**every model here honours it**, except BioEmu2, which has no cyclic input
+and refuses it. Only Boltz-2 was trained with it, so for the others it is an
+extrapolation; stock IntelliFold accepts the flag and ignores it. A chain left out is byte-identical to before.
 
 ### Licences and porting notes
 

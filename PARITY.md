@@ -10,6 +10,7 @@ Every model this fork runs is checked against its **own vendor's stock code**, n
 - [Inputs a vendor cannot take (N/A)](#inputs-a-vendor-cannot-take-na)
 - [Vendor bugs the harness patches](#vendor-bugs-the-harness-patches)
 - [Vendor conventions the port reproduces](#vendor-conventions-the-port-reproduces)
+- [BioEmu2](#bioemu2)
 - [AlphaFold 2](#alphafold-2)
 - [Module-level gates (L0 to L7)](#module-level-gates-l0-to-l7)
 - [Fold accuracy](#fold-accuracy)
@@ -87,6 +88,7 @@ The vendor versions are the ones installed for the harness. All runs used float3
 | `esmfold2_fast` | esm 3.4.1 | 23/23 | — | PARITY, 0.000 Å |
 | `esmfold2_lm600m` | Synthyra FastPLMs | 20/20, 3 N/A | — | PARITY, 0.000 Å |
 | `esmfold2_lm300m` | Synthyra FastPLMs | 20/20, 3 N/A | — | PARITY, 0.000 Å |
+| `bioemu2` | BioEmu2 @7846769 | 20/20, 3 N/A | PASS | PARITY, 0.000 Å ([modes](#bioemu2)) |
 | `af2_ptm`, `af2_multimer` | DeepMind alphafold (AF2) | [18 gates, all green](#alphafold-2) | | |
 
 The padded runs cover `protein`, `ligand_ccd` and `heterodimer`.
@@ -110,6 +112,7 @@ The trajectory distance is the maximum per-atom distance between the final coord
 | `esmfold2_fast` | 10 | 0.000 Å | 0.0000 Å | 0.000° | PARITY |
 | `esmfold2_lm600m` | 11 | 0.000 Å | 0.0000 Å | 0.000° | PARITY |
 | `esmfold2_lm300m` | 11 | 0.000 Å | 0.0000 Å | 0.000° | PARITY |
+| `bioemu2` | 200 | 0.000 Å | 0.0000 Å | 0.000° | PARITY |
 
 **protenix1 is the one LOOSE row.** Its difference is almost entirely a 0.9° rigid rotation of the whole structure; after superposition the remaining difference is 0.0066 Å. To tell model sensitivity from a port bug, the harness nudges the vendor's *own* trunk outputs by 1e-5 (`TRAJ_FLOOR=trunk`):
 
@@ -137,6 +140,7 @@ A case is N/A only when the **stock** vendor has no way to express the input. It
 | `rosettafold3` | `glycan` | the RF3 JSON takes one `ccd_code` per chain |
 | `esmfold2_lm600m`, `esmfold2_lm300m` | `msa`, `deep_msa`, `paired_msa` | trained without MSA conditioning; the vendor rejects explicit MSAs |
 | `intellifold2` | `cyclic` | IntelliFold parses `cyclic: true`, but its `RelativePositionEncoding` never reads `cyclic_period` |
+| `bioemu2` | `template`, `template_std`, `multi_template` | BioEmu2 has no template input |
 | all but `boltz2` | `cyclic` | no cyclic input at all |
 
 `--cyclic` is a feature of this fork: every model here honours it, but only boltz2 was trained with it.
@@ -181,6 +185,44 @@ These are the places where a vendor deliberately differs from AlphaFold 3, and w
 - **IntelliFold-2:** uses the boltz-fork MSA build, with a per-chain profile over `msa_valid_depths`.
 - **protenix:** the seed applies MC dropout on the recycled pair. Replaying it needs torch's fused-dropout vector width: 4 for float32, 8 for bfloat16.
 - **Padded atoms:** every non-AF3 model masks padded atom queries.
+
+## BioEmu2
+
+BioEmu2 shares no network stage with AF3, so its harness branch compares its own feature dict and outputs: `bioemu2_case`, `bioemu2_trajectory` and `bioemu2_steer` in `vendor_native_parity.py`, run against `dev/oracles/bioemu2_upstream_runner.py`. Stock BioEmu2 runs in float32 at `highest` matmul precision; its default is a bf16 trunk with a TF32 denoiser.
+
+**Features.** Every array of stock BioEmu2's feature dict equals ours on all 23 inputs. That covers CCD-ideal reference positions, OXT and OP3 dropped at every polymer position, atom tokens for ligands, modified residues and glycans, and Boltz-1 MSA pairing with `deletion_value = π/2·atan(d/3)`.
+
+**Network.** Every case reads PARITY on `s_inputs`, the trunk single and pair, the distogram, the pair conditioning and one denoise step, at max\|d\|/rms ≤ 1.1e-4. The padded check (`OURS_BUCKET=shipped`) and contact conditioning (residue–residue, residue–ligand atom) pass too.
+
+**Its other modes**, final coordinates against stock on the same draws:
+
+| run | result |
+|---|---|
+| structure mode, protein | PARITY, max \|d\| 0.000 Å |
+| structure mode, ATP ligand | PARITY, 0.001 Å |
+| equilibrium mode, heterodimer | PARITY, 0.001 Å |
+| propagation, 1 ns from a stock equilibrium sample | PARITY, 0.000 Å |
+| `edm_gd`, 4 particles | PARITY / CLOSE, ≤ 0.009 Å (superposed ≤ 0.0009 Å) |
+| `edm_fk` (with FK resampling), 4 particles | PARITY, ≤ 0.001 Å |
+| `edm_fkc` (gradient through the denoiser), 4 particles | PARITY, 0.000 Å |
+| `edm_fk` / `edm_fkc` under a custom `--potentials` YAML | PARITY, ≤ 0.001 Å |
+| `edm_fk` steering a propagation | PARITY, ≤ 0.001 Å |
+
+The ten steering potentials match stock directly as well. Energies agree to ≤ 1e-7 relative and gradients to ≤ 4.4e-5, at random coordinates and at a real ligand geometry. Every topology table is equal.
+
+**Steering a ligand is chaotic.** On the ATP case `edm_gd` reads LOOSE: 0.005–0.05 Å superposed against stock. `STEER_FLOOR` nudges stock's own x0 by 1e-5, and stock then moves 0.004–0.03 Å against itself. The flat-bottom restraints have step-function gradients, so a float-level difference that switches one restraint on or off changes a whole guidance step. This is the same class as protenix1's trajectory, and the raw grade is left as it is.
+
+**Physicality report.** Every stat, pass and reason equals stock's `check_physicality`. The check covered six structures (protein, homodimer, ligand, PTM, glycan, protein–DNA), each under 5–7 noise levels, in all three presets.
+
+Two inputs come from outside, and the harness hands over the vendor's copy rather than grading them:
+
+- A SMILES ligand's conformer is an unseeded RDKit draw in stock BioEmu2.
+- The ligand restraint bounds are RDKit's. Releases differ (2025.09 here, 2026.03 in the vendor environment); under the vendor's release, ours are exact.
+
+Not ported, and not reachable from stock's own entry points either:
+
+- `ContactPotential` and `TemplateReferencePotential`: no `prepare()` fills their tables.
+- Context-parallel sampling.
 
 ## AlphaFold 2
 
