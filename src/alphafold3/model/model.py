@@ -921,7 +921,11 @@ class Model(hk.Module):
         kw = dict(num_steps=config.steps, companion=comp,
                   injected=steering.INJECT, specs=steering.active_specs())
         if preset == 'edm_fkc':
-          return steering.fkc_sample(denoise_particles, steer, flat_mask, config.num_samples, k, **kw)
+          x, bad = steering.fkc_sample(denoise_particles, steer, flat_mask, config.num_samples, k, **kw)
+          # the first step with a non-finite energy or log-weight (-1: none);
+          # run_alphafold raises on it, as edm_fkc_sampler does
+          extra['bioemu2_nonfinite_step'] = bad
+          return x
         return steering.steered_sample(
             denoise_particles, steer, flat_mask, config.num_samples, k,
             step_scale=config.step_scale, noise_scale=config.noise_scale,

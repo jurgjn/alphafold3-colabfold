@@ -1005,6 +1005,10 @@ class ModelRunner:
         result,
     )
     result = dict(result)
+    bad = result.get('diffusion_samples', {}).get('bioemu2_nonfinite_step')
+    if bad is not None and int(bad) >= 0:
+      raise ValueError('BioEmu2 edm_fkc: non-finite potential energy or particle'
+                       f' log-weight at step {int(bad)}')
     # A ported blob may carry no meta record; the identifier is provenance
     # stamped into the output, so fall back to the model's own name.
     meta = self.model_params.get('__meta__', {}).get('__identifier__')

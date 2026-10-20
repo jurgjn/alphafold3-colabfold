@@ -636,7 +636,7 @@ def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamm
     return energies(x0, t, {b: x_['%s_%s' % (b, when)] for b in PARAMS}, specs).sum(0)
 
   def body(carry, x_):
-    x, logw, pot_c, comp = carry
+    x, logw, pot_c, comp, bad = carry
     rot, trans, eps = _step_draws(None if x_.get('inj') is not None else key, x_.get('inj'),
                                   x_['k'], P, shape)
     x = _augment(x, mask, rot, trans)
@@ -648,17 +648,22 @@ def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamm
       def u(xx, ss):
         d = denoise(xx, ss, comp)
         return total(d, x_, 'hat').sum(), d
-      (_, den), (gx, gs) = vgrad(u, argnums=(0, 1), has_aux=True)(reheated, jnp.full((P,), s_hat))
+      (u_hat, den), (gx, gs) = vgrad(u, argnums=(0, 1), has_aux=True)(reheated, jnp.full((P,), s_hat))
     else:
       den = denoise(reheated, jnp.full((P,), s_hat), comp)
     score = (den - reheated) / s_hat ** 2
     pot_hat = jnp.zeros(P)
+    finite = jnp.asarray(True)
     if guidance:
+      e_n, e_c = total(den, x_, 'n'), total(den, x_, 'c')
+      finite = jnp.isfinite(u_hat) & jnp.isfinite(e_n).all() & jnp.isfinite(e_c).all()
       align = ((-x_['beta_hat'] * gx) * score * (x_['s_c'] ** 2 - x_['s_n'] ** 2) / 2.0).reshape(P, -1).sum(1)
-      logw = (logw - x_['beta_n'] * total(den, x_, 'n') + x_['beta_c'] * total(den, x_, 'c')
+      logw = (logw - x_['beta_n'] * e_n + x_['beta_c'] * e_c
               + align + x_['beta_hat'] * gs * (x_['s_c'] - x_['s_n']))
     elif smc:
-      pot_hat = -x_['beta_hat'] * total(den, x_, 'hat')
+      e_hat = total(den, x_, 'hat')
+      finite = jnp.isfinite(e_hat).all()
+      pot_hat = -x_['beta_hat'] * e_hat
       logw = logw + pot_hat - pot_c
     nxt = reheated + s_hat * (s_hat - x_['s_n']) * score
     if guidance:
@@ -667,8 +672,14 @@ def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamm
     if smc:
       dn = jax.lax.cond(x_['has_next'] > 0, lambda v: denoise(v, jnp.full((P,), x_['s_n']), comp),
                         lambda v: v, nxt)
-      pot_n = -x_['beta_n'] * total(dn, x_, 'n')
+      e_n = total(dn, x_, 'n')
+      finite = finite & jnp.isfinite(e_n).all()
+      pot_n = -x_['beta_n'] * e_n
       logw = logw + pot_n - pot_hat
+    # edm_fkc_sampler raises on a non-finite energy or log-weight; a scan cannot,
+    # so the first step that has one is carried out for the caller to raise on
+    finite = finite & jnp.isfinite(logw).all()
+    bad = jnp.where((bad < 0) & ~finite, x_['k'], bad)
     w = grouped_softmax(logw, group)
     if ess_threshold is not None:
       g = w.reshape(-1, group)
@@ -683,9 +694,9 @@ def fkc_sample(denoise, tables, mask, num_particles, key, *, num_steps=200, gamm
     logw = jnp.where(do, 0.0, logw)
     if smc:
       pot_c = pot_n[idx]
-    return (nxt, logw, pot_c, comp), None
+    return (nxt, logw, pot_c, comp, bad), None
 
   x = jnp.float32(sig[0]) * _x0(key, injected, shape)
-  carry = (x, jnp.zeros(P), jnp.zeros(P), companion)
-  (x, *_), _ = scan(body, carry, jax.tree_util.tree_map(jnp.asarray, xs))
-  return x
+  carry = (x, jnp.zeros(P), jnp.zeros(P), companion, jnp.asarray(-1, jnp.int32))
+  (x, _, _, _, bad), _ = scan(body, carry, jax.tree_util.tree_map(jnp.asarray, xs))
+  return x, bad
