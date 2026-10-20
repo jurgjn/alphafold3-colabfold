@@ -165,12 +165,6 @@ class SampleConfig(base_config.BaseConfig):
   # schedule opens at 2560, so a clip at 256 is a tenfold cut in initial noise
   # -- not a detail, and there is no field for it in stock AF3. 0 = no clip.
   max_sigma: float = 0.0
-  # FLOW: one draw at the top of a schedule opened at `flow_sigma_max`, then a
-  # deterministic walk that REPLACES the state with each prediction - no
-  # augmentation, no noise injected. LocalFold's "Flow" sampler (its
-  # flowOnGpu), here so the same choice means the same walk on either backend.
-  flow: bool = False
-  flow_sigma_max: float = 10.0
 
 
 class DiffusionHead(hk.Module):
@@ -703,10 +697,6 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai):
     else:
       noise_level, noise_level_prev = step_noise
     key, positions = carry
-    if config.flow:
-      # The flow walk: the prediction at this level IS the next state.
-      positions_denoised = denoising_step(positions, noise_level_prev)
-      return (key, positions_denoised), (positions_denoised, positions_denoised)
     key, key_noise, key_aug = jax.random.split(key, 3)
 
     positions = random_augmentation(
@@ -803,10 +793,8 @@ def noise_schedule_for(config, chai: bool):
     times = np.linspace(0, 1, config.steps, dtype=np.float32)
   else:
     times = np.linspace(0, 1, config.steps + 1, dtype=np.float32)
-  flow = getattr(config, 'flow', False)
   levels = np.asarray(noise_schedule(times, smin=config.sigma_min,
-                                     smax=config.flow_sigma_max if flow else config.sigma_max,
-                                     p=config.rho),
+                                     smax=config.sigma_max, p=config.rho),
                       dtype=np.float32)
   tail = '' if chai else getattr(config, 'schedule_tail', '')
   if tail in ('append', 'extend'):
@@ -815,7 +803,7 @@ def noise_schedule_for(config, chai: bool):
     levels[-1] = 0.0
   elif tail:
     raise ValueError('schedule_tail %r: want append, replace or extend' % tail)
-  if getattr(config, 'max_sigma', 0.0) and not flow:
+  if getattr(config, 'max_sigma', 0.0):
     levels = np.concatenate([[config.max_sigma],
                              levels[levels <= config.max_sigma]])
   return jnp.asarray(levels, jnp.float32)
