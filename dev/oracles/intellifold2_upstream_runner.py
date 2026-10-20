@@ -393,7 +393,8 @@ def forward(model_name, out_dir, in_npz, out_npz):
         if hasattr(x, 'float'):
           taps['tap.%s.%s' % (tag, k)] = x.detach().float().cpu().numpy().copy()
     return fn
-  for parent in ('backbone_trunk', 'diffusion_module', 'confidence_head'):
+  # VENDOR_NO_TAPS: localisation only, and on long_chain the per-recycle pair taps are gigabytes of npz
+  for parent in (() if os.environ.get('VENDOR_NO_TAPS') else ('backbone_trunk', 'diffusion_module', 'confidence_head')):
     for name, mod in getattr(base, parent).named_children():
       mod.register_forward_hook(hook('%s.%s' % (parent, name)))
 
