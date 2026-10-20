@@ -1151,14 +1151,11 @@ class ModelSpec:
     """EDM constants for this family, or {} to keep AF3's."""
     out = dict(_SAMPLER_CONSTANTS.get(self.name, {}))
     if self.name == 'bioemu2':
-      import os
-      # sample-equilibrium samples at step_scale 1.0, predict-structure at 1.5
-      # (bioemu2.sampling.get_sampler); the mode's other half is its method
-      # token (pipeline/model_features._bioemu2_features)
-      mode = os.environ.get('BIOEMU2_MODE', 'structure')
-      if mode not in ('structure', 'equilibrium'):
-        raise ValueError(f'BIOEMU2_MODE={mode!r}: want structure or equilibrium')
-      out['step_scale'] = 1.5 if mode == 'structure' else 1.0
+      from alphafold3.model.pipeline import bioemu2_features
+      # sample-equilibrium and propagate sample at step_scale 1.0, predict-
+      # structure at 1.5 (bioemu2.sampling.get_sampler); the mode's other half
+      # is its method token (pipeline/model_features._bioemu2_features)
+      out['step_scale'] = 1.5 if bioemu2_features.mode() == 'structure' else 1.0
     return out
 
   def configure(self, config):

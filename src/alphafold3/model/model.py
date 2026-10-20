@@ -769,23 +769,110 @@ class Model(hk.Module):
     return sample
 
   @hk.transparent
-  def _bioemu2(self, batch, key, structure=True):
-    """BioEmu2, fused: its own trunk and denoiser (network/bioemu2.py) on its own
+  def _bioemu2(self, batch, key, structure=True, stage='all', recycle_carry=None,
+               diffusion_state=None):
+    """BioEmu2: its own trunk and denoiser (network/bioemu2.py) on its own
     features (pipeline/bioemu2_features.py, attached under `bioemu2/`), and
     OUR sampler on its flat atom layout, viewed as (atoms, 1 slot) so the
     sampler's (token, slot) reductions apply unchanged.
 
-    The samples come back in the AF3 token-atom layout through
-    `bioemu2/af3_index`, so the output writer is the shared one. BioEmu2 has no
-    confidence head: the result carries no confidence keys and becomes the
-    structure-only output.
+    Samples come back in the AF3 token-atom layout through `bioemu2/af3_index`,
+    so the output writer is the shared one. There is no confidence head: the
+    result carries no confidence keys and becomes the structure-only output.
+
+    The staged entry points (staged.staged_fold, live mode) carry: `embed` ->
+    {s_inputs, s_init, z_init, single, pair}; `trunk` one pass of it;
+    `diff_cond` the static context and the initial sampler state; `denoise`
+    steps on the flat layout, frames handed back in the AF3 layout; `score`
+    the result. Propagation runs fused only.
     """
     f = {k[len('bioemu2/'):]: v for k, v in batch.items() if k.startswith('bioemu2/')}
     for k in ('atom_pad_mask', 'token_pad_mask', 'atom_mask', 'is_dynamics_conditioned'):
       f[k] = jnp.asarray(f[k]).astype(bool)
     af3_index = f.pop('af3_index')
     af3_token = f.pop('af3_token')
+    x0 = f.pop('x0', None)
+    n_prop = f.pop('propagation_steps').shape[0] if 'propagation_steps' in f else 0
     b = self.bioemu2
+    config = self.config.heads.diffusion.eval
+    mask = f['atom_mask'][:, None]
+
+    class _Info:      # all the sampler reads of a batch
+      class predicted_structure_info:   # noqa: N801
+        atom_mask = mask
+
+    idx = jnp.maximum(af3_index, 0)
+    valid = af3_index >= 0
+
+    def to_af3(flat):                     # (..., N, 1, 3) -> (..., T_af3, A, 3)
+      return jnp.where(valid[..., None], flat[..., idx, 0, :], 0.0)
+
+    def contact_probs(z):
+      logits = b.distogram(z)
+      # P(d < 8 A). BioEmu2's inference code never states its bins; these are
+      # Boltz's (64 bins over 2-22 A), which its distogram head comes from.
+      edges = np.linspace(2.0, 22.0, 63)
+      contact = jax.nn.softmax(logits, -1)[..., :int((edges <= 8.0).sum())].sum(-1)
+      tok = jnp.maximum(af3_token, 0)
+      return logits, jnp.where((af3_token[:, None] >= 0) & (af3_token[None, :] >= 0),
+                               contact[tok[:, None], tok[None, :]], 0.0)
+
+    def denoising_step_for(ctx, s_inputs, s):
+      def denoising_step(positions_noisy, noise_level, companion=None):
+        fs = f if companion is None else {**f, 'coords_cond': companion[:, 0]}
+        den = b.denoise(fs, ctx, s_inputs, s, positions_noisy[:, 0], noise_level)
+        return den[:, None]
+      return denoising_step
+
+    def result(flat, s, z, s_inputs, extra=None):
+      logits, contact = contact_probs(z)
+      output = {'distogram': {'contact_probs': contact},
+                'bioemu2': {'single': s, 'pair': z, 's_inputs': s_inputs, 'distogram': logits}}
+      if flat is not None:
+        positions = to_af3(flat)
+        output['diffusion_samples'] = {
+            'atom_positions': positions,
+            'mask': jnp.tile(valid[None], (positions.shape[0], 1, 1)).astype(jnp.float32),
+            'bioemu2_flat': flat[..., 0, :],      # BioEmu2's own atom order, for its parity harness
+            **(extra or {})}
+      return output
+
+    # -- staged ---------------------------------------------------------------
+    if stage != 'all':
+      if n_prop:
+        raise NotImplementedError('bioemu2 propagation runs fused only, not staged')
+      if stage == 'embed':
+        s_inputs = b.input_embedder(f)
+        s_init, z_init = b.trunk_init(f, s_inputs)
+        return {'s_inputs': s_inputs, 's_init': s_init, 'z_init': z_init,
+                'single': jnp.zeros_like(s_init), 'pair': jnp.zeros_like(z_init)}, key
+      c = recycle_carry
+      if stage == 'trunk':
+        sng, pr = b.trunk_pass(f, c['s_inputs'], c['s_init'], c['z_init'], c['single'], c['pair'])
+        c = {**c, 'single': sng, 'pair': pr}
+        return c, key, contact_probs(pr)[1]
+      if stage == 'diff_cond':
+        ctx = b.static_context(f, c['single'], c['pair'])
+        init, levels = diffusion_head.sample_init(_Info, key, config, self.global_config)
+        return {'init': init, 'noise_levels': levels, 'pair_cond': ctx['z'],
+                'atom_cond': {'q0': ctx['q0'], 'p': ctx['p']}}
+      if stage == 'denoise':
+        dcarry, noise_level, pair_cond, atom_cond = diffusion_state
+        ctx = {'z': pair_cond, 'q0': atom_cond['q0'], 'p': atom_cond['p']}
+        body = diffusion_head.make_denoising_body(
+            denoising_step_for(ctx, c['s_inputs'], c['single']), mask, config,
+            self.global_config, False)
+        body = hk.vmap(body, in_axes=(0, None), split_rng=not hk.running_init())
+        if jnp.ndim(noise_level[0]) == 0:
+          dcarry, (pos, den) = body(dcarry, noise_level)
+        else:
+          dcarry, (pos, den) = hk.scan(body, dcarry, noise_level, unroll=1)
+        return {'carry': dcarry, 'atom_positions': to_af3(pos), 'denoised': to_af3(den)}
+      if stage == 'score':
+        return result(diffusion_state[0], c['single'], c['pair'], c['s_inputs'])
+      raise ValueError(f'bioemu2 has no stage {stage!r}')
+
+    # -- fused ----------------------------------------------------------------
     s_inputs = b.input_embedder(f)
     s_init, z_init = b.trunk_init(f, s_inputs)
     s, z = jnp.zeros_like(s_init), jnp.zeros_like(z_init)
@@ -795,40 +882,40 @@ class Model(hk.Module):
       n = num_trunk_passes(self.config.num_recycles, 'bioemu2')
       s, z = hk.fori_loop(0, n, lambda _, sz: b.trunk_pass(f, s_inputs, s_init, z_init, *sz),
                           (s, z))
-    logits = b.distogram(z)
-    # P(d < 8 A). BioEmu2's inference code never states its bins; these are
-    # Boltz's (64 bins over 2-22 A), which its distogram head comes from.
-    edges = np.linspace(2.0, 22.0, 63)
-    contact = jax.nn.softmax(logits, -1)[..., :int((edges <= 8.0).sum())].sum(-1)
-    tok = jnp.maximum(af3_token, 0)
-    contact_af3 = jnp.where((af3_token[:, None] >= 0) & (af3_token[None, :] >= 0),
-                            contact[tok[:, None], tok[None, :]], 0.0)
-    output = {'distogram': {'contact_probs': contact_af3},
-              'bioemu2': {'single': s, 'pair': z, 's_inputs': s_inputs, 'distogram': logits}}
     if not structure:
-      return output
+      return result(None, s, z, s_inputs)
     ctx = b.static_context(f, s, z)
-
-    def denoising_step(positions_noisy, noise_level):
-      den = b.denoise(f, ctx, s_inputs, s, positions_noisy[:, 0], noise_level)
-      return den[:, None]
-
-    class _Info:      # all the sampler reads of a batch
-      class predicted_structure_info:   # noqa: N801
-        atom_mask = f['atom_mask'][:, None]
-    sample = diffusion_head.sample(
-        denoising_step=denoising_step, batch=_Info, key=key,
-        config=self.config.heads.diffusion.eval, global_config=self.global_config)
-    flat = sample['atom_positions'][..., 0, :]                 # (samples, N, 3)
-    idx = jnp.maximum(af3_index, 0)
-    valid = af3_index >= 0
-    positions = jnp.where(valid[None, ..., None], flat[:, idx], 0.0)
-    samples = {'atom_positions': positions,
-               'mask': jnp.tile(valid[None], (positions.shape[0], 1, 1)).astype(jnp.float32)}
-    if 'trajectory' in sample:
-      samples['trajectory'] = sample['trajectory']
-    output['diffusion_samples'] = samples
-    return output
+    denoising_step = denoising_step_for(ctx, s_inputs, s)
+    extra = {}
+    if not n_prop:
+      sample = diffusion_head.sample(
+          denoising_step=denoising_step, batch=_Info, key=key,
+          config=config, global_config=self.global_config)
+      flat = sample['atom_positions']                          # (samples, N, 1, 3)
+      if 'trajectory' in sample:
+        extra['trajectory'] = sample['trajectory']
+    else:
+      # PROPAGATION (bioemu2.propagation): each sample a trajectory of n_prop
+      # lag-time steps from x0. A step samples conditioned on the previous
+      # frame (centred, carried through the sampler as its companion), then
+      # superposes the endpoint on that frame, as propagate_with_embeddings
+      # does. Sample i of the output is trajectory i // n_prop, step
+      # i % n_prop + 1.
+      w = mask[..., None].astype(jnp.float32)            # (N, 1, 1)
+      prev = jnp.broadcast_to(x0[None, :, None], (config.num_samples,) + mask.shape + (3,))
+      frames = []
+      for k in range(n_prop):
+        centre = (prev * w).sum(-3, keepdims=True) / w.sum()
+        sample = diffusion_head.sample(
+            denoising_step=denoising_step, batch=_Info, key=jax.random.fold_in(key, k),
+            config=config, global_config=self.global_config,
+            companion=(prev - centre) * w)
+        end = jax.vmap(lambda p, r: diffusion_head._kabsch(p, r, mask))(   # pylint: disable=protected-access
+            sample['atom_positions'], prev)
+        frames.append(end)
+        prev = end
+      flat = jnp.stack(frames, 1).reshape((-1,) + mask.shape + (3,))
+    return result(flat, s, z, s_inputs, extra)
 
   @hk.transparent
   def _structural_expand_refine(self, embeddings, residue_batch, struct_data,
@@ -909,9 +996,8 @@ class Model(hk.Module):
       key = hk.next_rng_key()
 
     if self.global_config.model == 'bioemu2':
-      if stage != 'all':
-        raise NotImplementedError(f'bioemu2 runs fused only (stage={stage!r})')
-      return self._bioemu2(batch, key, structure=structure)
+      return self._bioemu2(batch, key, structure=structure, stage=stage,
+                           recycle_carry=recycle_carry, diffusion_state=diffusion_state)
 
 
     # OpenDDE structural-token expansion: featurise_spec attaches the structural

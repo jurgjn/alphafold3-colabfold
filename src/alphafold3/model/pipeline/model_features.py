@@ -1960,6 +1960,9 @@ def _bioemu2_features(batch, fold_input, cyclic=None):
   `af3_token`: each AF3 token -> a BioEmu2 token or -1).
 
   BIOEMU2_MODE picks the mode (`structure`, the default, or `equilibrium`);
+  BIOEMU2_CONTACTS=<json> conditions on contacts (bioemu2_features.load_contacts);
+  BIOEMU2_X0=<mmCIF> propagates from that structure instead (equilibrium mode),
+  BIOEMU2_LAG_NS (default 1) later, chained BIOEMU2_STEPS times (default 1);
   bioemu2_features.SMILES_TEMPLATES lets a parity harness hand in the vendor's
   own conformer draw for a SMILES ligand.
   """
@@ -1971,11 +1974,19 @@ def _bioemu2_features(batch, fold_input, cyclic=None):
     raise ValueError('bioemu2 needs fold_input= to build its features')
   if cyclic:
     raise NotImplementedError('bioemu2 has no cyclic input')
-  mode = os.environ.get('BIOEMU2_MODE', 'structure')
+  mode = bf.mode()
   lay = _features._unwrap(batch.get('token_atoms_layout'))
   n_af3 = lay.atom_name.shape[0]
   ccd = chemical_components.Ccd(user_ccd=fold_input.user_ccd)
-  f, keys = bf.featurise(fold_input, ccd, mode=mode, smiles_templates=bf.SMILES_TEMPLATES)
+  contacts = (bf.load_contacts(os.environ['BIOEMU2_CONTACTS'])
+              if os.environ.get('BIOEMU2_CONTACTS') else None)
+  f, keys = bf.featurise(fold_input, ccd, mode=mode, smiles_templates=bf.SMILES_TEMPLATES,
+                         contacts=contacts)
+  if os.environ.get('BIOEMU2_X0'):
+    # propagation: from this frame, BIOEMU2_LAG_NS later, BIOEMU2_STEPS times
+    f = bf.add_propagation(f, bf.x0_from_mmcif(os.environ['BIOEMU2_X0'], keys),
+                           float(os.environ.get('BIOEMU2_LAG_NS', '1.0')),
+                           int(os.environ.get('BIOEMU2_STEPS', '1')))
   t = f['res_type'].shape[0]
   n = int(f['atom_pad_mask'].sum())
   if n_af3 > t:     # the AF3 batch is bucket-padded: pad ours to match, so one compile serves a bucket

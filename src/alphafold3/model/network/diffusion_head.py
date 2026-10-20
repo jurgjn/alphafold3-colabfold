@@ -696,14 +696,33 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai):
       noise_level, noise_level_prev, *injected = step_noise
     else:
       noise_level, noise_level_prev = step_noise
-    key, positions = carry
+    # A COMPANION frame rides in the carry when the caller gives one (BioEmu2's
+    # propagation: the frame the sample is conditioned on). It takes the SAME
+    # rigid augmentation as the state every step -- each centred on its own
+    # masked mean, then the one rotation and translation -- so the two stay in
+    # one frame, as bioemu2's edm_sampler augments coords_cond. Without one the
+    # draws below are exactly the ones this body always made.
+    companion = None
+    if len(carry) == 3:
+      key, positions, companion = carry
+    else:
+      key, positions = carry
     key, key_noise, key_aug = jax.random.split(key, 3)
 
+    rot = None if injected is None else injected[0].astype(positions.dtype)
+    trans = None if injected is None else injected[1].astype(positions.dtype)
+    if companion is not None and injected is None:
+      # random_augmentation's own draws, made here so the companion shares them
+      rotation_key, translation_key = jax.random.split(key_aug)
+      rot = random_rotation(rotation_key)
+      trans = jax.random.normal(translation_key, shape=(3,))
     positions = random_augmentation(
         rng_key=key_aug, positions=positions, mask=mask,  # pyrefly: ignore[bad-argument-type]
-        rot=None if injected is None else injected[0].astype(positions.dtype),
-        translation=None if injected is None else injected[1].astype(positions.dtype),
+        rot=rot, translation=trans,
     )
+    if companion is not None:
+      companion = random_augmentation(rng_key=key_aug, positions=companion, mask=mask,
+                                      rot=rot, translation=trans)
 
     # chai's churn is EDM's own parameterisation, not AF3's: a constant
     # min(S_churn / N, sqrt(2) - 1) applied wherever S_tmin <= sigma <= S_tmax,
@@ -731,7 +750,10 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai):
     noise = noise_scale * eps
     positions_noisy = positions + noise
 
-    positions_denoised = denoising_step(positions_noisy, t_hat)
+    if companion is not None:
+      positions_denoised = denoising_step(positions_noisy, t_hat, companion=companion)
+    else:
+      positions_denoised = denoising_step(positions_noisy, t_hat)
     if global_config is not None and global_config.model in model_config.REALIGN_SAMPLER:
       # ESMFold2 rigid-aligns the NOISY coords onto the denoised prediction
       # before taking the Euler step. It augments (rotates and translates) the
@@ -766,7 +788,8 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai):
     # gyration of 830 A, i.e. a cloud -- while the prediction is already a
     # compact structure that sharpens as sigma falls. Showing the state makes
     # the animation look like noise for most of its length.
-    return (key, positions_out), (positions_out, positions_denoised)
+    carry_out = (key, positions_out) if companion is None else (key, positions_out, companion)
+    return carry_out, (positions_out, positions_denoised)
 
   return apply_denoising_step
 
@@ -837,8 +860,13 @@ def sample(
     key: jnp.ndarray,
     config: SampleConfig,
     global_config: model_config.GlobalConfig | None = None,
+    companion: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
   """Sample using denoiser on batch.
+
+  companion: optional (<common_axes>, 3) frame, or one per sample, carried
+  alongside each sample and augmented with it (see make_denoising_body); the
+  denoiser is then called with `companion=`.
 
   Args:
     denoising_step: the denoising function.
@@ -867,6 +895,9 @@ def sample(
   noise_levels = noise_schedule_for(config, chai)
 
   init, _ = sample_init(batch, key, config, global_config)
+  if companion is not None:
+    comp = jnp.asarray(companion, init[1].dtype)
+    init = (*init, jnp.broadcast_to(comp, init[1].shape))
 
   apply_denoising_step = hk.vmap(
       apply_denoising_step, in_axes=(0, None), split_rng=(not hk.running_init())
@@ -891,7 +922,7 @@ def sample(
        jnp.asarray(TRAJ_INJECT['trans']), jnp.asarray(TRAJ_INJECT['eps'])),
       unroll=1,
   )
-  _, positions_out = result
+  positions_out = result[1]
 
   final_dense_atom_mask = jnp.tile(mask[None], (num_samples, 1, 1))
 

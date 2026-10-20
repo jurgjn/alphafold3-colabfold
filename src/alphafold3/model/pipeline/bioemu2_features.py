@@ -59,6 +59,66 @@ _UNKNOWN_CCD = {'protein': 'UNK', 'dna': 'DN', 'rna': 'N'}
 _CAPPING = ('OXT', 'OP3')
 
 
+def mode():
+  """The sampling mode a run asks for: BIOEMU2_MODE, `structure` by default.
+  Propagation (BIOEMU2_X0 set) is BioEmu2's equilibrium mode by definition --
+  bioemu2.propagation embeds with mode="equilibrium" -- so it implies it."""
+  import os
+  m = os.environ.get('BIOEMU2_MODE')
+  if os.environ.get('BIOEMU2_X0'):
+    if m not in (None, 'equilibrium'):
+      raise ValueError('propagation (BIOEMU2_X0) samples in equilibrium mode; unset BIOEMU2_MODE')
+    return 'equilibrium'
+  m = m or 'structure'
+  if m not in METHOD:
+    raise ValueError(f'BIOEMU2_MODE={m!r}: want structure or equilibrium')
+  return m
+
+
+def x0_from_mmcif(path, atom_keys):
+  """A starting frame for propagation, in BioEmu2's atom order: every atom in
+  `atom_keys` (chain, 1-based residue, name) read from the first model of an
+  mmCIF -- e.g. a previous sample of this same input. A .npy is taken as the
+  coordinates themselves, already in that order (how the parity harness hands
+  both sides one frame)."""
+  if str(path).endswith('.npy'):
+    x0 = np.load(path).astype(np.float32)
+    if x0.shape != (len(atom_keys), 3):
+      raise ValueError(f'{path}: shape {x0.shape}, want ({len(atom_keys)}, 3)')
+    return x0
+  from alphafold3 import structure
+  with open(path) as fh:
+    s = structure.from_mmcif(fh.read())
+  where = {(str(c), int(r), str(a)): (x, y, z) for c, r, a, x, y, z in zip(
+      s.chain_id, s.res_id, s.atom_name, s.atom_x, s.atom_y, s.atom_z)}
+  missing = [k for k in atom_keys if k not in where]
+  if missing:
+    raise ValueError(f'{path} lacks {len(missing)} atom(s) of this input, e.g. {missing[:3]}')
+  return np.array([where[k] for k in atom_keys], np.float32)
+
+
+def add_propagation(f, x0, lag_ns, steps=1):
+  """Condition on a starting frame `x0` (real atoms, angstrom) at lag `lag_ns`:
+  propagate_with_embeddings' coords_cond (the frame centred), dt in ps, and the
+  flag. `x0` itself rides along, uncentred, for superposing the endpoint on it;
+  `propagation_steps` is a length-`steps` placeholder so the chain length is a
+  static shape."""
+  if not (lag_ns > 0 and np.isfinite(lag_ns)):
+    raise ValueError('the lag must be finite and positive')
+  g = dict(f)
+  n_pad = f['template_coords'].shape[0]
+  frame = np.zeros((n_pad, 3), np.float32)
+  frame[:len(x0)] = x0
+  cond = np.zeros((n_pad, 3), np.float32)
+  cond[:len(x0)] = x0 - x0.mean(0)
+  g['coords_cond'] = cond
+  g['x0'] = frame
+  g['dt'] = np.float32(lag_ns * 1000.0)
+  g['is_dynamics_conditioned'] = np.bool_(True)
+  g['propagation_steps'] = np.zeros(steps, np.int32)
+  return g
+
+
 def encode_atom_name(name):
   return [ord(c) - 32 for c in name] + [0] * (4 - len(name))
 
@@ -260,8 +320,6 @@ def featurise(fold_input, ccd, mode='structure', smiles_templates=None, pad_atom
   (chain id, 1-based residue index, atom name) for every real atom, in order --
   how an output is mapped back onto the structure.
   """
-  if contacts:
-    raise NotImplementedError('contact conditioning is not ported yet')
   smiles_templates = smiles_templates or {}
   bonds = fold_input.bonded_atom_pairs or []
   feats = {k: [] for k in ('template_coords', 'element', 'charge', 'name_encoding',
@@ -357,6 +415,8 @@ def featurise(fold_input, ccd, mode='structure', smiles_templates=None, pad_atom
       'is_dynamics_conditioned': np.bool_(False),
   }
   out.update(_msa_features(chain_order, chain_info, f, centre, T))
+  if contacts:
+    out.update(_contact_features(contacts, chain_info, f, centre, T))
 
   # atoms, padded to the window (batch_collate)
   n_pad = pad_atoms_to or math.ceil(n_atoms / WINDOW) * WINDOW
@@ -391,10 +451,102 @@ def pad_atoms(f, n):
     return g
   fill = {'token_idx_at_atom': -1, 'ref_space_uid': -1, 'atom_pad_mask': False, 'atom_mask': False}
   for k in ('template_coords', 'element', 'charge', 'name_encoding', 'token_idx_at_atom',
-            'ref_space_uid', 'atom_pad_mask', 'atom_mask', 'coords_cond'):
+            'ref_space_uid', 'atom_pad_mask', 'atom_mask', 'coords_cond', 'x0'):
+    if k not in f:
+      continue
     x = f[k]
     g[k] = np.concatenate([x, np.full((extra,) + x.shape[1:], fill.get(k, 0), x.dtype)])
   return g
+
+
+CONTACT_CLASSES = {'UNSPECIFIED': 0, 'UNSELECTED': 1, 'POCKET>BINDER': 2, 'BINDER>POCKET': 3,
+                   'CONTACT': 4}
+
+
+def load_contacts(path):
+  """Contacts from a JSON file, in BioEmu2's Contact form:
+  [{"token1": {"asym_id": "A", "res_id": 12}, "token2": {"asym_id": "B",
+  "atom_name": "C3"}, "max_distance": 6.0}, ...]. A token's res_id defaults to
+  1 only when it names an atom (ContactToken.validate_explicit_res_id)."""
+  import json
+  with open(path) as fh:
+    raw = json.load(fh)
+  out = []
+  for c in raw:
+    extra = set(c) - {'token1', 'token2', 'max_distance'}
+    if extra:
+      raise ValueError(f'unknown contact field(s) {sorted(extra)}')
+    toks = []
+    for k in ('token1', 'token2'):
+      t = dict(c[k])
+      if set(t) - {'asym_id', 'res_id', 'atom_name'}:
+        raise ValueError(f'unknown contact token field(s) in {t}')
+      if t.get('atom_name') is None and 'res_id' not in t:
+        raise ValueError(f'{t}: res_id must be explicitly set when atom_name is None')
+      if int(t.get('res_id', 1)) < 1:
+        raise ValueError(f'{t}: res_id is 1-based')
+      toks.append((t['asym_id'], int(t.get('res_id', 1)), t.get('atom_name')))
+    d = float(c.get('max_distance', 6.0))
+    if not 4.0 <= d <= 20.0:
+      raise ValueError(f'max_distance {d} is outside [4, 20] A, the range BioEmu2 was trained on')
+    out.append((toks[0], toks[1], d))
+  return out
+
+
+def _contact_features(contacts, chain_info, f, centre, T):
+  """_add_contact_conditioning: every pair UNSELECTED, the named pairs CONTACT
+  (both ways) at their distance. A residue token is found by chain and
+  chain-local residue; a named atom picks the token centred on that atom; a
+  residue with several tokens (a modified residue) is addressed by its CA or
+  C1' token."""
+  names = [None] * T
+  local = np.zeros(T, np.int64)
+  chain_of = {}
+  for c, (ch, kind, payload, residues, t0, t1) in enumerate(chain_info):
+    chain_of[ch.id] = (c, kind, payload, t0, t1)
+  res_at_token = np.zeros(T, np.int64)
+  res_at_token[f['token_idx_at_atom']] = f['residue_idx']
+  atom_names = []
+  for row in f['name_encoding']:
+    atom_names.append(''.join(chr(x + 32) for x in row if x).strip())
+  for t in range(T):
+    names[t] = atom_names[centre[t]]
+  for ch, (c, kind, payload, t0, t1) in chain_of.items():
+    local[t0:t1] = res_at_token[t0:t1] - res_at_token[t0]
+
+  def resolve(tok):
+    cid, res_id, atom = tok
+    if cid not in chain_of:
+      raise ValueError(f'contact token {tok}: no chain {cid}')
+    c, kind, payload, t0, t1 = chain_of[cid]
+    if kind in ('ccd', 'smiles'):
+      if not atom:
+        raise ValueError(f'contact token {tok} addresses a ligand and must name an atom')
+      if res_id != 1:
+        raise ValueError(f'contact token {tok}: a ligand has one residue')
+    else:
+      if kind == 'branched' and not atom:
+        raise ValueError(f'contact token {tok} addresses a branched entity and must name an atom')
+      n_res = len(payload)
+      if res_id > n_res:
+        raise ValueError(f'contact token {tok}: res_id exceeds the chain length {n_res}')
+    sel = [t for t in range(t0, t1) if local[t] == res_id - 1]
+    if atom:
+      sel = [t for t in sel if names[t] == atom]
+    elif len(sel) > 1:
+      sel = [t for t in sel if names[t] in ('CA', "C1'")]
+    if len(sel) != 1:
+      raise ValueError(f'contact token {tok} does not match exactly one token')
+    return sel[0]
+
+  cls = np.full((T, T), CONTACT_CLASSES['UNSELECTED'], np.int64)
+  thr = np.zeros((T, T), np.float32)
+  for a, b, d in contacts:
+    i, j = resolve(a), resolve(b)
+    cls[i, j] = cls[j, i] = CONTACT_CLASSES['CONTACT']
+    thr[i, j] = thr[j, i] = d
+  return {'contact_conditioning': np.eye(len(CONTACT_CLASSES), dtype=np.int64)[cls],
+          'contact_threshold': thr}
 
 
 def pad_tokens(f, n):

@@ -94,6 +94,9 @@ VENDORS = {
     # trust_remote_code), in ~/venv_synthyra built from their requirements.txt
     'esmfold2_lm600m': (_H + '/venv_synthyra/bin/python', None, 'esmfold2_upstream_runner.py'),
     'esmfold2_lm300m': (_H + '/venv_synthyra/bin/python', None, 'esmfold2_upstream_runner.py'),
+    # BioEmu2 @7846769: ~/bioemu2 installed into ~/venv_bioemu2 by its own lock
+    # (`uv sync --frozen --extra cuda`), checkpoint ~/bioemu2_ckpt.
+    'bioemu2': (_H + '/venv_bioemu2/bin/python', None, 'bioemu2_upstream_runner.py'),
 }
 
 
@@ -466,6 +469,8 @@ def trajectory_case(model, name, j, recycles):
   and its sigma schedule; a different count, schedule, noise or step scale, or
   augmentation convention then shows up as a different trajectory.
   """
+  if model == 'bioemu2':
+    return bioemu2_trajectory(name, j, recycles)
   import jax.numpy as jnp
   from alphafold3.model.network import diffusion_head as dh
   rows = []
@@ -607,7 +612,216 @@ def trajectory_case(model, name, j, recycles):
   return rows
 
 
+def _bioemu2_setup(j, recycles, tmp):
+  """Both sides' BioEmu2 features. Ours through the shipped path (featurise_ours
+  -> model_features), the vendor's SMILES conformer draw handed over."""
+  if any(e.get('protein', {}).get('templates') for e in j['sequences']):
+    raise VendorNA('bioemu2 has no template input')
+  from alphafold3.model.pipeline import bioemu2_features as bf
+  cj = os.path.join(tmp, 'case.json')
+  with open(cj, 'w') as f:
+    json.dump(j, f)
+  bdir = os.path.join(tmp, 'vendor')
+  _vendor('bioemu2', 'featurise', cj, bdir)
+  ref = dict(np.load(os.path.join(bdir, 'feats.npz')))
+  bf.SMILES_TEMPLATES.clear()
+  for k in ref:
+    if k.startswith('smiles.') and k.endswith('.coords'):
+      cid = k.split('.')[1]
+      bf.SMILES_TEMPLATES[cid] = bf.Template(
+          names=list(ref['smiles.%s.names' % cid]), element=ref['smiles.%s.element' % cid],
+          charge=ref['smiles.%s.charge' % cid], coords=ref[k], bonds=ref['smiles.%s.bonds' % cid])
+  try:
+    batch, raw, cfg, model_dir = featurise_ours('bioemu2', j, recycles, 'none')
+  finally:
+    bf.SMILES_TEMPLATES.clear()
+  return bdir, ref, batch, cfg, model_dir
+
+
+def _bioemu2_feature_rows(ref, batch):
+  """Every array of the vendor's feature dict against ours, on the vendor's
+  (unpadded) extent -- exact, not graded on a scale: a feature is equal or it
+  is a bug."""
+  rows, bad = [], []
+  t = ref['res_type'].shape[0]
+  n = ref['template_coords'].shape[0]
+  for k, r in sorted(ref.items()):
+    if k.startswith('smiles.') or k in ('coords', 'num_tokens', 'num_nodes', 'num_residues', 'bond_index',
+                                        'bond_pad_mask', 'template_bond_index', 'bond_type', 'residue_idx',
+                                        'residue_type', 'mol_type', 'distogram_index'):
+      continue
+    if 'bioemu2/' + k not in batch:
+      bad.append('missing ' + k)
+      continue
+    a = np.asarray(batch['bioemu2/' + k])
+    sl = tuple(slice(0, m) for m in r.shape)
+    if any(x < y for x, y in zip(a.shape, r.shape)) or a.ndim != r.ndim:
+      bad.append('%s shape %s vs %s' % (k, a.shape, r.shape))
+      continue
+    d = np.abs(a[sl].astype(np.float64) - r.astype(np.float64))
+    if d.size and d.max() > 1e-6:
+      bad.append('%s max|d| %.3g' % (k, d.max()))
+  rows.append(('feat', '%d vendor feature arrays (%d tokens, %d atoms): %s'
+               % (len([k for k in ref if not k.startswith('smiles.')]), t, n,
+                  'all equal' if not bad else '; '.join(bad[:6])), 'PARITY' if not bad else 'BAD'))
+  return rows
+
+
+def _bioemu2_ours(batch, cfg, model_dir, noisy, sigma):
+  """Our trunk through Model._bioemu2 (structure=False), then one denoise step
+  on the same features."""
+  import haiku as hk
+  import jax
+  import jax.numpy as jnp
+  from alphafold3.model import model as af3_model
+  from alphafold3.model import params as afp
+
+  class M(af3_model.Model):
+    def __call__(self, b):
+      out = super().__call__(b, structure=False)
+      f = {k[len('bioemu2/'):]: v for k, v in b.items() if k.startswith('bioemu2/')}
+      for k in ('atom_pad_mask', 'token_pad_mask', 'atom_mask', 'is_dynamics_conditioned'):
+        f[k] = jnp.asarray(f[k]).astype(bool)
+      e = out['bioemu2']
+      ctx = self.bioemu2.static_context(f, e['single'], e['pair'])
+      den = self.bioemu2.denoise(f, ctx, e['s_inputs'], e['single'], noisy, sigma)
+      return {**e, 'pair_cond': ctx['z'], 'denoised': den}
+  fwd = hk.transform(lambda b: M(cfg)(b))
+  params = afp.get_model_haiku_params(model_dir=model_dir)
+  return jax.device_get(jax.jit(fwd.apply)(params, jax.random.PRNGKey(0), batch))
+
+
+def bioemu2_case(name, j, recycles):
+  rows = []
+  with tempfile.TemporaryDirectory() as tmp:
+    bdir, ref, batch, cfg, model_dir = _bioemu2_setup(j, recycles, tmp)
+    rows += _bioemu2_feature_rows(ref, batch)
+    n_v, t = ref['template_coords'].shape[0], ref['res_type'].shape[0]
+    real = ref['atom_pad_mask'].astype(bool)
+    rng = np.random.default_rng(int(os.environ.get('INJECT_SEED', 0)))
+    sigma = float(os.environ.get('INJECT_SIGMA', 30.0))
+    noisy = (rng.normal(size=(n_v, 3)) * np.sqrt(sigma ** 2 + 16.0 ** 2)).astype(np.float32)
+    noisy[~real] = 0
+    inp = os.path.join(tmp, 'in.npz')
+    np.savez(inp, positions_noisy=noisy, noise_level=sigma, recycling_steps=recycles)
+    _vendor('bioemu2', 'forward', bdir, inp, os.path.join(tmp, 'v.npz'))
+    v = dict(np.load(os.path.join(tmp, 'v.npz')))
+    n_o = np.asarray(batch['bioemu2/template_coords']).shape[0]
+    noisy_o = np.zeros((n_o, 3), np.float32)
+    noisy_o[:n_v] = noisy
+    o = _bioemu2_ours(batch, cfg, model_dir, noisy_o, np.float32(sigma))
+  pairs = [('s_inputs', o['s_inputs'][:t], v['s_inputs']),
+           ('trunk single', o['single'][:t], v['s']),
+           ('trunk pair', o['pair'][:t, :t], v['z']),
+           ('distogram logits', o['distogram'][:t, :t], v['distogram_logits']),
+           ('pair conditioning', o['pair_cond'][:t, :t], v['pair_cond']),
+           ('denoised (sigma %g)' % sigma, o['denoised'][:n_v][real], v['denoised'][real])]
+  for label, a, b in pairs:
+    c, ratio = P.compare(np.asarray(a), np.asarray(b))
+    rows.append(('model', '%s corr %.6f max|d|/rms %.2e' % (label, c, ratio), P.grade(c, ratio)))
+  return rows
+
+
+def bioemu2_trajectory(name, j, recycles):
+  """The full sampler on both sides, every draw injected (see trajectory_case).
+
+  BIOEMU2_PROPAGATE_NS=<lag> grades PROPAGATION instead: stock BioEmu2 first
+  samples an equilibrium structure E (draws INJECT_SEED + 1), then both sides
+  propagate from E by the lag on the same draws, each endpoint superposed on E."""
+  from alphafold3.model.network import diffusion_head as dh
+  rows = []
+  lag = os.environ.get('BIOEMU2_PROPAGATE_NS')
+  if lag:
+    os.environ['BIOEMU2_MODE'] = 'equilibrium'
+  try:
+    return _bioemu2_trajectory(name, j, recycles, lag, rows, dh)
+  finally:
+    for k in ('BIOEMU2_X0', 'BIOEMU2_LAG_NS'):
+      os.environ.pop(k, None)
+    if lag:
+      os.environ.pop('BIOEMU2_MODE', None)
+
+
+def _bioemu2_draws(seed, n_v):
+  rng = np.random.default_rng(seed)
+  x0 = rng.normal(size=(n_v, 3)).astype(np.float32)
+  rot = _rotations(rng, TRAJ_MAX_STEPS)
+  trans = rng.normal(size=(TRAJ_MAX_STEPS, 3)).astype(np.float32)
+  eps = rng.normal(size=(TRAJ_MAX_STEPS, n_v, 3)).astype(np.float32)
+  return x0, rot, trans, eps
+
+
+def _bioemu2_trajectory(name, j, recycles, lag, rows, dh):
+  with tempfile.TemporaryDirectory() as tmp:
+    bdir, ref, batch, cfg, model_dir = _bioemu2_setup(j, recycles, tmp)
+    extra = {}
+    if lag:
+      n_v = ref['template_coords'].shape[0]
+      real = ref['atom_pad_mask'].astype(bool)
+      x0, rot, trans, eps = _bioemu2_draws(int(os.environ.get('INJECT_SEED', 0)) + 1, n_v)
+      inp = os.path.join(tmp, 'start.npz')
+      np.savez(inp, traj_x0=x0, traj_rot=rot, traj_trans=trans, traj_eps=eps, recycling_steps=recycles)
+      _vendor('bioemu2', 'trajectory', bdir, inp, os.path.join(tmp, 'start_out.npz'))
+      start = np.asarray(np.load(os.path.join(tmp, 'start_out.npz'))['final']).reshape(-1, 3)[real]
+      np.save(os.path.join(tmp, 'x0.npy'), start)
+      os.environ['BIOEMU2_X0'] = os.path.join(tmp, 'x0.npy')
+      os.environ['BIOEMU2_LAG_NS'] = lag
+      batch, raw, cfg, model_dir = featurise_ours('bioemu2', j, recycles, 'none')
+      extra = dict(x0_frame=start, lag_ns=float(lag))
+      rows.append(('traj', 'propagation by %s ns from a stock equilibrium sample' % lag, 'INFO'))
+    rows += _bioemu2_feature_rows(ref, batch)
+    n_v = ref['template_coords'].shape[0]
+    real = ref['atom_pad_mask'].astype(bool)
+    x0, rot, trans, eps = _bioemu2_draws(int(os.environ.get('INJECT_SEED', 0)), n_v)
+    inp = os.path.join(tmp, 'traj.npz')
+    np.savez(inp, traj_x0=x0, traj_rot=rot, traj_trans=trans, traj_eps=eps, recycling_steps=recycles,
+             **extra)
+    _vendor('bioemu2', 'trajectory', bdir, inp, os.path.join(tmp, 'b.npz'))
+    b = dict(np.load(os.path.join(tmp, 'b.npz')))
+    ev = cfg.heads.diffusion.eval
+    ev.num_samples = 1
+    levels = np.asarray(dh.noise_schedule_for(ev, False))
+    steps = len(levels) - 1
+    n_o = np.asarray(batch['bioemu2/template_coords']).shape[0]
+
+    def to_ours(x):
+      out = np.zeros((n_o, 1, 3), np.float32)
+      out[:n_v, 0] = x
+      return out
+    dh.TRAJ_INJECT = dict(x0=to_ours(x0), rot=rot[:steps], trans=trans[:steps],
+                          eps=np.stack([to_ours(e) for e in eps[:steps]]))
+    dh.SAMPLER_OVERRIDE = None
+    try:
+      ours = forward_ours(batch, cfg, model_dir, None, None, None, real_sampler=True)
+    finally:
+      dh.TRAJ_INJECT = None
+  rows.append(('traj', 'steps ours %d vendor %d' % (steps, int(b['steps'])),
+               'PARITY' if steps == int(b['steps']) else 'BAD'))
+  vs = np.asarray(b['sigmas'], np.float64)
+  if len(vs) == len(levels):
+    c, ratio = P.compare(levels, vs)
+    rows.append(('traj', 'sigma schedule max|d| %.2e' % np.abs(levels - vs).max(), P.grade(c, ratio)))
+  else:
+    rows.append(('traj', 'sigma schedule length ours %d vendor %d' % (len(levels), len(vs)), 'BAD'))
+  fin_o = np.asarray(ours['diffusion_samples/bioemu2_flat'])[0][:n_v][real]
+  fin_v = np.asarray(b['final']).reshape(-1, 3)
+  fin_v = fin_v[real] if len(fin_v) == len(real) else fin_v     # a propagated endpoint comes back real atoms only
+  c, ratio = P.compare(fin_o, fin_v)
+  rows.append(('traj', 'final coordinates corr %.6f max|d|/rms %.2e (max |d| %.3f A)'
+               % (c, ratio, np.abs(fin_o - fin_v).max()), P.grade(c, ratio)))
+  a = fin_o.astype(np.float64) - fin_o.mean(0)
+  v = fin_v.astype(np.float64) - fin_v.mean(0)
+  u, _, vt = np.linalg.svd(a.T @ v)
+  rot_k = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+  rows.append(('traj', 'superposed rms %.4f A (raw rms %.4f A; rigid rotation %.3f deg)'
+               % (np.sqrt((((a @ rot_k) - v) ** 2).sum(-1).mean()), np.sqrt(((fin_o - fin_v) ** 2).sum(-1).mean()),
+                  np.degrees(np.arccos(np.clip((np.trace(rot_k) - 1) / 2, -1, 1)))), 'INFO'))
+  return rows
+
+
 def run_case(model, name, j, recycles, bf16, graded=False):
+  if model == 'bioemu2':
+    return bioemu2_case(name, j, recycles)
   rows = []
   with tempfile.TemporaryDirectory() as tmp:
     cj = os.path.join(tmp, 'case.json')
