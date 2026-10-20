@@ -748,7 +748,8 @@ class Evoformer(hk.Module):
       is_paired = jnp.where(origin == 0, query_paired, 0.0).astype(dtype)
       is_paired = jnp.broadcast_to(is_paired[:, None, None], msa_feat.shape[:2] + (1,))
       if msa_batch.paired is not None:
-        is_paired = msa_batch.paired[..., None].astype(dtype)   # boltz_msa: native's per-chain pairing flags
+        # boltz_msa: native's per-chain pairing flags; rf3_msa: atomworks' residue_is_paired (paired rows of a heteromer)
+        is_paired = msa_batch.paired[..., None].astype(dtype)
       msa_feat = jnp.concatenate([msa_feat, is_paired], axis=-1)
 
     if self.global_config.model in model_config.ESMFOLD2_FAMILY:

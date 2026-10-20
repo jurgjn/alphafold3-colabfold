@@ -60,6 +60,20 @@ def _vendor_na(msg):
   print('VENDOR_NA: ' + msg, file=sys.stderr)
   sys.exit(3)
 
+def _strip_trailing_insertions(a3m):
+  """An a3m with each row's insertions past its last aligned column dropped.
+
+  atomworks' parse_a3m records an insertion run at the index of the column it precedes, so a run after the LAST
+  column lands at index L and raises (paired_msa: "index 76 is out of bounds for axis 0 with size 76"): stock RF3
+  cannot read such a row at all. AF3's parser (and ours) gives an insertion run to the next aligned column, so a
+  trailing run counts for nothing there -- dropping it changes no feature on our side and lets the vendor read the
+  row as we do."""
+  out = []
+  for line in a3m.splitlines():
+    out.append(line if line.startswith('>') else line.rstrip('abcdefghijklmnopqrstuvwxyz'))
+  return '\n'.join(out) + '\n'
+
+
 def _trivial_msa(msa, seq):
   return (not msa) or msa.strip() == '>q\n%s' % seq
 
@@ -126,12 +140,12 @@ def _rf3_json(j, msa_dir):
         lines += ur[2:]
         p = os.path.join(msa_dir, '%s.a3m' % ids[0])
         with open(p, 'w') as f:
-          f.write('\n'.join(lines) + '\n')
+          f.write(_strip_trailing_insertions('\n'.join(lines) + '\n'))
         d['msa_path'] = p
       elif not _trivial_msa(e.get('unpairedMsa'), e['sequence']):
         p = os.path.join(msa_dir, '%s.a3m' % ids[0])
         with open(p, 'w') as f:
-          f.write(e['unpairedMsa'])
+          f.write(_strip_trailing_insertions(e['unpairedMsa']))
         d['msa_path'] = p
       comps.append(d)
     elif kind == 'ligand':
@@ -315,7 +329,11 @@ def _layout(ex):
       **{'atomfeat.' + k: v.detach().cpu().numpy().copy()
          for k, v in f.items()
          if hasattr(v, 'shape') and v.ndim >= 1 and v.shape[0] == len(aa)
-         and k not in ('ref_pos', 'ref_space_uid', 'ref_element')})
+         and k not in ('ref_pos', 'ref_space_uid', 'ref_element')},
+      # the MSA features as atomworks built them (rows, order, pairing), for a row-by-row diff against ours
+      **{'msafeat.' + k: v.detach().cpu().numpy().copy()
+         for k, v in f.items()
+         if hasattr(v, 'shape') and any(t in k for t in ('msa', 'profile', 'deletion', 'ins'))})
 
 
 def featurise(model, case_json, out_dir):

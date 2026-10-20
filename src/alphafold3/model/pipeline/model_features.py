@@ -1100,13 +1100,87 @@ def _boltz_msa(batch, fold_input, variant='boltz2'):
 _RF3_MAX_MSA_SEQS = 10000      # rf3 build_af3_transform_pipeline max_msa_sequences and n_msa
 
 
+def _rf3_tax_id(description, default=None):
+  """atomworks extract_tax_id: the header's first `TaxID=N`, else `default` (as a string), else '' (pairs nothing)."""
+  import re
+  m = re.search(r'TaxID=(\d+)', description)
+  return m.group(1) if m else ('' if default is None else str(default))
+
+
+def _rf3_join_by_tax_id(msas, gap):
+  """atomworks join_multiple_msas_by_tax_id(dense=True) over per-entity MSAs (dicts of msa, ins, tax_ids, padded;
+  query first, its TaxID 'query'): returns each entity's columns of the joined MSA, in the order given.
+
+  The entities are joined left to right. Each join keeps the rows whose TaxID both sides share (never ''), ordered by
+  (is the query's TaxID, TaxID as a string, identity to the query) all descending -- ties in reverse row order, as
+  the reversed lexsort leaves them -- and a TaxID's k-th copy pairs with the other side's k-th; the rest are unpaired.
+  Dense: the rows paired in any join come first; each entity's never-paired rows, less those all gap in its own
+  columns, follow in file order, stacked side by side and padded (gap, marked padded) to the deepest entity."""
+  def matched(m, shared):
+    idx = np.flatnonzero(np.isin(m['tax_ids'], shared))
+    tax = m['tax_ids'][idx]
+    sim = (m['msa'][idx] == m['msa'][0:1]).mean(axis=1)
+    return idx[np.lexsort((sim, tax, (tax == m['tax_ids'][0]).astype(int)))[::-1]]
+
+  def numbered(tax):
+    seen = {}
+    out = []
+    for t in tax:
+      out.append('%s_%d' % (t, seen.get(t, 0)))
+      seen[t] = seen.get(t, 0) + 1
+    return np.array(out)
+
+  def join(a, b):
+    shared = a['tax_ids'][np.isin(a['tax_ids'], b['tax_ids'])]
+    shared = shared[shared != '']
+    ia, ib = matched(a, shared), matched(b, shared)
+    na, nb = numbered(a['tax_ids'][ia]), numbered(b['tax_ids'][ib])
+    ia, ib = ia[np.isin(na, nb)], ib[np.isin(nb, na)]
+    ua = np.setdiff1d(np.arange(a['msa'].shape[0]), ia)
+    ub = np.setdiff1d(np.arange(b['msa'].shape[0]), ib)
+    la, lb = a['msa'].shape[1], b['msa'].shape[1]
+    def stack(key, fill_val, dtype):
+      return np.concatenate([
+          np.concatenate([a[key][ia], b[key][ib]], axis=1),
+          np.concatenate([a[key][ua], np.full((ua.size, lb), fill_val, dtype)], axis=1),
+          np.concatenate([np.full((ub.size, la), fill_val, dtype), b[key][ub]], axis=1)])
+    any_a = a.get('any_paired', np.zeros(a['msa'].shape[0], bool))
+    return dict(msa=stack('msa', gap, a['msa'].dtype), ins=stack('ins', 0, a['ins'].dtype),
+                padded=stack('padded', True, bool),
+                tax_ids=np.concatenate([a['tax_ids'][ia], a['tax_ids'][ua], b['tax_ids'][ub]]),
+                any_paired=np.concatenate([np.ones(ia.size, bool), any_a[ua], np.zeros(ub.size, bool)]))
+
+  out = msas[0]
+  for b in msas[1:]:
+    out = join(out, b)
+  paired = out['any_paired']
+  bounds = np.cumsum([0] + [m['msa'].shape[1] for m in msas])
+  blocks = []
+  for lo, hi in zip(bounds[:-1], bounds[1:]):
+    keep = ~np.all(out['msa'][~paired, lo:hi] == gap, axis=1)
+    blocks.append((out['msa'][~paired, lo:hi][keep], out['ins'][~paired, lo:hi][keep]))
+  depth = max(m.shape[0] for m, _ in blocks)
+  result = []
+  for (lo, hi), (m, i) in zip(zip(bounds[:-1], bounds[1:]), blocks):
+    extra = depth - m.shape[0]
+    result.append(dict(
+        msa=np.concatenate([out['msa'][paired, lo:hi], m, np.full((extra, hi - lo), gap, m.dtype)]),
+        ins=np.concatenate([out['ins'][paired, lo:hi], i, np.zeros((extra, hi - lo), i.dtype)]),
+        padded=np.concatenate([out['padded'][paired, lo:hi], np.zeros(m.shape, bool), np.ones((extra, hi - lo), bool)]),
+        # add_residue_is_paired_feature: a paired row's own (unpadded) residues; the query row is set by the caller
+        is_paired=np.concatenate([~out['padded'][paired, lo:hi], np.zeros((depth, hi - lo), bool)])))
+  return result
+
+
 def _rf3_msa(batch, fold_input):
   """RoseTTAFold3's MSA as atomworks builds it from one a3m per protein entity (query, paired rows, unpaired rows):
   parse_a3m keeps the first 10000 sequences, no deduplication. One entity with an MSA is used as read. Several are
-  joined by TaxID (ColabFold headers carry none, so only the query row pairs) and, dense, each entity's other rows
-  lose those that are all gap in its own columns -- the paired block's empty rows, which ends ColabFold's row
-  alignment -- and are stacked side by side, padded with gaps. A chain without an MSA has its query (restype) and then
-  padding. Profile and insertion mean count non-padded rows only; the mean is of raw insertion counts."""
+  joined by TaxID as atomworks' join_multiple_msas_by_tax_id(dense=True) does (_rf3_join_by_tax_id): the queries and
+  the rows whose TaxIDs are shared pair, the rest of each entity's rows lose those all gap in its own columns and are
+  stacked side by side, padded with gaps. A row's TaxID is the header's `TaxID=N`; a pairedMsa row r without one
+  pairs with row r of every other chain, keyed TaxID=900000+r (the one a3m per chain an RF3 user writes from AF3's
+  paired rows, as dev/oracles/rosettafold3_upstream_runner.py does). A chain without an MSA has its query (restype)
+  and then padding. Profile and insertion mean count non-padded rows only; the mean is of raw insertion counts."""
   from alphafold3.common import folding_input as fi
   from alphafold3.constants import residue_names
   from alphafold3.data import parsers
@@ -1119,28 +1193,46 @@ def _rf3_msa(batch, fold_input):
   real = np.asarray(batch['seq_mask']).astype(bool).reshape(-1)
   query = np.asarray(batch['msa'])[0].copy()
   aatype = np.asarray(batch['aatype']).reshape(-1)
-  # entities with an MSA, in chain order: (sequence, paired, unpaired) -> rows
-  entity_rows, chain_entity = {}, {}
+  # entities with an MSA, in chain order: (sequence, paired, unpaired) -> (classes, insertions, TaxIDs), query first
+  entity_msa, chain_entity = {}, {}
   for i, c in enumerate(fold_input.chains):
     if not isinstance(c, fi.ProteinChain):
       continue
-    paired = parsers.parse_fasta(c.paired_msa or '')[0][1:]
-    unpaired = parsers.parse_fasta(c.unpaired_msa or '')[0][1:]
-    if not paired and not unpaired:
+    p_seq, p_desc = parsers.parse_fasta(c.paired_msa or '')
+    u_seq, u_desc = parsers.parse_fasta(c.unpaired_msa or '')
+    if len(p_seq) < 2 and len(u_seq) < 2:
       continue
     key = (c.sequence, c.paired_msa, c.unpaired_msa)
-    if key not in entity_rows:
-      lines = [r.strip() for r in paired + unpaired if r.strip()][:_RF3_MAX_MSA_SEQS - 1]
-      entity_rows[key] = [parse(r) for r in lines]
+    if key not in entity_msa:
+      rows = [(s.strip(), _rf3_tax_id(d, 900000 + r if r else None)) for r, (s, d) in enumerate(zip(p_seq, p_desc))]
+      rows += [(s.strip(), _rf3_tax_id(d)) for s, d in list(zip(u_seq, u_desc))[1 if rows else 0:]]
+      rows = [(s, t) for s, t in rows if s] or [(c.sequence, '')]
+      rows = rows[:_RF3_MAX_MSA_SEQS]
+      parsed = [parse(s) for s, _ in rows]
+      width = max(len(t) for t, _ in parsed)
+      msa_e = np.full((len(rows), width), gap, np.int32)
+      ins_e = np.zeros((len(rows), width), np.float32)
+      for r, (t, d) in enumerate(parsed):
+        msa_e[r, :t.size], ins_e[r, :t.size] = t, d
+      tax = np.array(['query'] + [t for _, t in rows[1:]])
+      entity_msa[key] = dict(msa=msa_e, ins=ins_e, tax_ids=tax, padded=np.zeros(msa_e.shape, bool),
+                             is_paired=np.zeros(msa_e.shape, bool))
     chain_entity[i] = key
-  if len(entity_rows) > 1:
-    entity_rows = {k: [(t, d) for t, d in v if (t != gap).any()] for k, v in entity_rows.items()}
+  if len(entity_msa) > 1:
+    entity_msa = dict(zip(entity_msa, _rf3_join_by_tax_id(list(entity_msa.values()), gap)))
+  # rows past the query: (classes, insertions, padded, paired across chains) per entity
+  entity_rows = {k: list(zip(v['msa'][1:], v['ins'][1:], v['padded'][1:], v['is_paired'][1:]))
+                 for k, v in entity_msa.items()}
   n_row = 1 + max([len(v) for v in entity_rows.values()], default=0)
   n_tok = asym.size
   msa = np.full((n_row, n_tok), gap, np.int32)
   dele = np.zeros((n_row, n_tok), np.float32)
   padded = np.ones((n_row, n_tok), bool)
   padded[0] = False
+  # RF3's msa_stack[..., 34] (residue_is_paired): the whole query row once any chain has an alignment, and a row paired
+  # across chains on its own chains' residues; 0 elsewhere, and everywhere on the query-only path
+  is_paired = np.zeros((n_row, n_tok), np.float32)
+  is_paired[0] = float(bool(entity_rows))
   msa[0] = np.where(query == gap, aatype, query)     # a token with no alignment reads its own restype in row 0
   # an atomised residue (several tokens on one residue) is a ligand to atomworks: no alignment, and UNK in row 0
   # unless it is a standard residue (atomised for a bond to a ligand), which keeps its own letter
@@ -1159,16 +1251,19 @@ def _rf3_msa(batch, fold_input):
   for i, key in chain_entity.items():
     sel = np.flatnonzero(real & (asym == i + 1) & ~atomised)
     col = resi[sel] - 1
-    for r, (tok, d) in enumerate(entity_rows[key], start=1):
+    for r, (tok, d, pad, pair) in enumerate(entity_rows[key], start=1):
       if tok.size > col.max():
         msa[r, sel], dele[r, sel] = tok[col], d[col]
-      padded[r, sel] = False
+        padded[r, sel], is_paired[r, sel] = pad[col], pair[col]
+      else:
+        padded[r, sel] = False
   live = ~padded
   n_cls = np.asarray(batch['profile']).shape[-1]
   counts = np.bincount((np.arange(n_tok) * n_cls + np.minimum(msa, n_cls - 1))[live],
                        minlength=n_tok * n_cls).reshape(n_tok, n_cls).astype(np.float32)
   n_live = np.maximum(live.sum(0), 1)
-  _set_msa(batch, msa, dele, real, gap)
+  pad = _set_msa(batch, msa, dele, real, gap)
+  batch['msa_paired'] = pad(is_paired, 0)
   batch['profile'] = (counts / n_live[:, None]).astype(np.asarray(batch['profile']).dtype)
   batch['deletion_mean'] = ((dele * live).sum(0) / n_live).astype(np.asarray(batch['deletion_mean']).dtype)
   return batch
