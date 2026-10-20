@@ -201,6 +201,19 @@ def _configs(model, out_dir, dtype='fp32', n_cycle=None, n_sample=None):
     c.data.template.obsolete_pdbs_path = os.path.join(tdir, 'obsolete.json')
     c.data.template.kalign_binary_path = shutil.which('kalign') or os.path.expanduser('~/.local/bin/kalign')
     c.data.template.fetch_remote = False
+    # Those two caches are release-managed assets OpenDDE checks by SIZE (download._ensure_managed_asset) and
+    # re-downloads when they differ; ours hold only this case's hits (each template's release date read off its
+    # mmCIF, no obsolete entries), which is all the template search reads from them. Skip the identity check for them.
+    import opendde.utils.download as dl
+    if not getattr(dl, '_harness_template_caches', False):
+      orig = dl._ensure_managed_asset
+
+      def ensure(asset_name, destination):
+        if asset_name in ('obsolete_pdbs_path', 'release_dates_path') and os.path.exists(destination):
+          return
+        return orig(asset_name, destination)
+      dl._ensure_managed_asset = ensure
+      dl._harness_template_caches = True
   return c
 
 
