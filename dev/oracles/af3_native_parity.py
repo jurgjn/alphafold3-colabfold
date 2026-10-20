@@ -83,7 +83,16 @@ def _stp_seq():
 
 
 def _stp_msa():
-  return json.load(open(HOME + '/1stp_msa.json'))['sequences'][0]['protein']['unpairedMsa']
+  msa = json.load(open(HOME + '/1stp_msa.json'))['sequences'][0]['protein']['unpairedMsa']
+  if os.environ.get('DEEP_MSA_ROWS'):
+    # a probe knob: the first N rows only (a size threshold hunt)
+    lines = msa.splitlines()
+    msa = '\n'.join(lines[:2 * int(os.environ['DEEP_MSA_ROWS'])]) + '\n'
+  if os.environ.get('DEEP_MSA_NOINS'):
+    # probe knob: the same rows with every insertion (lower-case) removed
+    msa = '\n'.join(l if l.startswith('>') else ''.join(c for c in l if not c.islower())
+                     for l in msa.splitlines()) + '\n'
+  return msa
 
 
 def _synthetic_a3m(seq, n_rows, seed, gap=0.05, sub=0.2, ins=0.03, species=False):

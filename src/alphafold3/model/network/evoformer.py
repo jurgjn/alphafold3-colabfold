@@ -302,15 +302,20 @@ def _esm_tap(name, value):
   return value
 
 
-def _native_mc_dropout(x, rng, k):
-  """protenix's MC dropout on the recycled pair, with native's own mask for this seed and pass"""
+def _native_mc_dropout(x, rng, k, vec=8):
+  """protenix's MC dropout on the recycled pair, with native's own mask for this seed and pass.
+
+  vec is torch's fused-dropout vector width for the dtype native drops in: 8 for its stock bfloat16, 4 for float32
+  (16-byte loads). The width decides which philox draw lands on which element, so a float32 native (--dtype fp32,
+  the strict parity run) against the bfloat16 mapping read trunk pair 3.4 on the two cases whose seed applies MC
+  dropout (long_chain, deep_msa); every other case's seed skips it, which is why nothing caught it."""
   from alphafold3.model.pipeline import protenix_rng
   keep_p = 1.0 - protenix_rng.MC_DROPOUT_RATE
   k = jnp.minimum(k, rng['drop_offset'].shape[0] - 1)
 
   def drop(x):
     keep = torch_philox.dropout_keep(rng['seed'], rng['drop_offset'][k], rng['n_tokens'], x.shape,
-                                     keep=keep_p, grid=rng['grid'])
+                                     keep=keep_p, grid=rng['grid'], vec=vec)
     return jnp.where(keep, x.astype(jnp.float32) * jnp.float32(1.0 / keep_p), 0.0).astype(x.dtype)
   return jax.lax.cond(rng['mc_dropout'] > 0, drop, lambda x: x, x)
 
@@ -926,7 +931,9 @@ class Evoformer(hk.Module):
             hm.LayerNorm(name='prev_embedding_layer_norm')(z_prev)
         )
         if rng is not None:
-          recycled = _native_mc_dropout(recycled, rng, px_pass)
+          # native's dtype follows ours: float32 throughout ('none') <-> its --dtype fp32, else its bfloat16
+          recycled = _native_mc_dropout(recycled, rng, px_pass,
+                                        vec=4 if self.global_config.bfloat16 == 'none' else 8)
         return act + recycled
 
       if pair_only:

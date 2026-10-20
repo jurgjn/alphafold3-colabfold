@@ -372,6 +372,9 @@ TEMPLATE_POLICIES = {
     'intellifold2': dict(prefilter=True, hit_letter='parent'),
     # chai: a hit carrying any residue outside its standard codes (SEP, MSE, ...) is dropped
     'chai1': dict(modified='drop_hit'),
+    # rf3 reads its template structure through atomworks, whose parser keeps the first altloc (io/parser.py
+    # altloc="first"); 5K9P's LYS 29 / GLY 76 move 0.09 / 0.17 A and the template case read trunk pair 2.47
+    'rosettafold3': dict(altloc='first'),
 }
 
 
@@ -911,6 +914,9 @@ for _m in ('openfold3', 'openbind0'):
   # of3 profiles the deduplicated first 16384 main-MSA rows; on msa_gappy that is 6530 of 21577, profile max|d| 0.18 without
   if not os.environ.get('AF3_NO_OF3_MAIN_MSA'):
     _FEATURISE.setdefault(_m, {})['of3_main_msa'] = 16384
+    # ...and DEDUPLICATES those rows only from v0.5.0 on (sample_processing/msa.py np.unique of the main MSA,
+    # absent in 0.4.5): openbind0 drops the repeats, openfold3 (0.4.5) keeps every row (deep_msa: 2109 vs 2145 rows)
+    _FEATURISE.setdefault(_m, {})['of3_main_msa_dedupe'] = _m != 'openfold3'
   # of3 builds an unknown amino acid from the CCD UNK, N CA C O CB CG (593 atoms on unk_residues to AF3's GLY-built 587)
   if not os.environ.get('AF3_NO_CCD_UNK'):
     _FEATURISE.setdefault(_m, {})['ccd_unk'] = True
@@ -943,6 +949,10 @@ if not os.environ.get('AF3_NO_CCD_UNK'):
 # padded slot, so padding atoms join the atom attention as keys. That is DeepMind's padding and AF3 keeps it; no vendor
 # here pads atoms that way, and a padded fold drifted off the unpadded one (intellifold2 OURS_BUCKET=shipped: s_inputs
 # 1e-2..6e-2). Every other model masks those slots (model_features._mask_padded_atoms); an unpadded batch is untouched.
+# every model with a template policy carries it (those wired explicitly above keep the same dict)
+for _m, _policy in TEMPLATE_POLICIES.items():
+  _FEATURISE.setdefault(_m, {}).setdefault('templates', _policy)
+
 if not os.environ.get('AF3_NO_MASK_PADDED_ATOMS'):
   for _m in (('boltz2', 'chai1', 'intellifold2', 'openbind0', 'opendde', 'openfold3', 'protenix1', 'protenix2',
               'rosettafold3') + tuple(model_config.ESMFOLD2_FAMILY)):

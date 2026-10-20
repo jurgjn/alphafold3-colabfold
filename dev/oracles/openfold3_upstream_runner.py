@@ -59,6 +59,50 @@ MODELS = {
 SEED = 42   # the CLI's default model seed (InferenceExperimentSettings.seeds)
 
 
+def _diag_fix_deletion():
+  """DIAGNOSTIC ONLY (OF3_DIAG_FIX_DELETION=1), never the gate of record.
+
+  Release 0.4.5 scales the MSA deletion value by `2.0 / torch.acos(zeros(1)) * 2` -- 2 / (pi/2) * 2 = 8/pi,
+  four times AF3's 2/pi (operator precedence; v0.5.0 writes `2.0 / torch.pi`). Every MSA with an insertion
+  reads deletion values x4 (deep_msa: raw 3 -> 2.0 where AF3 has 0.5). This rescales 0.4.5's output to 2/pi
+  so the rest of its MSA path can be compared; a no-op on a tree without the bug."""
+  import inspect
+  import openfold3.core.data.pipelines.featurization.msa as fm
+  if 'acos' not in inspect.getsource(fm.MsaFeaturizerOF3.create_features):
+    return
+  orig = fm.MsaFeaturizerOF3.create_features
+
+  def create_features(self, *a, **kw):
+    out = orig(self, *a, **kw)
+    if 'deletion_value' in out:
+      out['deletion_value'] = out['deletion_value'] / 4.0
+    return out
+  fm.MsaFeaturizerOF3.create_features = create_features
+
+
+def _diag_fix_paired():
+  """DIAGNOSTIC ONLY (OF3_DIAG_FIX_PAIRED=1), never the gate of record.
+
+  Release 0.4.5's create_paired_from_precomputed builds each chain's paired block but never records its row count
+  (set_row_counts(n_rows_paired_subsampled=...), added in v0.5.0), so the stack takes ZERO paired rows: a precomputed
+  paired MSA is silently dropped, while the main MSA is still deduplicated against it (paired_msa: 49 rows, the
+  query plus main-minus-paired, where v0.5.0 has 74). This records the count as v0.5.0 does; a no-op on a tree
+  that already does."""
+  import inspect
+  import openfold3.core.data.pipelines.sample_processing.msa as sm
+  if 'set_row_counts' in inspect.getsource(sm.create_paired_from_precomputed):
+    return
+  orig = sm.create_paired_from_precomputed
+
+  def create_paired_from_precomputed(msa_array_collection, *a, **kw):
+    out = orig(msa_array_collection, *a, **kw)
+    if out:
+      msa_array_collection.set_row_counts(
+          n_rows_paired_subsampled=int(next(iter(out.values())).msa.shape[0]))
+    return out
+  sm.create_paired_from_precomputed = create_paired_from_precomputed
+
+
 def _diag_fix_profile():
   """DIAGNOSTIC ONLY (OF3_DIAG_FIX_PROFILE=1), never the gate of record.
 
@@ -88,6 +132,10 @@ def _diag_fix_profile():
 
 if os.environ.get('OF3_DIAG_FIX_PROFILE'):
   _diag_fix_profile()
+if os.environ.get('OF3_DIAG_FIX_DELETION'):
+  _diag_fix_deletion()
+if os.environ.get('OF3_DIAG_FIX_PAIRED'):
+  _diag_fix_paired()
 
 
 def _check_tree(model):
@@ -194,6 +242,11 @@ def _runner_yaml(model, out_dir, recycles):
   if recycles is not None:
     # The model reads shared.num_recycles at inference (model.py forward).
     custom['architecture'] = {'shared': {'num_recycles': int(recycles)}}
+  if os.environ.get('MSA_ALL_ROWS'):
+    # OF3 subsamples EXACTLY 1024 MSA rows at random each pass (msa_module_embedder subsample_all_msa,
+    # min = max = 1024): a draw, which the harness lifts on every side -- all rows, as ours takes them
+    custom.setdefault('architecture', {})['msa'] = {'msa_module_embedder': {
+        'min_subsampled_all_msa': 1 << 20, 'max_subsampled_all_msa': 1 << 20}}
   return {
       # 'predict' is the CLI default preset (InferenceExperimentConfig);
       # passing model_update replaces the default, so it is restated.

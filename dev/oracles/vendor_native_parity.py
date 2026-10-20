@@ -484,6 +484,20 @@ def trajectory_case(model, name, j, recycles):
     rp = np.array(batch['ref_pos'])
     rp[idx[ok, 0], idx[ok, 1]] = lay['feat.ref_pos'][ok]
     batch = dict(batch, ref_pos=jnp.asarray(rp))
+    # OpenDDE samples on its STRUCTURAL tokens (see run_case): the reference draw and every injected sampler draw
+    # go into that layout through residue_atom_gather; its output comes back in residue layout
+    gather = batch.get('structbook/residue_atom_gather')
+    to_struct = lambda x: x
+    if gather is not None:
+      gather = np.asarray(gather)
+      gv = gather >= 0
+      s_shape = np.shape(batch['struct/pred_dense_atom_mask'])
+
+      def to_struct(x):
+        out = np.zeros((s_shape[0] * s_shape[1],) + x.shape[2:], x.dtype)
+        out[gather[gv]] = x[gv]
+        return out.reshape(s_shape + x.shape[2:])
+      batch = dict(batch, **{'struct/ref_pos': jnp.asarray(to_struct(rp))})
     rng = np.random.default_rng(int(os.environ.get('INJECT_SEED', 0)))
     n_v = len(ok)
     x0 = rng.normal(size=(n_v, 3)).astype(np.float32)
@@ -520,8 +534,8 @@ def trajectory_case(model, name, j, recycles):
     out = np.zeros(dense + (3,), np.float32)
     out[idx[ok, 0], idx[ok, 1]] = v[ok]
     return out
-  dh.TRAJ_INJECT = dict(x0=to_ours(x0), rot=rot[:steps], trans=trans[:steps],
-                        eps=np.stack([to_ours(e) for e in eps[:steps]]))
+  dh.TRAJ_INJECT = dict(x0=to_struct(to_ours(x0)), rot=rot[:steps], trans=trans[:steps],
+                        eps=np.stack([to_struct(to_ours(e)) for e in eps[:steps]]))
   dh.SAMPLER_OVERRIDE = None
   try:
     ours = forward_ours(batch, cfg, model_dir, None, None, None, real_sampler=True)
@@ -646,6 +660,20 @@ def run_case(model, name, j, recycles, bf16, graded=False):
       _vendor(model, 'forward', bdir, inp_h, os.path.join(tmp, 'b_half.npz'))
       b_half = dict(np.load(os.path.join(tmp, 'b_half.npz')))
     os.environ.pop('ESMC_HIDDEN', None)
+    rows_v = sorted(k for k in b if k.startswith('msa_rows_pass'))
+    if rows_v and 'px_msa_rows' in batch:
+      # protenix: native's sampled MSA rows per pass against our replay of them
+      ours_rows = np.asarray(batch['px_msa_rows'])
+      for k in rows_v:
+        i = int(k[len('msa_rows_pass'):])
+        if i >= ours_rows.shape[0]:
+          continue
+        v = set(np.asarray(b[k]).reshape(-1).tolist())
+        o = set(np.flatnonzero(ours_rows[i]).tolist())
+        # graded on the SIZE: native's MSA can hold rows ours deduplicates (its unpaired copy of the query), so
+        # the same draw may land on a different but identical row -- the indices are information
+        rows.append(('rng', 'MSA rows pass %d: native %d, replay %d, in common %d'
+                     % (i, len(v), len(o), len(v & o)), 'INFO' if len(v) == len(o) else 'BAD'))
     if 'pair_state0' in b:
       # the vendor's random initial pair state (ESMFold2), injected like ref_pos
       batch = dict(batch, **{'inject/pair_state0': jnp.asarray(_pad_pair(b['pair_state0'], batch))})
@@ -685,7 +713,7 @@ def run_case(model, name, j, recycles, bf16, graded=False):
   if per_atom:
     pl_o = ours['predicted_lddt'][0][idx[ok, 0], idx[ok, 1]]
   else:
-    first = np.asarray(raw['pred_dense_atom_mask']).astype(bool).argmax(1)
+    first = np.asarray(raw['pred_dense_atom_mask']).astype(bool).argmax(1)[:n]   # (ours may be bucket-padded)
     pl_o = ours['predicted_lddt'][0][np.arange(n), first]
   pl_scale = 100.0 if pl_o.max() > 1.5 else 1.0
 

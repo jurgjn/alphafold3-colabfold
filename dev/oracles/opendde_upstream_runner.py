@@ -85,6 +85,11 @@ def _template_a3m(e, cid, out_dir):
               % (pdb_id, chain, ts[0] + 1, ts[-1] + 1, len(seqres)), aligned]
   with open(dates_path, 'w') as f:
     json.dump(dates, f)
+  # no obsolete entries (an offline cache file, as the downloaded one would be; a missing file is fetched)
+  obsolete = os.path.join(tdir, 'obsolete.json')
+  if not os.path.exists(obsolete):
+    with open(obsolete, 'w') as f:
+      json.dump({}, f)
   path = os.path.join(tdir, '%s.a3m' % cid)
   with open(path, 'w') as f:
     f.write('\n'.join(lines) + '\n')

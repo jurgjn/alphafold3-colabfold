@@ -1634,7 +1634,9 @@ def _native_rng(batch, seed, pair_channel, fold_input):
   for k, r in enumerate(rows):
     keep[k, r] = True
   batch['px_seed'] = np.asarray(seed, np.int32)
-  batch['px_mc_dropout'] = np.asarray(mc, np.int32)
+  # AF3_PX_NO_MC_DROPOUT=1: replay the MSA row draws only, no MC dropout (pairs with native's
+  # --mc_dropout_apply_rate 0, PROTENIX_NO_RNG): isolates the dropout replay
+  batch['px_mc_dropout'] = np.asarray(np.zeros_like(mc) if os.environ.get('AF3_PX_NO_MC_DROPOUT') else mc, np.int32)
   batch['px_msa_rows'] = keep
   batch['px_drop_offset'] = np.asarray(offsets, np.int32)
   batch['px_n_tokens'] = np.asarray(n_tok, np.int32)
@@ -1756,8 +1758,9 @@ def prepare_input(fold_input, spec):
   def dedupe(a3m):
     seqs, descs = parsers.parse_fasta(a3m)
     seen, lines = set(), []
+    keep_repeats = cap and not knobs.get('of3_main_msa_dedupe', True) and not knobs.get('dedupe_unpaired_msa')
     for s, d in list(zip(seqs, descs))[:cap]:
-      if s.translate(strip) not in seen:
+      if keep_repeats or s.translate(strip) not in seen:
         seen.add(s.translate(strip))
         lines += [f'>{d}', s]
     return '\n'.join(lines) + '\n'
@@ -1970,7 +1973,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('declared_bond_charge') and fold_input is not None:
     _declared_bond_charge(batch, fold_input)
   if knobs.get('of3_msa_rows'):
-    _of3_msa_rows(batch)
+    _of3_msa_rows(batch, fold_input)
   if knobs.get('native_nonprotein_msa'):
     _native_nonprotein_msa(batch)
   if knobs.get('complex_msa_profile'):
@@ -2028,7 +2031,7 @@ def _modified_restype_protein_unknown(batch, fold_input):
   return batch
 
 
-def _of3_msa_rows(batch):
+def _of3_msa_rows(batch, fold_input=None):
   """OpenFold3's MSA rows on chains it does not align, and its row count.
 
   Only protein and RNA chains get alignments there. A DNA or ligand token reads
@@ -2038,9 +2041,17 @@ def _of3_msa_rows(batch):
   (features.py) leaves one -- and with no protein or RNA chain at all it is ONE
   all-gap row. Measured against stock OpenFold3 0.4.5 / v0.5.0
   (vendor_native_parity: dna, protein_dna, ligand_ccd, ion, heterodimer).
+
+  With a precomputed paired MSA, OF3 stacks its query block, then the paired
+  block AS GIVEN -- whose first row is the query again -- then the main MSA
+  minus the paired rows (create_paired_from_precomputed / create_main): the query
+  sits in rows 0 and 1, and a chain with no paired MSA reads the gap in row 1
+  (its gap-filled placeholder). Measured: paired_msa, 74 rows to our 73.
   """
   if 'msa' not in batch:
     return batch
+  if fold_input is not None and any(_has_alignment(getattr(c, 'paired_msa', None)) for c in fold_input.chains):
+    _of3_paired_query_row(batch, fold_input)
   from alphafold3.constants import residue_names
   gap = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(
       residue_names.GAP)
@@ -2087,6 +2098,30 @@ def _of3_msa_rows(batch):
     prof[unaligned] = 0.0
     batch['profile'] = prof
   return batch
+
+
+def _has_alignment(a3m):
+  """An a3m with a row beyond the query (a query-only a3m is no alignment: OF3 gets no file for it)."""
+  return bool(a3m) and sum(line.startswith('>') for line in a3m.splitlines()) > 1
+
+
+def _of3_paired_query_row(batch, fold_input):
+  """A copy of the query row at row 1, gap on the chains with no paired MSA (see _of3_msa_rows)."""
+  from alphafold3.constants import residue_names
+  gap = list(residue_names.POLYMER_TYPES_WITH_UNKNOWN_AND_GAP).index(residue_names.GAP)
+  asym = np.asarray(batch['asym_id']).reshape(-1)
+  paired = [i + 1 for i, c in enumerate(fold_input.chains) if _has_alignment(getattr(c, 'paired_msa', None))]
+  unpaired_tok = ~np.isin(asym, paired)
+  for k in ('msa', 'msa_mask', 'deletion_matrix'):
+    if k not in batch:
+      continue
+    v = np.asarray(batch[k])
+    row = v[:1].copy()
+    if k == 'msa':
+      row[0, unpaired_tok] = gap
+    elif k == 'deletion_matrix':
+      row[0, unpaired_tok] = 0
+    batch[k] = np.concatenate([v[:1], row, v[1:-1]], 0)
 
 
 def _modified_restype_protein_letter(batch, fold_input):

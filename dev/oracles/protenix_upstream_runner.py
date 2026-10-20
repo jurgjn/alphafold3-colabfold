@@ -69,6 +69,11 @@ def _template_a3m(e, cid, out_dir):
               % (pdb_id, chain, ts[0] + 1, ts[-1] + 1, len(seqres)), aligned]
   with open(dates_path, 'w') as f:
     json.dump(dates, f)
+  # no obsolete entries (an offline cache file, as the downloaded one would be; a missing file is fetched)
+  obsolete = os.path.join(tdir, 'obsolete.json')
+  if not os.path.exists(obsolete):
+    with open(obsolete, 'w') as f:
+      json.dump({}, f)
   path = os.path.join(tdir, '%s.a3m' % cid)
   with open(path, 'w') as f:
     f.write('\n'.join(lines) + '\n')
@@ -216,7 +221,10 @@ def featurise(model, case_json, out_dir):
            atom_pad=np.ones(len(names), bool),
            token_pad=np.ones(f['residue_index'].shape[-1], bool),
            **{'feat.ref_pos': f['ref_pos'].numpy(),
-              'feat.ref_space_uid': f['ref_space_uid'].numpy()},
+              'feat.ref_space_uid': f['ref_space_uid'].numpy(),
+              # the MSA as protenix featurised it, for a feature-level diff
+              **{'feat.' + k: f[k].float().numpy() for k in ('msa', 'has_deletion', 'deletion_value', 'profile',
+                                                            'deletion_mean') if k in f}},
            # the template features protenix built (for a field-by-field diff against ours)
            **{'feat.' + k: np.asarray(v) for k, v in f.items()
               if k.startswith('template') and hasattr(v, 'shape')})
@@ -292,7 +300,22 @@ def forward(model, out_dir, in_npz, out_npz):
   for name, m in net.named_children():
     m.register_forward_hook(hook(name))
 
+  # the MSA rows native samples on each pass (sample_indices: randint size, randperm order), so the harness can
+  # check our replay row for row
+  import protenix.model.utils as PU
+  import protenix.model.modules.pairformer as PF
+  orig_si = PU.sample_indices
+  got_rows = []
+
+  def sample_indices(*a, **kw):
+    out = orig_si(*a, **kw)
+    got_rows.append(out.detach().cpu().numpy().copy())
+    return out
+  PU.sample_indices = sample_indices
   pred = runner.predict(data)
+  PU.sample_indices = orig_si
+  for k, r in enumerate(got_rows):
+    got['msa_rows_pass%d' % k] = r
   full = pred.get('full_data', [{}])
   full = full[0] if isinstance(full, list) else full
   out = {**got,

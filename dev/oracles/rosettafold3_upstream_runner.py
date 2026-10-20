@@ -27,9 +27,9 @@ one process, that order, in both subcommands, so `featurise` sees the draw
 roto-translation) is such a draw; layout.npz carries it (feat.ref_pos,
 feat.ref_space_uid) for the harness to inject into ours, and `forward` CHECKS
 it re-drew the identical one. The per-recycle MSA subsample
-(FeaturizeMSALikeAF3, n_msa=1024) is a draw too, but no case here has more than
-1024 rows, so it is a row permutation, which the MSA module is invariant to up
-to summation order.
+(FeaturizeMSALikeAF3, n_msa=1024) is a draw too: below 1024 rows a row
+permutation, which the MSA module is invariant to up to summation order; above
+it (deep_msa) a random subset, lifted to all rows under MSA_ALL_ROWS.
 """
 import json
 import os
@@ -267,6 +267,10 @@ def _run(out_dir, n_recycles, precision, on_pipeline, patch=None):
   sees the featurised example; patch (forward only) installs the overrides."""
   _precision()
   engine = _engine(n_recycles, precision)
+  if os.environ.get('MSA_ALL_ROWS'):
+    # rf3 draws n_msa (datasets n_msa: 1024) rows at random per recycle (FeaturizeMSALikeAF3,
+    # uniformly_select_rows): lifted, as every side is under MSA_ALL_ROWS -- all rows, as ours
+    engine.transform_overrides = dict(engine.transform_overrides, n_msa=1 << 20)
   engine.initialize()
   _unforce_bf16(engine, precision)
   if patch is not None:
