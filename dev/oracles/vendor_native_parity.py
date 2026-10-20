@@ -252,7 +252,10 @@ def featurise_ours(model, j, recycles, bf16):
   # samples with its key and every vendor with its own RNG, so a deep MSA would
   # compare two random subsets. Both sides take every row instead (the runners
   # lift their caps, MSA_ALL_ROWS); the MSA stack is row-permutation invariant.
-  rows = np.asarray(batch['msa']).shape[0] if 'msa' in batch else 0
+  # LIVE rows: the featuriser pads the MSA to 16384, and lifting num_msa to the padded depth ran boltz2's MSA stack
+  # over 16384 masked rows on a single-sequence input (long_chain: one 14 GiB transition buffer, OOM on 22 GB)
+  rows = (int(np.asarray(batch['msa_mask']).any(-1).sum()) if 'msa_mask' in batch
+          else np.asarray(batch['msa']).shape[0] if 'msa' in batch else 0)
   if rows > cfg.evoformer.num_msa:
     cfg.evoformer.num_msa = rows
   cfg.return_embeddings = True

@@ -315,7 +315,8 @@ def featurise(model_name, case_json, out_dir):
               'feat.ref_charge': flat('ref_charge')},
            # the template features IntelliFold built (for a field-by-field diff against ours)
            **{'feat.' + k: f[k][0].float().cpu().numpy() for k in f
-              if k.startswith('template') and hasattr(f[k], 'shape')})
+              if (k.startswith('template') or k.startswith('msa') or k in ('profile', 'deletion_mean',
+                  'has_deletion', 'deletion_value')) and hasattr(f[k], 'shape')})
 
 
 def forward(model_name, out_dir, in_npz, out_npz):

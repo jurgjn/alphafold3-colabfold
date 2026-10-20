@@ -1678,6 +1678,35 @@ def _largest_modified_residue(fold_input):
   return -(-most // 8) * 8 if most > 24 else None
 
 
+def _boltz_msa_dedupe(fold_input):
+  """A chain's MSA as a boltz-derived a3m parser keeps it (IntelliFold data/parse/a3m.py): a row whose sequence with
+  gaps removed and insertions upper-cased repeats an earlier one is dropped, the query first. AF3 keeps every row
+  (vendor_native_parity intellifold2 deep_msa: its 2144-row a3m reads 2048 rows natively, s_inputs 0.21 apart)."""
+  import dataclasses
+  from alphafold3.common import folding_input as fi
+  from alphafold3.data import parsers
+
+  def dedupe(a3m):
+    if not a3m:
+      return a3m
+    seqs, descs = parsers.parse_fasta(a3m)
+    seen, lines = set(), []
+    for q, d in zip(seqs, descs):
+      key = q.replace('-', '').upper()
+      if q and key not in seen:
+        seen.add(key)
+        lines += ['>' + d, q]
+    return '\n'.join(lines) + '\n'
+  chains = []
+  for c in fold_input.chains:
+    if isinstance(c, fi.ProteinChain) and c.unpaired_msa:
+      c = fi.ProteinChain(id=c.id, sequence=getattr(c, '_sequence', c.sequence), ptms=c.ptms,
+                          description=c.description, unpaired_msa=dedupe(c.unpaired_msa), paired_msa=c.paired_msa,
+                          templates=c.templates)
+    chains.append(c)
+  return dataclasses.replace(fold_input, chains=chains)
+
+
 def prepare_input(fold_input, spec):
   """The input-side conventions, applied before featurisation: a copy of `fold_input` as the model's featuriser sees it.
 
@@ -1709,6 +1738,8 @@ def prepare_input(fold_input, spec):
   af3_pipeline.INNER_TERMINAL_ATOMS = knobs.get('drop_inner_terminal_atoms') or False
   af3_pipeline.MAX_ATOMS_PER_TOKEN = (_largest_modified_residue(fold_input) if knobs.get('modified_as_one_token')
                                       else None)
+  if knobs.get('boltz_msa_dedupe'):
+    fold_input = _boltz_msa_dedupe(fold_input)
   if knobs.get('templates'):
     # how this model reads its templates (altloc, modified residues, alignment, prefilter): template_policy
     from alphafold3.model.pipeline import template_policy
@@ -1765,6 +1796,35 @@ def input_has_msa(fold_input):
   return any(aligned(getattr(chain, 'unpaired_msa', None))
              or aligned(getattr(chain, 'paired_msa', None))
              for chain in fold_input.chains)
+
+
+def _mask_padded_atoms(batch, prefix=''):
+  """A padded atom-query slot is padding, not an atom.
+
+  AF3's AtomCrossAtt featuriser (DeepMind's as well) fills the query slots past the real atoms with the LAST padded
+  dense slot and a gather mask of True, so in a bucket-padded batch every one of them is a live query and a live key --
+  1152 of 1536 at a 52-token protein padded to 64. They carry zero reference features, but they still enter every real
+  atom's attention. Here a query is live only where it gathers a real atom (ref_mask), and each key, token->query and
+  token->key mask follows the query it indexes. An unpadded batch already reads exactly this, so it is untouched.
+  """
+  qk = prefix + 'token_atoms_to_queries:gather_'
+  if qk + 'mask' not in batch or prefix + 'ref_mask' not in batch:
+    return batch
+  ref = np.asarray(batch[prefix + 'ref_mask']).astype(bool).reshape(-1)
+  q_idx = np.asarray(batch[qk + 'idxs'])
+  q_mask = np.asarray(batch[qk + 'mask']).astype(bool) & ref[np.clip(q_idx, 0, ref.size - 1)]
+  batch[qk + 'mask'] = q_mask.astype(np.asarray(batch[qk + 'mask']).dtype)
+  flat = q_mask.reshape(-1)
+  tq = prefix + 'tokens_to_queries:gather_mask'
+  if tq in batch:
+    batch[tq] = (np.asarray(batch[tq]).astype(bool) & q_mask).astype(np.asarray(batch[tq]).dtype)
+  for name in ('queries_to_keys', 'tokens_to_keys'):
+    km = prefix + name + ':gather_mask'
+    kidx = prefix + 'queries_to_keys:gather_idxs'
+    if km in batch and kidx in batch:
+      live = flat[np.clip(np.asarray(batch[kidx]), 0, flat.size - 1)]
+      batch[km] = (np.asarray(batch[km]).astype(bool) & live).astype(np.asarray(batch[km]).dtype)
+  return batch
 
 
 def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
@@ -1859,6 +1919,11 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     # coordinate it already had rather than being zeroed.
     from alphafold3.constants import esmfold2_ref_pos
     _override_ref_conformers(batch, esmfold2_ref_pos.as_conformers())
+  # after any refeaturise above, BEFORE the key-window rewrites below (they read the live-query mask)
+  if knobs.get('mask_padded_atoms'):
+    _mask_padded_atoms(batch)
+    if 'struct/token_atoms_to_queries:gather_mask' in batch:
+      _mask_padded_atoms(batch, prefix='struct/')
   if knobs.get('atom_keys_subset_size') and not os.environ.get(
       'AF3_NO_ESM_WIDE_KEYS'):
     # AF3_NO_ESM_WIDE_KEYS=1 is the A/B for this fidelity fix, in the style of

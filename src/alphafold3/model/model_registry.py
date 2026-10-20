@@ -765,6 +765,8 @@ _FEATURISE = {
     # give the AF3-engine behaviour.
     'intellifold2': dict(qblock_keys=True,
                          templates=TEMPLATE_POLICIES['intellifold2'],
+                         # its boltz-derived a3m parser drops a row repeating an earlier one (gaps removed, upper-cased)
+                         boltz_msa_dedupe=True,
                          # 'query', as boltz2: the featuriser IntelliFold forks
                          # keeps the a3m as given, query once, WITH alignments
                          # too -- a 4-row a3m is 4 rows where AF3 builds 5
@@ -936,6 +938,15 @@ if not os.environ.get('AF3_NO_CCD_UNK'):
   # (stock-IntelliFold comparison, unknown case: CB the one atom ours lacked)
   for _m in ('boltz2', 'intellifold2'):
     _FEATURISE.setdefault(_m, {})['ccd_unk'] = 'cb'
+
+# Bucket padding: AF3's featuriser (upstream's too) marks every padded atom-query slot REAL, pointing at the last
+# padded slot, so padding atoms join the atom attention as keys. That is DeepMind's padding and AF3 keeps it; no vendor
+# here pads atoms that way, and a padded fold drifted off the unpadded one (intellifold2 OURS_BUCKET=shipped: s_inputs
+# 1e-2..6e-2). Every other model masks those slots (model_features._mask_padded_atoms); an unpadded batch is untouched.
+if not os.environ.get('AF3_NO_MASK_PADDED_ATOMS'):
+  for _m in (('boltz2', 'chai1', 'intellifold2', 'openbind0', 'opendde', 'openfold3', 'protenix1', 'protenix2',
+              'rosettafold3') + tuple(model_config.ESMFOLD2_FAMILY)):
+    _FEATURISE.setdefault(_m, {})['mask_padded_atoms'] = True
 
 
 # Where a converted model's weights are published. The file name is what
