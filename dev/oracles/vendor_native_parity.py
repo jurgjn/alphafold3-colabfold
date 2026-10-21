@@ -1222,6 +1222,10 @@ def main(argv):
                                                 'unpairedMsa': '>q\n%s\n' % prot, 'pairedMsa': '', 'templates': []}},
                                    {'rna': {'id': 'D', 'sequence': 'GCGGAUUUAGCUCAG', 'modifications': [],
                                             'unpairedMsa': ''}}]}
+  # a case may also be a fold-input JSON file, named by its path
+  for n in names or ():
+    if n.endswith('.json') and n not in allc:
+      allc[n] = json.load(open(n))
   names = names or list(allc)
   failed = []
   for n in names:
