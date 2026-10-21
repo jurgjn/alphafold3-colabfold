@@ -1489,8 +1489,13 @@ class Model(hk.Module):
       batch: features.BatchDict,
       result: ModelResult,
       target_name: str = '',
+      model_name: str | None = None,
   ) -> Iterable[InferenceResult]:
     """Get the predicted structure, scalars, and arrays for inference.
+
+    `model_name` selects a vendor's own confidence summary where it is not AF3's
+    (helixfold3: frame-weighted pTM/ipTM, ipTM 0 without an interface, its own
+    clash test and ranking score).
 
     This function also computes any inference-time quantities, which are not a
     part of the forward-pass, e.g. additional confidence scores. Note that this
@@ -1518,6 +1523,12 @@ class Model(hk.Module):
         batch.frames.mask[:, None],  # pyrefly: ignore[missing-attribute]
         [1, batch.frames.mask.shape[0]],  # pyrefly: ignore[missing-attribute]
     )
+    hf3 = model_name == 'helixfold3'
+    if hf3:
+      # helixfold3 weights every pair by BOTH tokens' frame masks
+      # (helixfold/common/confidence.py predicted_tm_score: w_i * w_j)
+      fm = np.asarray(batch.frames.mask).astype(bool)  # pyrefly: ignore[missing-attribute]
+      pae_single_mask = fm[:, None] & fm[None, :]
     asym_ids = batch.token_features.asym_id[:num_tokens]  # pyrefly: ignore[missing-attribute]
     # Map asym IDs back to chain IDs. Asym IDs are constructed from chain IDs by
     # iterating over the chain IDs, and for each unique chain ID incrementing
@@ -1556,6 +1567,9 @@ class Model(hk.Module):
         pae_single_mask=pae_single_mask,
         interface=True,
     )
+    if hf3:
+      # no interface pair with weight (a monomer, or only frameless partners): 0, not NaN
+      iptm = np.nan_to_num(iptm, nan=0.0)
     ptm_iptm_average = 0.8 * iptm + 0.2 * ptm
 
     if len(np.unique(asym_ids[:num_tokens])) > 1:
@@ -1635,18 +1649,24 @@ class Model(hk.Module):
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(len(pred_structures), 32)
     ) as executor:
-      has_clash = list(executor.map(confidences.has_clash, pred_structures))
+      has_clash = list(executor.map(
+          confidences.has_clash_helixfold3 if hf3 else confidences.has_clash, pred_structures))
       fraction_disordered = list(
           executor.map(confidences.fraction_disordered, pred_structures)
       )
 
     for idx, pred_structure in enumerate(pred_structures):
-      ranking_score = confidences.get_ranking_score(
-          ptm=ptm[idx],
-          iptm=iptm[idx],
-          fraction_disordered_=fraction_disordered[idx],
-          has_clash_=has_clash[idx],
-      )
+      ranking_score = (
+          # helixfold3's ranking_confidence (helixfold/model/utils.py)
+          0.8 * iptm[idx] + 0.2 * ptm[idx] - 1.0 * has_clash[idx] if hf3 else
+          confidences.get_ranking_score(
+              ptm=ptm[idx],
+              iptm=iptm[idx],
+              fraction_disordered_=fraction_disordered[idx],
+              has_clash_=has_clash[idx],
+          ))
+      if hf3:
+        pred_structure = confidences.helixfold3_written_atoms(pred_structure)
       yield InferenceResult(
           predicted_structure=pred_structure,
           numerical_data={

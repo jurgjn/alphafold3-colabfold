@@ -1209,6 +1209,16 @@ def main(argv):
                     'sequences': [{'protein': {'id': 'A', 'sequence': 'GKRTWPLAVYNDG', 'cyclic': True,
                                                'modifications': [], 'unpairedMsa': '', 'pairedMsa': '',
                                                'templates': []}}]}
+  # the same entities in an order a vendor may rearrange (helixfold3 puts protein, RNA, DNA,
+  # ligand): a ligand first, DNA before protein. A harness case, not AF3's.
+  prot = 'GSWKELAAKLAKEAAEKGDPEVAKRALELAKKAAEEGDPELAKKAAELAKKA'
+  allc['reorder'] = {'name': 'reorder', 'modelSeeds': [1], 'dialect': 'alphafold3', 'version': 3,
+                     'sequences': [{'ligand': {'id': 'A', 'ccdCodes': ['ATP']}},
+                                   {'dna': {'id': 'B', 'sequence': 'GCGATCGCAT', 'modifications': []}},
+                                   {'protein': {'id': 'C', 'sequence': prot, 'modifications': [],
+                                                'unpairedMsa': '>q\n%s\n' % prot, 'pairedMsa': '', 'templates': []}},
+                                   {'rna': {'id': 'D', 'sequence': 'GCGGAUUUAGCUCAG', 'modifications': [],
+                                            'unpairedMsa': ''}}]}
   names = names or list(allc)
   failed = []
   for n in names:

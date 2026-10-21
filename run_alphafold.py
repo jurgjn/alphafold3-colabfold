@@ -1026,7 +1026,8 @@ class ModelRunner:
     """Extracts inference results from model outputs."""
     return list(
         model.Model.get_inference_result(
-            batch=batch, result=result, target_name=target_name
+            batch=batch, result=result, target_name=target_name,
+            model_name=self.model_name,
         )
     )
 

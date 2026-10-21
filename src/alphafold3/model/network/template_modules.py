@@ -591,7 +591,8 @@ class Boltz2TemplateEmbedding(hk.Module):
       def block(x):
         return modules.PairFormerIteration(
             c.template_stack, gc, name='tmpl_pairformer')(
-                act=x, pair_mask=pair_mask, use_dropout=use_dropout)
+                act=x, pair_mask=pair_mask, use_dropout=use_dropout,
+                keep_mask=None if pair_mask is padding_mask_2d else padding_mask_2d)
       # num_layer == 0 is a real configuration (protenix's v0.5.0 lineage keeps the
       # fused embedder but drops the pairformer). hk.layer_stack(0) still TRACES the
       # block, so it creates every parameter with a leading axis of 0 -- which the

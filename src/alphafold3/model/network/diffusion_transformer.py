@@ -21,6 +21,7 @@
 
 import os
 
+from absl import logging
 from alphafold3.common import base_config
 from alphafold3.model import model_config
 from alphafold3.model.atom_layout import atom_layout
@@ -524,6 +525,10 @@ class Transformer(hk.Module):
       # helixfold3 rotates q/k by the token's index in the array
       head_dim = (self.config.attention.key_dim or act.shape[-1]) // self.config.attention.num_head
       rope = seq_index_rope(jnp.arange(act.shape[-2]), head_dim)
+      if act.shape[-2] > 4096:
+        # stock caches 4096 positions (rotary.py max_seq_len) and cannot run past them: untrained territory
+        logging.warning('helixfold3: %d tokens is beyond the 4096 its token RoPE was built for',
+                        act.shape[-2])
 
     def block(act, pair_logits):
       act += self_attention(

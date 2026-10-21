@@ -29,6 +29,9 @@ from alphafold3.model.pipeline import inter_chain_bonds
 import numpy as np
 
 
+# set per model by model_features.prepare_input (knob hf3_chain_order)
+SORT_CHAINS = True
+
 def _get_leaving_atom_mask(
     struc: structure.Structure,
     polymer_ligand_bonds: atom_layout.AtomLayout | None,
@@ -160,8 +163,10 @@ def clean_structure(
         ccd=ccd, drop_unk=False, drop_non_ccd=False
     )
 
-  # Sort chains in "reverse-spreadsheet" order.
-  struc = struc.with_sorted_chains
+  # Sort chains in "reverse-spreadsheet" order -- unless the model keeps the order its input was
+  # arranged in (SORT_CHAINS False: helixfold3's protein, RNA, DNA, ligand).
+  if SORT_CHAINS:
+    struc = struc.with_sorted_chains
 
   if filter_hydrogens:
     struc = struc.without_hydrogen()

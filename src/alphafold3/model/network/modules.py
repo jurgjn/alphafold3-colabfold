@@ -440,7 +440,7 @@ class GridSelfAttention(hk.Module):
       res = (res or [None]) + [keep.reshape(-1)]
     return output_projection(out.reshape(-1, h * d), wo.astype(act.dtype), bo, *res).reshape(x, y, c)
 
-  def __call__(self, act, pair_mask, residual=None):
+  def __call__(self, act, pair_mask, residual=None, keep_mask=None):
     """Builds a module.
 
     Arguments:
@@ -448,6 +448,7 @@ class GridSelfAttention(hk.Module):
       pair_mask: [num_seq, num_res] mask of non-padded regions in the tensor.
         Only used in inducing points attention currently.
       residual: added to the output when given.
+      keep_mask: the rows whose output matters, when not `pair_mask` (PAD_KEEP).
 
     Returns:
       Result of the self-attention operation.
@@ -456,7 +457,7 @@ class GridSelfAttention(hk.Module):
     assert len(pair_mask.shape) == 2
 
     # the pair's own rows that matter, for the kernels that skip padding (PAD_KEEP), in act's layout
-    keep = pair_mask.astype(act.dtype) if PAD_KEEP else None
+    keep = (pair_mask if keep_mask is None else keep_mask).astype(act.dtype) if PAD_KEEP else None
     pair_mask = jnp.swapaxes(pair_mask, -1, -2)
     num_residues = act.shape[0]
 
@@ -1083,6 +1084,7 @@ class PairFormerIteration(hk.Module):
       seq_mask=None,
       use_dropout=False,
       extra_pair_bias=None,
+      keep_mask=None,
   ):
     """Build a single iteration of the pair former.
 
@@ -1093,6 +1095,9 @@ class PairFormerIteration(hk.Module):
       seq_mask: [num_res] Sequence Mask, optional.
       use_dropout: traced flag enabling the SI's pair-stack dropout (0.25). Used
         for DESIGN as a stochastic regulariser; default False = exact inference.
+      keep_mask: [num_res, num_res] padding-only mask for the PAD_KEEP kernels'
+        skipped rows, where `pair_mask` masks more than padding (helixfold3's
+        same-chain template stack: cross-chain pairs still get every update).
 
     Returns:
       [num_res, num_res, num_channel] tensor of activations.
@@ -1139,7 +1144,7 @@ class PairFormerIteration(hk.Module):
         self.global_config,
         name=nm,
         transpose=tr,
-    )(act if not parallel else pair_in, pair_mask, **kw)
+    )(act if not parallel else pair_in, pair_mask, keep_mask=keep_mask, **kw)
 
     if not self.with_pair_attention:
       pass
@@ -1192,7 +1197,8 @@ class PairFormerIteration(hk.Module):
     if not parallel and TransitionBlock.glu_kernel(self.config.pair_transition, act.dtype, act.shape[-1]):
       # the residual add (and OpenFold3's mask) can then happen inside a fused kernel; no sharding, it never holds the hidden
       # with PAD_KEEP every model's pair mask goes in: its padded rows then skip the transition, real rows are as before
-      act = unsharded(act, mask=pair_mask if _mt or PAD_KEEP else None, residual=act)
+      act = unsharded(act, mask=pair_mask if _mt else (
+          (pair_mask if keep_mask is None else keep_mask) if PAD_KEEP else None), residual=act)
     else:
       _trans = transition_block(act if not parallel else pair_in)
       if _mt:

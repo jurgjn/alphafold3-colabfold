@@ -662,8 +662,12 @@ class ConfidenceHead(hk.Module):
     tmscore_adjusted_pae_global, tmscore_adjusted_pae_interface = (
         self._get_tmscore_adjusted_pae(
             asym_id=asym_id,
-            seq_mask=seq_mask,
-            pair_mask=pair_mask_bool,
+            # helixfold3 weights pTM by the FRAME mask: an ion or a collinear ligand
+            # counts toward neither d0 nor any pair (helixfold/common/confidence.py)
+            seq_mask=(seq_mask_bool & batch.frames.mask.astype(bool)) if hf3 else seq_mask,
+            pair_mask=(((seq_mask_bool & batch.frames.mask.astype(bool))[:, None]
+                        & (seq_mask_bool & batch.frames.mask.astype(bool))[None, :])
+                       if hf3 else pair_mask_bool),
             bin_centers=bin_centers,
             pae_probs=pae_probs,
         )

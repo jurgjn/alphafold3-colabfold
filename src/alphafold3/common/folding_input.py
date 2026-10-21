@@ -820,6 +820,11 @@ class DnaChain:
     return ccd_coded_seq
 
 
+# Set per model by model_features.prepare_input: name a SMILES ligand after the first chain carrying the same
+# SMILES, so its copies share a component and an entity (helixfold3 names one per input entry, then groups by it).
+SHARED_SMILES_LIGAND_NAMES = False
+
+
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
 class Ligand:
   """Ligand input.
@@ -1443,7 +1448,10 @@ class Input:
           elif chain.smiles is not None:
             # Convert to `<unique ligand ID>:<smiles>` format that is expected
             # by structure.from_sequences_and_bonds.
-            sequences.append(f'LIG_{chain.id}:{chain.smiles}')
+            # SHARED_SMILES_LIGAND_NAMES (helixfold3): copies of one SMILES are one component, so one entity
+            name = chain.id if not SHARED_SMILES_LIGAND_NAMES else next(
+                c.id for c in self.chains if isinstance(c, Ligand) and c.smiles == chain.smiles)
+            sequences.append(f'LIG_{name}:{chain.smiles}')
             poly_types.append(mmcif_names.NON_POLYMER_CHAIN)
             formats.append(structure.SequenceFormat.LIGAND_SMILES)
           else:

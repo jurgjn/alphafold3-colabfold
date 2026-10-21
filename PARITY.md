@@ -204,6 +204,14 @@ HelixFold3 runs on PaddlePaddle, so its runner (`dev/oracles/helixfold3_upstream
 
 N/A: `covalent` and `glycan` (no bond input), `rna_mod` (stock's featuriser asserts on a modified RNA residue), `cyclic`.
 
+**Double-check (2026-10-21).** An independent review against stock on 26 further featurisation probes and a line-by-line network/converter read found and fixed:
+- **Chain order.** Stock orders chains protein and RNA (identical sequences regrouped together, in order of first appearance), then DNA, then ligands, and its token order, flat atom windows and diffusion RoPE positions follow. Ours now keeps that order (`hf3_chain_order`: chain ids kept, the pipeline's sort by id skipped). The new harness case `reorder` (ATP, DNA, protein, RNA) failed every row before and now reads PARITY/CLOSE, padded too; the runner reports stock's arrays in its own order (`HF3_CASE_ORDER=1` for the case's).
+- **MSA-mode templates** are GAP on RNA, DNA and ligand tokens; a nucleic chain's deletion mean is over its own rows; **MSE** is one token per atom (`atomize_mse`); copies of one **SMILES ligand** are one entity (`shared_smiles_ligand_names`; two separate entries of the same SMILES also merge, where stock keeps them apart).
+- **Confidence summary** is stock's: pTM/ipTM weight each pair by both tokens' frame masks, ipTM is 0 without an interface, the clash test and `ranking_score = 0.8 ipTM + 0.2 pTM - has_clash` are its own (checked exact against `helixfold/common/confidence.py`). Written structures keep OXT only at a chain's last residue and OP3 only at its first, as stock writes them; the model still predicts every atom.
+- Under the fused kernels (`PAD_KEEP`) the template stack's same-chain mask no longer gates the outputs of cross-chain template pairs, which stock updates.
+
+Of the 21 runnable cases at one pass with the cast off, 17 read PARITY/CLOSE on every row; msa, homodimer, template and template_std miss only on the trunk pair (max|d|/rms 1.1e-2, 7.2e-2, 4.3e-2, 4.3e-2), and that is inside stock's own one-pass spread: with `CASE_FLOOR=1e-6` (4 draws) stock moves itself by 5.9e-2, 0.85 and 9.6e-2, so all read FLOOR, every later row PARITY/CLOSE.
+
 **Full trajectory**, graded on the sampler alone (one trunk pass, cast removed; `TRAJ_FLOOR=trunk TRAJ_FLOOR_EPS=1e-4` reruns stock with its trunk nudged by 1e-4, the size of our trunk difference). 200 steps and the sigma schedule match on every case:
 
 | case | final coordinates | max \|d\| | superposed | stock vs itself |

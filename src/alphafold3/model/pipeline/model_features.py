@@ -1849,6 +1849,15 @@ def _unknown_residues(fold_input):
   return frozenset(out)
 
 
+def _mse_residues(fold_input):
+  """(chain_id, res_id) of every selenomethionine: AF3 keeps MSE on one token like MET, a model whose tokeniser
+  knows only the 20 standard amino acids (helixfold3: pipeline_aa_utils atomises everything outside STANDARD_LIST)
+  gives it one token per atom."""
+  from alphafold3.common import folding_input as fi
+  return frozenset((str(c.id), int(pos)) for c in fold_input.chains if isinstance(c, fi.ProteinChain)
+                   for name, pos in c.ptms if name == 'MSE')
+
+
 def _largest_modified_residue(fold_input):
   """Slots for the biggest modified polymer residue (CCD heavy atoms), so a model that keeps one on a single token, as
   boltz does whatever its size, never truncates or splits it; None when 24 suffice."""
@@ -1897,6 +1906,27 @@ def _boltz_msa_dedupe(fold_input):
 INPUT_HAD_TEMPLATES = False
 
 
+def _hf3_chain_order(fold_input):
+  """HelixFold3's chain order (helixfold/data/pipeline_aa.py process_with_all_msa_chain_features):
+  protein then RNA chains, regrouped together by the MSA pairing so identical sequences sit
+  together (in order of first appearance), then DNA, then ligands, each in input order. Its token order --
+  and with it the diffusion RoPE positions and the flat atom windows -- follows; chain ids are kept."""
+  import dataclasses
+  from alphafold3.common import folding_input as fi
+
+  def key(c):   # msa_pipeline_protein.add_assembly_features groups by sequence string
+    return (c.sequence, tuple(getattr(c, 'ptms', None) or getattr(c, 'modifications', None) or ()))
+
+  def grouped(chains):
+    order = list(dict.fromkeys(key(c) for c in chains))
+    return sorted(chains, key=lambda c: order.index(key(c)))   # stable within a group
+  protein = [c for c in fold_input.chains if isinstance(c, fi.ProteinChain)]
+  rna = [c for c in fold_input.chains if isinstance(c, fi.RnaChain)]
+  dna = [c for c in fold_input.chains if isinstance(c, fi.DnaChain)]
+  rest = [c for c in fold_input.chains if not isinstance(c, (fi.ProteinChain, fi.RnaChain, fi.DnaChain))]
+  return dataclasses.replace(fold_input, chains=grouped(protein + rna) + dna + rest)
+
+
 def prepare_input(fold_input, spec):
   """The input-side conventions, applied before featurisation: a copy of `fold_input` as the model's featuriser sees it.
 
@@ -1923,13 +1953,20 @@ def prepare_input(fold_input, spec):
   struc_chem_comps.UNK_AS_GLY = 'ALA' if knobs.get('ccd_unk') == 'cb' else not knobs.get('ccd_unk')
   af3_features.ATOMIZED_RESIDUES = (
       (_ligand_bonded_residues(fold_input) if knobs.get('atomize_ligand_bonded') else frozenset())
-      | (_unknown_residues(fold_input) if knobs.get('atomize_unknown') else frozenset()))
+      | (_unknown_residues(fold_input) if knobs.get('atomize_unknown') else frozenset())
+      | (_mse_residues(fold_input) if knobs.get('atomize_mse') else frozenset()))
   from alphafold3.model.pipeline import pipeline as af3_pipeline
   af3_pipeline.INNER_TERMINAL_ATOMS = knobs.get('drop_inner_terminal_atoms') or False
   af3_pipeline.MAX_ATOMS_PER_TOKEN = (_largest_modified_residue(fold_input) if knobs.get('modified_as_one_token')
                                       else None)
   if knobs.get('boltz_msa_dedupe'):
     fold_input = _boltz_msa_dedupe(fold_input)
+  from alphafold3.model.pipeline import structure_cleaning
+  structure_cleaning.SORT_CHAINS = not knobs.get('hf3_chain_order')
+  from alphafold3.common import folding_input as fi
+  fi.SHARED_SMILES_LIGAND_NAMES = bool(knobs.get('shared_smiles_ligand_names'))
+  if knobs.get('hf3_chain_order'):
+    fold_input = _hf3_chain_order(fold_input)
   # whether templates were SUPPLIED, before a policy prefilters them away (helixfold3 picks its
   # featurisation mode on this); process-wide like ccd_unk
   global INPUT_HAD_TEMPLATES
@@ -2242,7 +2279,13 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('dedupe_self_msa') == 'query' and not boltz_built:
     # (_boltz_msa writes boltz's rows itself, the query once -- or twice when a keyed query pairs into a row of its
     # own, which this would drop)
+    dm = np.array(batch['deletion_mean']) if knobs.get('hf3_features') and 'deletion_mean' in batch else None
     _dedupe_query_row(batch)
+    if dm is not None:
+      # helixfold3 takes a nucleic chain's deletion mean over that chain's own rows (AF3's per-chain value), not over
+      # the merged depth the rebuild divides by
+      nuc = (np.asarray(batch['is_protein']) == 0) & (np.asarray(batch['is_ligand']) == 0)
+      batch['deletion_mean'] = np.where(nuc, dm, np.asarray(batch['deletion_mean'])).astype(dm.dtype)
   elif knobs.get('dedupe_self_msa'):
     _dedupe_self_msa(batch, query_once=knobs['dedupe_self_msa'] == 'query_once')
   if knobs.get('ligand_msa_unk'):
@@ -2291,6 +2334,13 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('empty_template_gap') and not (knobs['empty_template_gap'] == 'no_msa' and msa_mode):
     _empty_template_gap(batch, slots=knobs.get('empty_template_gap_slots',
                                                'first'))
+  elif knobs.get('empty_template_gap') == 'no_msa' and batch.get('template_aatype') is not None:
+    # ...though even there its RNA, DNA and ligand tokens read GAP in every slot
+    # (pipeline_aa_utils.mock_msa_template_if_nonexist); only protein takes AF3's padding
+    aatype = np.array(batch['template_aatype'])
+    other = (np.asarray(batch['is_protein']) == 0) & (np.asarray(batch['seq_mask']) > 0)
+    aatype[:, other] = 21
+    batch['template_aatype'] = aatype
   if knobs.get('lm_pair') and lm_hidden is not None:
     _attach_lm_hidden(batch, *lm_hidden)
   elif knobs.get('lm_pair') and lm_pair is not None:

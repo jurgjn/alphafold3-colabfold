@@ -22,6 +22,7 @@ import warnings
 
 from absl import logging
 from alphafold3 import structure
+from alphafold3.constants import mmcif_names
 from alphafold3.constants import residue_names
 from alphafold3.cpp import mkdssp
 import jax.numpy as jnp
@@ -576,6 +577,24 @@ def get_iptm_xchain(chain_pair_iptm: np.ndarray) -> np.ndarray:
   return iptm_xchain
 
 
+def has_clash_helixfold3(struc) -> float:
+  """HelixFold3's clash test (helixfold/model/utils.py get_has_clash): over POLYMER atoms only,
+  a pair of chains clashes when more than 100 atom PAIRS sit closer than 1.1 A, or more than
+  half of the smaller chain's atom count; one polymer chain never clashes."""
+  polymer = ~np.isin(struc.chain_type, list(mmcif_names.NON_POLYMER_CHAIN_TYPES))
+  coords = np.asarray(struc.coords)[polymer]
+  chains = np.asarray(struc.chain_id)[polymer]
+  ids = list(dict.fromkeys(chains.tolist()))
+  for i, a in enumerate(ids[:-1]):
+    pa = coords[chains == a]
+    for b in ids[i + 1:]:
+      pb = coords[chains == b]
+      n_clash = float((np.linalg.norm(pa[None] - pb[:, None], axis=-1) < 1.1).sum())
+      if n_clash > 100 or n_clash / min(len(pa), len(pb)) > 0.5:
+        return 1.0
+  return 0.0
+
+
 def predicted_tm_score(
     tm_adjusted_pae: np.ndarray,
     pair_mask: np.ndarray,
@@ -670,3 +689,18 @@ def chain_pairwise_predicted_tm_scores(
       all_pairs_iptms[i, i + j] = iptm
       all_pairs_iptms[i + j, i] = iptm
   return all_pairs_iptms
+
+
+def helixfold3_written_atoms(struc: structure.Structure) -> structure.Structure:
+  """The atoms helixfold3 writes: it predicts every polymer residue's OXT / OP3
+  (pipeline 'keep_all') but its output label mask keeps OXT only at a chain's
+  last residue and OP3 only at its first (helixfold/infer_scripts)."""
+  polymer = ~np.isin(struc.chain_type, list(mmcif_names.NON_POLYMER_CHAIN_TYPES))
+  keep = np.ones(struc.num_atoms, bool)
+  for chain in np.unique(struc.chain_id[polymer]):
+    in_chain = polymer & (struc.chain_id == chain)
+    res = struc.res_id[in_chain]
+    first, last = res.min(), res.max()
+    keep[in_chain] &= ~(((struc.atom_name[in_chain] == 'OXT') & (res != last))
+                        | ((struc.atom_name[in_chain] == 'OP3') & (res != first)))
+  return struc if keep.all() else struc.filter(keep)

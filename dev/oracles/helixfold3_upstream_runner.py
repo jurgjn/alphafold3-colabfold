@@ -30,9 +30,11 @@ switched OFF here (core.set_cublas_switch(False), NVIDIA_TF32_OVERRIDE=0). HF3_T
 
 CONVENTIONS a consumer must know (also printed into OUT_DIR/hf3_meta.json):
   * TOKEN ORDER. HF3 reorders chains: protein -> rna (MSA pairing may regroup by sequence)
-    -> dna -> ligand. Every TOKEN-axis array this runner emits (layout atom_token, s_inputs,
-    s, z, pae*, pde*, feat.* token features) is permuted back to the CASE's chain order
-    (layout `hf3_token_perm`: case token k = HF3 token hf3_token_perm[k]).
+    -> dna -> ligand, and ours follows it, so every TOKEN-axis array this runner emits
+    (layout atom_token, s_inputs, s, z, pae*, pde*, feat.* token features) stays in HF3's
+    order (`hf3_token_perm` the identity). HF3_CASE_ORDER=1 permutes them back to the
+    CASE's chain order instead (case token k = HF3 token hf3_token_perm[k]); the case
+    permutation is always in hf3_meta.json as `hf3_case_perm`.
   * FLAT ATOM ORDER is HF3's own (its chain order, then per residue the CCD order of the
     preprocessed CCD pkl), and contains EVERY atom of each CCD entry: OXT on every amino
     acid, OP3 on every nucleotide, leaving atoms of modified residues/ligands. positions /
@@ -103,7 +105,9 @@ def _hf3_json(j):
     for s, cid in enumerate(ids, start=1):
       chains.append((cid, '%s-%d' % (_int_id_to_str_id(k), s), kind, e))
     if kind in ('protein', 'rna', 'dna'):
-      d = {'type': kind, 'sequence': e['sequence'], 'count': len(ids)}
+      # stock's validator takes only X as a nucleic unknown (input_validation.py); AF3's N is the same residue
+      seq = e['sequence'] if kind == 'protein' else e['sequence'].replace('N', 'X')
+      d = {'type': kind, 'sequence': seq, 'count': len(ids)}
       mods = [{'type': 'residue_replace', 'ccd': m['ptmType'], 'index': m['ptmPosition']}
               if kind == 'protein' else
               {'type': 'residue_replace', 'ccd': m['modificationType'], 'index': m['basePosition']}
@@ -393,12 +397,16 @@ def featurise(model, case_json, out_dir):
   n_tok = len(tok_chain)
   perm = np.concatenate([np.flatnonzero(tok_chain == hid) for _, hid, _, _ in chains])
   assert sorted(perm.tolist()) == list(range(n_tok)), 'chain bookkeeping lost tokens'
+  case_perm = perm
+  if os.environ.get('HF3_CASE_ORDER') != '1':
+    # ours keeps HF3's own chain order (model_features._hf3_chain_order), so token k is token k
+    perm = np.arange(n_tok)
   inv = np.empty_like(perm)
   inv[perm] = np.arange(n_tok)
   atom_tok_hf3 = np.asarray(feat['ref_token2atom_idx'])
   names = str(feat['all_atom_ids']).split()
   assert len(names) == len(atom_tok_hf3)
-  meta = {'use_msa': bool(use_msa), 'hf3_token_perm': perm.tolist(),
+  meta = {'use_msa': bool(use_msa), 'hf3_token_perm': perm.tolist(), 'hf3_case_perm': case_perm.tolist(),
           'chains': [[cid, hid, kind] for cid, hid, kind, _ in chains],
           'hf3_chain_order': list(dict.fromkeys(tok_chain.tolist())),
           'n_token': int(n_tok), 'n_atom': len(names), 'msa_rows': int(np.shape(feat['msa'])[0])}

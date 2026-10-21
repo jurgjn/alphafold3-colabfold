@@ -807,6 +807,12 @@ _FEATURISE = {
                        dedupe_self_msa='query', dedupe_unpaired_msa=True,
                        # blank atom-token names, a DNA token's gap profile, a ligand's UNK msa row
                        hf3_features=True,
+                       # its chain order: protein, RNA (identical chains together), DNA, ligand
+                       hf3_chain_order=True,
+                       # MSE, which AF3 keeps whole, is one token per atom
+                       atomize_mse=True,
+                       # copies of one SMILES ligand are one entity
+                       shared_smiles_ligand_names=True,
                        # a modified residue's tokens read the protein unknown; an unknown amino acid is
                        # built from the CCD UNK (N CA C O CB CG)
                        modified_restype='hf3', ccd_unk=True,
