@@ -5,19 +5,22 @@ haiku graph, and overlay the converted checkpoint on top of the init (the
 init+merge path the fold tests use -- an unported head stays at its init value
 instead of blowing up, which keeps a partially-ported model traceable).
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 
 import numpy as np
 
 CHECKPOINTS = {
-    'alphafold3':   '~/af3_official_weights',        # already a haiku blob
-    'openfold3':    '~/af3_converted_weights',       # already a haiku blob
-    'intellifold2': '~/model_v2',                    # already a haiku blob
-    'opendde':      '~/opendde_converted_weights',   # already a haiku blob
-    'boltz2':       '~/boltz2_weights/boltz2_conf.ckpt',
-    'protenix2':    '~/protenix_weights/protenix-v2.pt',
-    'rosettafold3': '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt',
-    'chai1':        '~/chai1_weights',               # five TorchScript archives
+    'alphafold3':   dev_path('~/af3_official_weights'),        # already a haiku blob
+    'openfold3':    dev_path('~/af3_converted_weights'),       # already a haiku blob
+    'intellifold2': dev_path('~/model_v2'),                    # already a haiku blob
+    'opendde':      dev_path('~/opendde_converted_weights'),   # already a haiku blob
+    'boltz2':       dev_path('~/boltz2_weights/boltz2_conf.ckpt'),
+    'protenix2':    dev_path('~/protenix_weights/protenix-v2.pt'),
+    'rosettafold3': dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt'),
+    'chai1':        dev_path('~/chai1_weights'),               # five TorchScript archives
 }
 
 # models whose converted weights are produced in-process from a torch checkpoint
@@ -202,7 +205,7 @@ def _shape_cache_signature(model, cfg, fbatch=None):
 
 def _shape_cache_path(model, cfg, fbatch=None):
   d = os.path.expanduser(os.environ.get('COLABDESIGN2_CACHE_DIR',
-                                        '~/.cache/colabdesign2'))
+                                        dev_path('~/.cache/colabdesign2')))
   d = os.path.join(d, 'param_shapes')
   return os.path.join(d, f'{model}-{_shape_cache_signature(model, cfg, fbatch)[:20]}.json')
 

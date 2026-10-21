@@ -77,7 +77,7 @@ GPU -- it appeared to "hang" for minutes and was really doing `kaiming_uniform_`
 over 464M parameters on CPU before loading the checkpoint (faulthandler stack:
 `nn.Linear.__init__` <- `pairformer.__init__` <- `init_model`). Run it under
 `~/boltz_gpu_venv` with `PYTHONPATH=~/if2_extra`, plus
-`PYTHONPATH` must also reach `/home/ubuntu/protenix` for `configs.configs_base`
+`PYTHONPATH` must also reach `~/protenix` for `configs.configs_base`
 (python puts the SCRIPT's directory on sys.path, not the cwd, so `cd` is not
 enough).
 
@@ -171,8 +171,6 @@ instead of a plausible zero -- keep that guard in every harness.
     bench_rf3_native.py  native rf3; also times the PIPELINE so featurisation can
                          be subtracted
     bench_chai_native.py native chai-1; records the BUCKET it actually folded
-    bench_px_native.py   native protenix2 / opendde, via InferenceRunner.predict
-                         (already-featurised batch, so forward-only)
 
 Settings are matched across all of them: 3 recycles, 200 diffusion steps, 1
 sample, num_msa=1024, single sequence, no template, confidence on. Sequences are

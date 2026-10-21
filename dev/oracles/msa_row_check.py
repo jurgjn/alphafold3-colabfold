@@ -26,6 +26,9 @@ Non-polymer tokens are reported separately rather than compared: AF3 puts a GAP
 on a ligand token in every row, and whether that is the vendor's convention is a
 per-model question this gate deliberately does not answer.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import collections
 import json
@@ -62,7 +65,7 @@ def encode(row, one, unk, gap):
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--json', default=os.path.expanduser('~/1stp_msa.json'))
+  ap.add_argument('--json', default=dev_path('~/1stp_msa.json'))
   args = ap.parse_args(argv)
   sys.argv = sys.argv[:1]
 

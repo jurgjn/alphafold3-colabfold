@@ -28,6 +28,9 @@ on 1EHZ is right and is half the reason it survived: RNA puts the backbone atoms
 first, so no permutation appears. Ubiquitin is blind too -- it ends in GLY, which
 takes the single-token path and is never split.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 
 import sys
 
@@ -88,6 +91,6 @@ if __name__ == '__main__':
   else:
     probe('MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG',
           tag='ubiquitin (ends GLY)')
-    probe(fold_check.parse_ca('/home/ubuntu/6MRR.pdb')[0], tag='6MRR')
+    probe(fold_check.parse_ca(dev_path('~/6MRR.pdb'))[0], tag='6MRR')
     for L in (12, 18, 19, 24, 25):
       probe('A' * (L - 1) + 'W', tag='poly-A(%d) ending TRP' % L)

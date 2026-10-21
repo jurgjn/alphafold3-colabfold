@@ -3,8 +3,11 @@
 Also measures the peak with tower and trunk weights CO-RESIDENT, which is the
 number that decides whether Model should call the tower itself.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys, time
-sys.path.insert(0, '/home/ubuntu/alphafold3/src'); sys.path.insert(0, '/home/ubuntu/alphafold3')
+sys.path.insert(0, dev_path('~/alphafold3/src')); sys.path.insert(0, dev_path('~/alphafold3'))
 import numpy as np, jax, jax.numpy as jnp, haiku as hk
 from converters.pdb import parse_ca
 from dev.oracles.fold_check import _fold_setup
@@ -14,8 +17,8 @@ from alphafold3.model import model_registry as mr
 from alphafold3.af2.common import residue_constants as af2rc
 
 model = sys.argv[1] if len(sys.argv) > 1 else 'esmfold2_lm300m'
-seq, _ = parse_ca(os.path.expanduser('~/6MRR.pdb'))
-md = os.path.expanduser('~/ported/%s' % model)
+seq, _ = parse_ca(dev_path('~/6MRR.pdb'))
+md = os.path.expanduser(dev_path('~/ported/%s') % model)
 tower = mr.ESMFOLD2_VARIANTS[model]['esmc']
 tp, dims = esm.load(None, 'esmc', tower)
 shim_p = esm.load_shim_params(md, model)

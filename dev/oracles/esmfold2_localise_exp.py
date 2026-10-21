@@ -11,6 +11,9 @@ of the comparison entirely: what is left is the trunk.
 
   MODEL=esmfold2_lm600m NATIVE=<npz> PYTHONPATH=src:. python dev/oracles/esmfold2_localise_exp.py
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
@@ -19,8 +22,8 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-sys.path.insert(0, '/home/ubuntu/alphafold3')
-sys.path.insert(0, '/home/ubuntu/alphafold3/src')
+sys.path.insert(0, dev_path('~/alphafold3'))
+sys.path.insert(0, dev_path('~/alphafold3/src'))
 sys.argv = sys.argv[:1]
 from alphafold3.model import model as af3_model, model_registry, params as afp
 from alphafold3.model.components import utils
@@ -45,8 +48,8 @@ nat = dict(np.load(NATIVE))
 lm_z = nat['lm_z'][0]
 z_native = nat['trunk_out'][0]
 
-seq, _ = parse_ca(os.path.expanduser('~/6MRR.pdb'))
-d = os.path.expanduser('~/ported/%s' % MODEL)
+seq, _ = parse_ca(dev_path('~/6MRR.pdb'))
+d = os.path.expanduser(dev_path('~/ported/%s') % MODEL)
 spec = model_registry.get(MODEL)
 fi = folding_input.Input(name='x', chains=[folding_input.ProteinChain(
     id='A', sequence=seq, ptms=[], unpaired_msa='', paired_msa='',

@@ -1,7 +1,10 @@
 """Does on_step actually steer? Pull two distant residues together."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys, time
-sys.path.insert(0, '/home/ubuntu/alphafold3/src'); sys.path.insert(0, '/home/ubuntu/alphafold3')
-sys.path.insert(0, '/home/ubuntu/alphafold3/dev/live')
+sys.path.insert(0, dev_path('~/alphafold3/src')); sys.path.insert(0, dev_path('~/alphafold3'))
+sys.path.insert(0, dev_path('~/alphafold3/dev/live'))
 os.environ.setdefault('XLA_FLAGS', '--xla_gpu_enable_triton_gemm=false')
 from absl import flags
 import numpy as np, jax
@@ -16,7 +19,7 @@ from alphafold3.data import featurisation
 from alphafold3.model import model_registry
 from alphafold3.model.components import utils as _u
 from alphafold3.model.pipeline import model_features
-WD = os.path.expanduser('~/ported/openbind0')
+WD = dev_path('~/ported/openbind0')
 fi = folding_input.load_fold_inputs_from_path(f'{SP}/dyn.json').__next__()
 ccd = decoded_ccd.get_ccd()
 feat = lambda: featurisation.featurise_input(fold_input=fi, ccd=ccd, buckets=None, verbose=False)

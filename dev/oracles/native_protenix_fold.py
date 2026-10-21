@@ -13,6 +13,9 @@ to do with no template supplied. That is how protenix1's 9 A ubiquitin gap was
 confirmed: native drops from 1.855 A to 8.40 A, onto our number. Changing the
 REFERENCE and nothing else is the strongest form the claim can take.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 
 import os, sys, types
 import torch
@@ -20,7 +23,7 @@ import torch
 CASE = os.environ.get('CASE', '5k9p_plain')
 CKPT = os.environ['CKPT']
 MODEL = os.environ['MODEL']
-JSONDIR = os.environ.get('JSONDIR', '/home/ubuntu/alphafold3/dev/oracles/native_json')
+JSONDIR = os.environ.get('JSONDIR', dev_path('~/alphafold3/dev/oracles/native_json'))
 DUMP = os.environ.get('DUMP_DIR', '/tmp/px_fold_' + CASE)
 SEED = os.environ.get('SEED', '0')
 CYCLES = os.environ.get('CYCLES', '10')

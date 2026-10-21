@@ -12,16 +12,19 @@ trunk as the suspect (contact precision 0.303 vs openfold3's 0.868).
   DUMP=<out.npz> CKPT=~/of3-ob-174k.pt TREE=~/openfold-3-v050 \
     ~/of3_venv/bin/python dump_trunk.py <query.json>
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys
 import numpy as np
 import torch
 
-TREE = os.environ.get('TREE', '/home/ubuntu/openfold-3-v050')
-CKPT = os.environ.get('CKPT', '/home/ubuntu/of3-ob-174k.pt')
+TREE = os.environ.get('TREE', dev_path('~/openfold-3-v050'))
+CKPT = os.environ.get('CKPT', dev_path('~/of3-ob-174k.pt'))
 DUMP = os.environ.get('DUMP', '/tmp/of3_trunk.npz')
 OUTDIR = os.environ.get('OUTDIR', '/tmp/of3_trunk_out')
 sys.path.insert(0, TREE)
-sys.path.insert(0, os.environ.get('STUB', os.path.expanduser('~/of3_stub')))
+sys.path.insert(0, os.environ.get('STUB', dev_path('~/of3_stub')))
 
 
 # NATIVE'S OWN FLOOR. of3 calls torch.set_float32_matmul_precision("high") in

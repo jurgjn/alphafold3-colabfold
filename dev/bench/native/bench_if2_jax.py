@@ -13,12 +13,15 @@ Seam: `ModelRunner.run_inference(featurised_example, rng_key)`, patched to call
 the jitted model REPS+1 times on the same featurised batch (a jax forward does
 not consume its input, unlike protenix2's predict).
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys, time, statistics, warnings
 warnings.filterwarnings('ignore')
 
 L = int(os.environ.get('IF2_L', '64'))
 REPS = int(os.environ.get('IF2_REPS', '3'))
-ROOT = '/home/ubuntu/IntelliFold'
+ROOT = dev_path('~/IntelliFold')
 sys.path.insert(0, ROOT)
 
 times = []

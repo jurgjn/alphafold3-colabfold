@@ -31,6 +31,9 @@ it re-drew the identical one. The per-recycle MSA subsample
 permutation, which the MSA module is invariant to up to summation order; above
 it (deep_msa) a random subset, lifted to all rows under MSA_ALL_ROWS.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import sys
@@ -44,7 +47,7 @@ os.environ.setdefault('DISABLE_CUEQUIVARIANCE', '1')
 import numpy as np
 
 CKPT = os.path.expanduser(os.environ.get(
-    'RF3_CKPT', '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt'))
+    'RF3_CKPT', dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')))
 SEED = 1
 
 _THREE = {'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS',

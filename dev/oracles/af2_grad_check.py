@@ -12,6 +12,9 @@ must stay in one process.
 
   PYTHONPATH=src:. python dev/oracles/af2_grad_check.py
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 
@@ -40,7 +43,7 @@ def build(target, model_type, num_recycles, use_cluster_profile=True):
 
   runner = af2_inference.AF2ModelRunner(
       model_registry.get(model_type), device=jax.devices()[0],
-      model_dir=os.path.expanduser('~'), num_recycles=num_recycles,
+      model_dir=dev_path('~'), num_recycles=num_recycles,
       use_bfloat16=False, use_cluster_profile=use_cluster_profile)
   return runner, batch, seq
 
@@ -48,7 +51,7 @@ def build(target, model_type, num_recycles, use_cluster_profile=True):
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('--model', default='af2_ptm')
-  ap.add_argument('--target', default='~/6MRR.pdb')
+  ap.add_argument('--target', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--recycle', type=int, default=0)
   ap.add_argument('--cluster_profile', default='on',
                   choices=('on', 'off'),

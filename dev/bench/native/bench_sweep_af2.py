@@ -17,9 +17,12 @@ so sweeping them costs real time -- there is no 16384-row padding and no config
 truncation to see through. `num_extra_msa` is held at AF2's own 1024 and only the
 cluster count is swept, because that is the knob a user turns.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys, os, time, warnings, json, random, datetime
 warnings.filterwarnings('ignore')
-_AF3 = os.environ.get('AF3_SRC', '/home/ubuntu/alphafold3')
+_AF3 = os.environ.get('AF3_SRC', dev_path('~/alphafold3'))
 sys.path.insert(0, os.path.join(_AF3, 'src'))
 sys.path.insert(0, _AF3)
 import numpy as np

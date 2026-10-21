@@ -33,6 +33,9 @@ and scope a fold creates them. See af3_upstream_runner.py for why that matters.
 
 Prints `__VERDICT PASS` or `__VERDICT FAIL` and exits non-zero on FAIL.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import subprocess
@@ -42,7 +45,7 @@ import tempfile
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HOME = os.path.expanduser('~')
+HOME = dev_path('~')
 
 # Set before anything imports jax (vendor_native_parity imports this module
 # first, so it inherits these too). Defaults only: the caller's env wins.

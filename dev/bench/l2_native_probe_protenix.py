@@ -1,5 +1,8 @@
 """Can protenix's token DiffusionTransformer be built from the checkpoint and run
 on synthetic inputs? That is the risky half of an L2 gate."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys, types, numpy as np, torch
 
 # the fused-LayerNorm stub, same contract as the L1 harness needs
@@ -30,7 +33,7 @@ sys.modules.setdefault('fast_layer_norm_cuda_v2', _Ext('fast_layer_norm_cuda_v2'
 
 from protenix.model.modules.transformer import DiffusionTransformer
 
-sd = torch.load('/home/ubuntu/protenix_weights/protenix-v2.pt', map_location='cpu', weights_only=False)
+sd = torch.load(dev_path('~/protenix_weights/protenix-v2.pt'), map_location='cpu', weights_only=False)
 sd = sd.get('model', sd)
 P = 'module.diffusion_module.diffusion_transformer.'
 sub = {k[len(P):]: v for k, v in sd.items() if k.startswith(P)}

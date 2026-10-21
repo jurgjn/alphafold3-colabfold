@@ -13,7 +13,7 @@ out exact. This script forces the first (bfloat16='none' before the config is
 read) and asserts the second, so a caller who forgets the env var is told.
 
     JAX_DEFAULT_MATMUL_PRECISION=highest \
-      PYTHONPATH=src:.:/home/ubuntu/protenix \
+      PYTHONPATH=src:.:~/protenix \
       python dev/oracles/trunk_parity.py protenix2
 
 NATIVE ADAPTERS. One vendor implementation usually serves a whole family, which
@@ -25,6 +25,9 @@ from constants -- the family shares an implementation but not its widths
 (protenix2 is c_z 256, protenix1 c_z 128), and
 hardcoding one model's shape is what left five with no gate.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -118,7 +121,7 @@ def native_protenix(model, n, mask, blocks=None):
   _stub_protenix_ext()
   from protenix.model.modules.pairformer import PairformerStack
 
-  ckpt = os.path.expanduser('~/protenix_weights/' + _PROTENIX_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/protenix_weights/') + _PROTENIX_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('model', sd)
   pre = 'module.pairformer_stack.'
@@ -180,7 +183,7 @@ def native_if2(model, n, mask, blocks=None):
 
   from intellifold.openfold.model.pairformer import PairformerStack
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   raw = raw.get('model', raw.get('state_dict', raw))
   pre = 'backbone_trunk.pairformer.'
@@ -273,7 +276,7 @@ def native_boltz2(model, n, mask, blocks=None):
   # takes to reach MSAModule through trunkv2.
   from boltz.model.layers.pairformer import PairformerModule
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   raw = raw.get('state_dict', raw)
   pre = 'pairformer_module.'
@@ -336,7 +339,7 @@ def native_opendde(model, n, mask, blocks=None):
 
   from opendde.model.modules.pairformer import PairformerStack
 
-  ckpt = os.path.expanduser('~/opendde_weights/opendde.pt')
+  ckpt = dev_path('~/opendde_weights/opendde.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('model', sd.get('state_dict', sd))
   pre = 'module.pairformer_stack.'
@@ -407,11 +410,11 @@ def native_of3(model, n, mask, blocks=None):
   has_tb = 'transpose_bias' in inspect.signature(TriangleAttention.forward).parameters
   want_tb = model == 'openbind0'
   assert has_tb == want_tb, (
-      'wrong openfold-3 release for %s: TriangleAttention %s transpose_bias. '
-      'openbind0 needs ~/openfold-3-v050, openfold3 needs ~/openfold-3'
+      dev_path('wrong openfold-3 release for %s: TriangleAttention %s transpose_bias. '
+      'openbind0 needs ~/openfold-3-v050, openfold3 needs ~/openfold-3')
       % (model, 'has' if has_tb else 'lacks'))
 
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'pairformer_stack.'
@@ -498,8 +501,7 @@ def native_rf3(model, n, mask, blocks=None):
       'rf3 pairformer blocks take no mask; this adapter is only valid for the '
       'all-ones mask the gate feeds')
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)['model']
   # `shadow.*` is the EMA copy, which is what converters/rosettafold3.py ports.
   pre = 'shadow.recycler.pairformer_stack.'
@@ -610,7 +612,7 @@ def ours(model, s, z, mask, n_blocks, model_dir=None):
   assert cfg.global_config.bfloat16 == 'none', 'a spec re-enabled bfloat16'
 
   full = afp.get_model_haiku_params(
-      model_dir=model_dir or os.path.expanduser('~/ported/%s' % model))
+      model_dir=model_dir or os.path.expanduser(dev_path('~/ported/%s') % model))
   pf, n = cfg.evoformer.pairformer, s.shape[0]
 
   def fwd(s_, z_):

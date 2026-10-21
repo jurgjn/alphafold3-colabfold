@@ -1,8 +1,11 @@
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys, numpy as np, jax
-sys.path.insert(0, '/home/ubuntu/alphafold3')
+sys.path.insert(0, dev_path('~/alphafold3'))
 from dev.oracles.fold_check import fold, parse_ca, kabsch_rmsd
 d = sys.argv[1]; name = sys.argv[2]
-seq, native = parse_ca(os.path.expanduser('~/6MRR.pdb'))
+seq, native = parse_ca(dev_path('~/6MRR.pdb'))
 outs = [fold(name, seq, model_dir=d, seed=s) for s in (0,)]
 pos = np.concatenate([np.asarray(o['diffusion_samples']['atom_positions']) for o,_ in outs])
 rs = [kabsch_rmsd(pos[i,:,1,:], native) for i in range(pos.shape[0])]

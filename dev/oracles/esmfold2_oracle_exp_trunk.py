@@ -35,6 +35,9 @@ The RELEASED line (esmfold2, esmfold2_fast) declares a different model class and
 is not handled here -- use esmfold2_native_variants.py, which picks the class
 from the checkpoint's own `architectures` field.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 
 import os
 import sys
@@ -46,13 +49,13 @@ from transformers.models.esmfold2.modeling_esmfold2_experimental import (
     ESMFold2ExperimentalModel)
 from transformers.models.esmfold2.protein_utils import prepare_protein_features
 
-sys.path.insert(0, '/home/ubuntu/alphafold3')
+sys.path.insert(0, dev_path('~/alphafold3'))
 from dev.oracles.esmfold2_native_variants import parse_ca
 
 
-def dump(hub_name, out, pdb='~/6MRR.pdb', num_loops=3, num_sampling_steps=200):
+def dump(hub_name, out, pdb=dev_path('~/6MRR.pdb'), num_loops=3, num_sampling_steps=200):
   seq, _ = parse_ca(os.path.expanduser(pdb))
-  src = os.path.expanduser('~/esmfold2_variants/%s' % hub_name)
+  src = os.path.expanduser(dev_path('~/esmfold2_variants/%s') % hub_name)
   if not os.path.isdir(src):
     src = 'biohub/%s' % hub_name
   model = ESMFold2ExperimentalModel.from_pretrained(src).cuda().eval()
@@ -115,4 +118,4 @@ def dump(hub_name, out, pdb='~/6MRR.pdb', num_loops=3, num_sampling_steps=200):
 
 
 if __name__ == '__main__':
-  dump(sys.argv[1], sys.argv[2], *(sys.argv[3:4] or ['~/6MRR.pdb']))
+  dump(sys.argv[1], sys.argv[2], *(sys.argv[3:4] or [dev_path('~/6MRR.pdb')]))

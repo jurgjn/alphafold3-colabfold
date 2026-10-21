@@ -8,14 +8,17 @@ the running total, or every later module inherits the earlier one's error).
 TF32 is OFF: this is the reference, and its own floor on a fixed input is
 max|d| ~2 over 48 blocks, so one block is far below that.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys
 import numpy as np
 import torch
 
-TREE = os.environ.get('TREE', '/home/ubuntu/openfold-3-v050')
-CKPT = os.environ.get('CKPT', '/home/ubuntu/of3-ob-174k.pt')
+TREE = os.environ.get('TREE', dev_path('~/openfold-3-v050'))
+CKPT = os.environ.get('CKPT', dev_path('~/of3-ob-174k.pt'))
 sys.path.insert(0, TREE)
-sys.path.insert(0, os.path.expanduser('~/of3_stub'))
+sys.path.insert(0, dev_path('~/of3_stub'))
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
 torch.set_float32_matmul_precision('highest')

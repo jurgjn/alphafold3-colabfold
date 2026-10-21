@@ -15,13 +15,16 @@ Two notes on what is being swept:
   flat line. The config knob is what costs time, and it is the one a user can
   actually turn down.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys, os, time, functools, warnings, datetime, json, random
 warnings.filterwarnings('ignore')
 # AF3_SRC so this runs somewhere other than the machine it was written on. The
 # default is the A10's checkout; the A100 has the package pip-installed and only
 # run_alphafold.py on disk, and the hardcoded path failed there with a bare
 # ModuleNotFoundError that named run_alphafold rather than the assumption.
-_AF3 = os.environ.get('AF3_SRC', '/home/ubuntu/alphafold3')
+_AF3 = os.environ.get('AF3_SRC', dev_path('~/alphafold3'))
 sys.path.insert(0, os.path.join(_AF3, 'src'))
 sys.path.insert(0, _AF3)
 import numpy as np

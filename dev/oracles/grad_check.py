@@ -21,6 +21,9 @@ spread 0.000e+00 over five). Across processes XLA re-autotunes and the same loss
 moves by ~1e-3, which is larger than the differences being measured -- so a
 sweep split across processes compares nothing.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 
@@ -121,7 +124,7 @@ def make_loss_fn(model_name, seq, model_dir=None, bfloat16='none'):
         fold_input=fold_input, ccd=decoded_ccd.get_ccd(), buckets=None)[0])
     runner = af2_inference.AF2ModelRunner(
         spec, device=jax.devices()[0],
-        model_dir=os.path.expanduser(model_dir or '~'),
+        model_dir=os.path.expanduser(model_dir or dev_path('~')),
         num_recycles=0, use_bfloat16=False,
         # nearest_neighbor_clusters is a STRAIGHT-THROUGH estimator (hard
         # one-hot forward, identity backward). Off here so the check measures
@@ -241,7 +244,7 @@ def check(model_name, seq, model_dir=None, tolerance=0.10, bfloat16=None):
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('models', nargs='+')
-  ap.add_argument('--target', default='~/6MRR.pdb')
+  ap.add_argument('--target', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--model_dir', default=None)
   ap.add_argument('--tolerance', type=float, default=0.10)
   ap.add_argument('--bfloat16', default=None,

@@ -5,7 +5,7 @@ atom encoder, token transformer, atom decoder and the EDM scaling all run, so a
 match here means the whole score model agrees for one step. It is also the last
 level with no gate on any protenix model.
 
-  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:/home/ubuntu/protenix \
+  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:~/protenix \
     python dev/oracles/denoise_parity.py protenix2
 
 Inputs come from a REAL featurised 6MRR batch (the atom windows and the
@@ -14,6 +14,9 @@ seeded random -- the same split conditioning_parity.py and atom_parity.py use.
 The noisy coordinates are shared: our dense (token, slot) array masked
 row-major IS native's flat atom list.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -38,10 +41,10 @@ _PROTENIX_CKPT = {
 # file with the package renamed -- so this is a row rather than a function, the
 # same shape `atom_parity._ENC_SRC` uses.
 _DIFF_SRC = {
-    'protenix1': ('protenix', '~/protenix_weights/'
-                  'protenix_base_default_v1.0.0.pt'),
-    'protenix2': ('protenix', '~/protenix_weights/protenix-v2.pt'),
-    'opendde': ('opendde', '~/opendde_weights/opendde.pt'),
+    'protenix1': ('protenix', dev_path('~/protenix_weights/'
+                  'protenix_base_default_v1.0.0.pt')),
+    'protenix2': ('protenix', dev_path('~/protenix_weights/protenix-v2.pt')),
+    'opendde': ('opendde', dev_path('~/opendde_weights/opendde.pt')),
 }
 
 
@@ -205,7 +208,7 @@ def native_if2(model, fb, feats, pos_noisy, noise, s_inputs_449, s, z):
   from intellifold.openfold.v2_inference_config import model_config
   from intellifold.openfold.model.diffusion import DiffusionModule
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.'
@@ -292,8 +295,7 @@ def native_rf3(model, fb, feats, pos_noisy, noise, s_inputs_449, s, z):
   from rf3.model.RF3_structure import DiffusionModule
   from converters.rosettafold3 import _AF3_TO_RF3_AATYPE as _remap
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   raw = raw.get('state_dict', raw.get('model', raw))
   pre = 'shadow.diffusion_module.'
@@ -468,7 +470,7 @@ def native_of3(model, fb, feats, pos_noisy, noise, s_inputs_449, s, z):
   from openfold3.core.model.structure.diffusion_module import DiffusionModule
   from openfold3.projects.of3_all_atom.config.model_config import model_config
 
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.'
@@ -606,7 +608,7 @@ def native_boltz2(model, fb, feats, pos_noisy, noise, s_inputs_449, s, z):
   from boltz.model.modules.diffusionv2 import DiffusionModule
   from boltz.model.modules.encodersv2 import RelativePositionEncoder
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = raw.get('state_dict', raw.get('model', raw))
   take = lambda pre: {k[len(pre):]: v for k, v in sd.items()
@@ -759,7 +761,7 @@ def ours(model, cfg, model_dir, fb, pos_dense, noise, s_inputs, s, z):
       # submodule alone. Strip it before prefixing, or all 124 scopes miss.
       tail = sc[len('diffusion_head/'):] if sc.startswith('diffusion_head/') \
           else sc
-      key = ('diffuser/~/diffusion_head' if tail in ('~', 'diffusion_head')
+      key = ('diffuser/~/diffusion_head' if tail in (dev_path('~'), 'diffusion_head')
              else 'diffuser/~/diffusion_head/' + tail)
       src = full.get(key)
       v = None if src is None else src.get(k)
@@ -777,7 +779,7 @@ def ours(model, cfg, model_dir, fb, pos_dense, noise, s_inputs, s, z):
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
+  ap.add_argument('--pdb', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--noise', type=float, default=16.0)
   ap.add_argument('--model_dir', default=None)
   # REAL conditioning instead of synthetic: an npz with `s`, `z` and

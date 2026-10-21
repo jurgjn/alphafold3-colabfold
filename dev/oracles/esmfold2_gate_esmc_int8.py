@@ -5,6 +5,9 @@ jax_platform_name='cpu' -- a standing rule violation that only existed because
 of the size. At int8 the blob is 5.46 GB and the forward runs one block at a
 time, so this runs where everything else does.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 import time
@@ -12,8 +15,8 @@ import time
 import numpy as np
 import jax
 
-sys.path.insert(0, '/home/ubuntu/alphafold3')
-sys.path.insert(0, '/home/ubuntu/alphafold3/src')
+sys.path.insert(0, dev_path('~/alphafold3'))
+sys.path.insert(0, dev_path('~/alphafold3/src'))
 sys.argv = sys.argv[:1]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from esmfold2_dumps import state_dict as _sd_of, native as _native_of
@@ -25,7 +28,7 @@ assert jax.devices()[0].platform == 'gpu', 'this must run on the GPU'
 from alphafold3.model import esm as E
 from dev.oracles.fold_check import parse_ca
 
-seq, _ = parse_ca(os.path.expanduser('~/6MRR.pdb'))
+seq, _ = parse_ca(dev_path('~/6MRR.pdb'))
 nat = _native_of(MODEL)['lm_hidden'][0]      # (L, 81, D) torch, fp32
 
 t0 = time.time()
@@ -43,7 +46,7 @@ print('ALL layers corr %.8f' % np.corrcoef(ours.ravel(), nat.ravel())[0, 1])
 # trunk sees: the learned softmax mix concentrates on the last layers, so an
 # error there counts for more than one at layer 3.
 from alphafold3.model import esm as esmfold2_lm
-p = esmfold2_lm.load_shim_params('~/ported/esmfold2')
+p = esmfold2_lm.load_shim_params(dev_path('~/ported/esmfold2'))
 zo = esmfold2_lm.shim(ours, p)
 zn = esmfold2_lm.shim(nat, p)
 print('lm_pair    corr %.8f   std %.4f vs %.4f'

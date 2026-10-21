@@ -1,4 +1,7 @@
 """Can ESMFold2 run at all without ESM-C?  Ablate the LM on 3 targets."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import numpy as np, torch
 from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 from transformers.models.esmfold2.protein_utils import prepare_protein_features
@@ -23,8 +26,8 @@ def rmsd(a, b):
 m = ESMFold2Model.from_pretrained("biohub/ESMFold2", esmc_precision="bf16").cuda().eval()
 print("%-26s %-6s  %-16s  %-16s" % ("target", "len", "with ESM-C", "NO ESM-C"))
 for tag, path, chain in [("1UBQ ubiquitin", "1ubq.pdb", 'A'),
-                         ("6MRR Foldit1", "/home/ubuntu/6MRR.pdb", None),
-                         ("1QYS Top7", "/home/ubuntu/1QYS.pdb", 'A')]:
+                         ("6MRR Foldit1", dev_path("~/6MRR.pdb"), None),
+                         ("1QYS Top7", dev_path("~/1QYS.pdb"), 'A')]:
     seq, nat = parse(path, chain)
     feats = {k: v.cuda() for k, v in prepare_protein_features(seq).items()}
     ch = feats['ref_atom_name_chars'][0].cpu().numpy().astype(int)

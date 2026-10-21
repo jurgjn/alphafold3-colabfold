@@ -22,13 +22,16 @@ featurise writes DIR/feats.npz: the vendor's model feature dict
 for every SMILES ligand -- that conformer is an unseeded RDKit draw, so the
 harness hands it to our side.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import sys
 
 import numpy as np
 
-H = os.path.expanduser('~')
+H = dev_path('~')
 CKPT = os.environ.get('BIOEMU2_CKPT', H + '/bioemu2_ckpt/checkpoint.ckpt')
 THREE = {'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS', 'E': 'GLU', 'Q': 'GLN',
          'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'L': 'LEU', 'K': 'LYS', 'M': 'MET', 'F': 'PHE',

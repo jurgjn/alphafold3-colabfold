@@ -32,13 +32,16 @@ worker seeded from data_seed), then predict_step reseeds and predicts, one
 process. `featurise` runs the SAME CLI and stops at predict_step, so its saved
 draw is the one `forward` sees; `forward` checks that and fails if not.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import sys
 
 import numpy as np
 
-H = os.path.expanduser('~')
+H = dev_path('~')
 # model -> (vendor tree, checkpoint). converters/sources.py names the files.
 MODELS = {
     # STOCK RELEASE 0.4.5 (`git describe`: 0.4.5, a4b08032; worktree of

@@ -23,6 +23,9 @@ would be a units mismatch that still correlates.
   JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:. \
     python dev/oracles/boltz2_denoise_parity.py
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -39,9 +42,8 @@ SIGMA_DATA = 16.0
 
 def main(argv=None):
   ap = argparse.ArgumentParser()
-  ap.add_argument('--dump', default=os.path.expanduser(
-      '~/boltz2_6mrr/diff_dump.npz'))
-  ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
+  ap.add_argument('--dump', default=dev_path('~/boltz2_6mrr/diff_dump.npz'))
+  ap.add_argument('--pdb', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--model_dir', default=None)
   args = ap.parse_args(argv)
   sys.argv = sys.argv[:1]
@@ -196,7 +198,7 @@ def ours(cfg, model_dir, fb, pos_dense, noise, s_inputs, s, z):
     for k in init[sc]:
       tail = sc[len('diffusion_head/'):] if sc.startswith('diffusion_head/') \
           else sc
-      key = ('diffuser/~/diffusion_head' if tail in ('~', 'diffusion_head')
+      key = ('diffuser/~/diffusion_head' if tail in (dev_path('~'), 'diffusion_head')
              else 'diffuser/~/diffusion_head/' + tail)
       src = full.get(key)
       v = None if src is None else src.get(k)

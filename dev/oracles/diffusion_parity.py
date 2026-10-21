@@ -10,17 +10,20 @@ largest unexamined exposure in docs/parity_log.md. This is the first of those le
 
 Vendor overlay per model (they can be concatenated):
 
-  protenix family   /home/ubuntu/protenix
-  openfold3         /home/ubuntu/openfold-3
-  openbind0         /home/ubuntu/openfold-3-v050   (the v0.5.0 tag)
-  intellifold2      /home/ubuntu/IntelliFold
-  rosettafold3      /home/ubuntu/rf3_extra:/home/ubuntu/foundry_rf3/src:\
-                    /home/ubuntu/foundry_rf3/models/rf3/src
+  protenix family   ~/protenix
+  openfold3         ~/openfold-3
+  openbind0         ~/openfold-3-v050   (the v0.5.0 tag)
+  intellifold2      ~/IntelliFold
+  rosettafold3      ~/rf3_extra:~/foundry_rf3/src:\
+                    ~/foundry_rf3/models/rf3/src
 
 Same discipline as the trunk gate: dims come from the CHECKPOINT, native and
 ours must both report zero missing/unmapped, bfloat16 is forced off BEFORE the
 config is read, and the script refuses to run without the tf32 override.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -95,10 +98,10 @@ def _stub_layer_norm():
 # file with the package renamed -- so this is a row rather than a function, the
 # same shape `atom_parity._ENC_SRC` uses.
 _DIFF_SRC = {
-    'protenix1': ('protenix', '~/protenix_weights/'
-                  'protenix_base_default_v1.0.0.pt'),
-    'protenix2': ('protenix', '~/protenix_weights/protenix-v2.pt'),
-    'opendde': ('opendde', '~/opendde_weights/opendde.pt'),
+    'protenix1': ('protenix', dev_path('~/protenix_weights/'
+                  'protenix_base_default_v1.0.0.pt')),
+    'protenix2': ('protenix', dev_path('~/protenix_weights/protenix-v2.pt')),
+    'opendde': ('opendde', dev_path('~/opendde_weights/opendde.pt')),
 }
 
 
@@ -199,7 +202,7 @@ def native_of3(model, n):
   from openfold3.core.model.layers.diffusion_transformer import (
       DiffusionTransformer)
 
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.diffusion_transformer.'
@@ -287,7 +290,7 @@ def native_if2(model, n):
 
   from intellifold.openfold.model.diffusion import DiffusionTransformerStack
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.diffusion_transformer.'
@@ -349,8 +352,7 @@ def native_rf3(model, n):
 
   from rf3.model.layers.af3_diffusion_transformer import DiffusionTransformer
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)['model']
   # `shadow.*` is the EMA copy, which is what converters/rosettafold3.py ports.
   pre = 'shadow.diffusion_module.diffusion_transformer.'
@@ -412,7 +414,7 @@ def native_boltz2(model, n):
   _stub_layer_norm()
   from boltz.model.modules.transformersv2 import DiffusionTransformer
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = raw.get('state_dict', raw.get('model', raw))
   pre = 'structure_module.score_model.token_transformer.'
@@ -489,7 +491,7 @@ def ours(model, a, s, z, model_dir=None):
   assert cfg.global_config.bfloat16 == 'none', 'a spec re-enabled bfloat16'
 
   full = afp.get_model_haiku_params(
-      model_dir=model_dir or os.path.expanduser('~/ported/%s' % model))
+      model_dir=model_dir or os.path.expanduser(dev_path('~/ported/%s') % model))
   tcfg = cfg.heads.diffusion.transformer
   n = a.shape[0]
   print('  ours: %d blocks x super %d, %s heads'

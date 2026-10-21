@@ -7,7 +7,7 @@ s_inputs -> LN -> projection, plus the Fourier noise embedding and two more
 transitions). Between them they consume `DIFFUSION_PROJECTED_RELPOS` and the
 `affine_norm` conventions, none of which had an activation-level check.
 
-  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:/home/ubuntu/protenix \
+  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:~/protenix \
     python dev/oracles/conditioning_parity.py protenix2
 
 The relative-position features are built by the VENDOR's own code from OUR
@@ -15,6 +15,9 @@ batch's token features, and ours are built by our graph from the same batch --
 so a disagreement in the relative encoding itself is inside the gate rather
 than assumed away.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -40,7 +43,7 @@ def native_protenix(model, batch, rng, n, noise):
   from protenix.model.modules.diffusion import DiffusionConditioning
   from protenix.model.modules.embedders import RelativePositionEncoding
 
-  ckpt = os.path.expanduser('~/protenix_weights/' + _PROTENIX_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/protenix_weights/') + _PROTENIX_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('model', sd)
   pre = 'module.diffusion_module.diffusion_conditioning.'
@@ -103,7 +106,7 @@ def native_if2(model, batch, rng, n, noise):
   _stub_layer_norm()
   from intellifold.openfold.model.diffusion import DiffusionConditioning
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.diffusion_conditioning.'
@@ -190,7 +193,7 @@ def native_of3(model, batch, rng, n, noise):
       DiffusionConditioning)
   from openfold3.projects.of3_all_atom.config.model_config import model_config
 
-  ckpt = os.path.expanduser('~/' + _OF3_COND_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_COND_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.diffusion_conditioning.'
@@ -284,7 +287,7 @@ def native_opendde(model, batch, rng, n, noise):
   from opendde.model.modules.diffusion import DiffusionConditioning
   from opendde.model.modules.embedders import RelativePositionEncoding
 
-  ckpt = os.path.expanduser('~/opendde_weights/opendde.pt')
+  ckpt = dev_path('~/opendde_weights/opendde.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('model', sd)
   pre = 'module.diffusion_module.diffusion_conditioning.'
@@ -370,7 +373,7 @@ def native_boltz2(model, batch, rng, n, noise):
                                               RelativePositionEncoder,
                                               SingleConditioning)
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = raw.get('state_dict', raw.get('model', raw))
   sc_pre = 'structure_module.score_model.single_conditioner.'
@@ -470,8 +473,7 @@ def native_rf3(model, batch, rng, n, noise):
 
   from rf3.model.RF3_structure import DiffusionConditioning
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)['model']
   pre = 'shadow.diffusion_module.diffusion_conditioning.'
   sub = {k[len(pre):]: v for k, v in raw.items() if k.startswith(pre)}
@@ -667,7 +669,7 @@ def ours(model, cfg, model_dir, batch, s_inputs, s, z, noise):
       # `_conditioning` is @hk.transparent, so its submodules sit directly
       # under the head's scope, and the two trained Fourier tensors are created
       # by the head itself -- scope '~' locally, the bare head scope in the blob.
-      key = ('diffuser/~/diffusion_head' if sc == '~'
+      key = ('diffuser/~/diffusion_head' if sc == dev_path('~')
              else 'diffuser/~/diffusion_head/' + sc)
       src = full.get(key)
       v = None if src is None else src.get(k)
@@ -685,7 +687,7 @@ def ours(model, cfg, model_dir, batch, s_inputs, s, z, noise):
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
+  ap.add_argument('--pdb', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--noise', type=float, default=16.0)
   ap.add_argument('--model_dir', default=None)
   args = ap.parse_args(argv)

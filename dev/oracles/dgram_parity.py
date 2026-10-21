@@ -7,7 +7,7 @@ size: the distogram is the head design gradients flow through (zero recycles,
 backprop into the distogram and stop), so a silent error would corrupt the
 design path while every structural RMSD stayed green.
 
-  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:/home/ubuntu/protenix \
+  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:~/protenix \
     python dev/oracles/dgram_parity.py protenix2
 
 The head is one projection off the trunk pair, so the input is synthetic z --
@@ -16,6 +16,9 @@ whether the vendor symmetrises before or after the projection, whether it
 trains a bias (model_config.DISTOGRAM_BIAS), and whether the converter has to
 halve that bias because native symmetrises first.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -35,7 +38,7 @@ def native_protenix(model, z, n_bins):
   from protenix.model.modules.head import DistogramHead
 
   from denoise_parity import _PROTENIX_CKPT
-  ckpt = os.path.expanduser('~/protenix_weights/' + _PROTENIX_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/protenix_weights/') + _PROTENIX_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('model', sd)
   pre = 'module.distogram_head.'
@@ -63,7 +66,7 @@ def native_of3(model, z, n_bins):
   from openfold3.core.model.heads.prediction_heads import DistogramHead
 
   from denoise_parity import _OF3_CKPT
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   for pre in ('distogram_head.', 'aux_heads.distogram.', 'heads.distogram.'):
@@ -97,7 +100,7 @@ def native_if2(model, z, n_bins):
 
   from intellifold.openfold.model.heads import DistogramHead
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   cands = sorted({k for k in sd if 'distogram' in k.lower()})
@@ -136,8 +139,7 @@ def native_rf3(model, z, n_bins):
 
   from rf3.model.RF3_structure import DistogramHead
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   raw = raw.get('state_dict', raw.get('model', raw))
   pre = 'shadow.distogram_head.'
@@ -169,7 +171,7 @@ def native_boltz2(model, z, n_bins):
 
   from boltz.model.modules.trunkv2 import DistogramModule
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd)
   pre = 'distogram_module.'
@@ -201,7 +203,7 @@ def native_opendde(model, z, n_bins):
 
   from opendde.model.modules.head import DistogramHead
 
-  ckpt = os.path.expanduser('~/opendde_weights/opendde.pt')
+  ckpt = dev_path('~/opendde_weights/opendde.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'module.distogram_head.'
@@ -276,7 +278,7 @@ def ours(model, cfg, model_dir, fb, z):
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
+  ap.add_argument('--pdb', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--model_dir', default=None)
   args = ap.parse_args(argv)
   sys.argv = sys.argv[:1]

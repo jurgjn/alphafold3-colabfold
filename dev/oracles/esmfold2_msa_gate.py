@@ -11,6 +11,9 @@ nat[:n] drifts by a growing offset and reads ~6 A on a good structure.
 
   MSA=256 PYTHONPATH=src:. ~/venv/bin/python dev/oracles/esmfold2_msa_gate.py
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
@@ -19,8 +22,8 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-sys.path.insert(0, '/home/ubuntu/alphafold3')
-sys.path.insert(0, '/home/ubuntu/alphafold3/src')
+sys.path.insert(0, dev_path('~/alphafold3'))
+sys.path.insert(0, dev_path('~/alphafold3/src'))
 sys.argv = sys.argv[:1]
 from alphafold3.model import model as af3_model, model_registry, params as afp
 from alphafold3.model.components import utils
@@ -88,8 +91,8 @@ def kabsch(a, b):
 
 def main():
   depth = int(os.environ.get('MSA', '256'))
-  a3m_path = os.environ.get('A3M', os.path.expanduser('~/msa_yaaa.a3m'))
-  cif = os.environ.get('CIF', os.path.expanduser('~/5CAJ.cif'))
+  a3m_path = os.environ.get('A3M', dev_path('~/msa_yaaa.a3m'))
+  cif = os.environ.get('CIF', dev_path('~/5CAJ.cif'))
   a3m = read_a3m(a3m_path, max(depth, 1))
   seq = a3m[0]
   res = parse_cif(cif)
@@ -107,7 +110,7 @@ def main():
         'are not the same construct, so any RMSD here is meaningless'
         % (len(sel), len(seq), os.path.basename(cif)))
 
-  model_dir = os.path.expanduser('~/ported/esmfold2')
+  model_dir = dev_path('~/ported/esmfold2')
   spec = model_registry.get('esmfold2')
   # depth 1 = the query alone, which is what a single-sequence run gets.
   msa_text = '' if depth <= 1 else ''.join(

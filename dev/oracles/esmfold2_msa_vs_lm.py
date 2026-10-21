@@ -1,4 +1,7 @@
 """Can an MSA substitute for ESM-C?  2x2 on a NATURAL protein (5CAJ YaaA, 261 aa)."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import numpy as np, torch
 from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 from transformers.models.esmfold2.protein_utils import (
@@ -46,8 +49,8 @@ def rmsd(a, b):
     u, _, vt = np.linalg.svd(a.T@b); d = np.sign(np.linalg.det(u@vt))
     return float(np.sqrt((((a@(u@np.diag([1,1,d])@vt))-b)**2).sum(1).mean()))
 
-res = parse_cif('/home/ubuntu/5CAJ.cif')
-a3m = read_a3m('/home/ubuntu/msa_yaaa.a3m', 256)
+res = parse_cif(dev_path('~/5CAJ.cif'))
+a3m = read_a3m(dev_path('~/msa_yaaa.a3m'), 256)
 query = a3m[0]
 SEQ = query
 # 5CAJ chain A carries a 5-residue expression tag (PRGSH, auth -4..0) and SIX

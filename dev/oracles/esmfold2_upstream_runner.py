@@ -30,6 +30,9 @@ defaults to DENSE (every atom attends to every atom, "as the official model does
 without flash-attn"); ours, like the official model WITH flash-attn, uses the
 +/-64 window, which is what this runner reproduces (fp32, windowed).
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import sys
@@ -40,7 +43,7 @@ import numpy as np
 # main has since moved to a different release (b1324ddf, nested keys, ESM-C
 # bundled) that the port does not read; comparing against it would test a
 # model we did not convert.
-_HUB = os.path.expanduser('~/.cache/huggingface/hub')
+_HUB = dev_path('~/.cache/huggingface/hub')
 _REPO = {
     'esmfold2': _HUB + '/models--biohub--ESMFold2/snapshots/8fc3ff471022fdce52c77030685eb775de0c00a3',
     'esmfold2_fast': _HUB + '/models--biohub--ESMFold2-Fast/snapshots/c6c7958d63f5f2f1f0fed0bb9462316f8ccceea6',
@@ -48,8 +51,8 @@ _REPO = {
 
 
 _SYNTHYRA = {
-    'esmfold2_lm600m': os.path.expanduser('~/esmfold2_variants/synthyra/ESMFold2-600'),
-    'esmfold2_lm300m': os.path.expanduser('~/esmfold2_variants/synthyra/ESMFold2-300'),
+    'esmfold2_lm600m': dev_path('~/esmfold2_variants/synthyra/ESMFold2-600'),
+    'esmfold2_lm300m': dev_path('~/esmfold2_variants/synthyra/ESMFold2-300'),
 }
 _LOADED = {}
 

@@ -7,17 +7,18 @@
 # max|d| moves ~20% between processes on the same input (XLA autotunes by
 # timing); max|d|/rms is the number to read, and in-process reruns are
 # bit-identical.
+. "$(dirname "${BASH_SOURCE[0]}")/../af3_dev_paths.sh"   # $REPO, $AF3_DEV_HOME, $AF3_PORTED_DIR
 cd "$(dirname "$0")/../.."
 P=src:.
-V_protenix=/home/ubuntu/protenix
-V_of3=/home/ubuntu/openfold-3
-V_if2=/home/ubuntu/IntelliFold
-V_rf3=/home/ubuntu/rf3_extra:/home/ubuntu/foundry_rf3/src:/home/ubuntu/foundry_rf3/models/rf3/src
+V_protenix=$AF3_DEV_HOME/protenix
+V_of3=$AF3_DEV_HOME/openfold-3
+V_if2=$AF3_DEV_HOME/IntelliFold
+V_rf3=$AF3_DEV_HOME/rf3_extra:$AF3_DEV_HOME/foundry_rf3/src:$AF3_DEV_HOME/foundry_rf3/models/rf3/src
 
 run () {  # run <model> <vendor overlay>
   echo "== $1"
   JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=$P:$2 \
-    ~/venv/bin/python dev/oracles/diffusion_parity.py "$1" 2>&1 \
+    $AF3_DEV_HOME/venv/bin/python dev/oracles/diffusion_parity.py "$1" 2>&1 \
     | grep -E 'checkpoint:|native:|ours:|^  a '
 }
 

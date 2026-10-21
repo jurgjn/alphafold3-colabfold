@@ -24,13 +24,16 @@ the built batch against that declaration, which is how we catch "the extra input
 silently did nothing". Only channels that are actually decidable from a featurised
 batch are declared -- see batch_report for why smiles/glycan/ptm are not among them.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 
 import numpy as np
 
-PDB_6MRR = os.path.expanduser('~/6MRR.pdb')
-AF3_REPO = os.path.expanduser('~/alphafold3')
+PDB_6MRR = dev_path('~/6MRR.pdb')
+AF3_REPO = dev_path('~/alphafold3')
 AF3_EXAMPLES = os.path.join(AF3_REPO, 'examples')
 AF3_FEATURISED = os.path.join(
     AF3_REPO, 'src/alphafold3/test_data/featurised_example.pkl')
@@ -39,7 +42,7 @@ AF3_FEATURISED = os.path.join(
 def _prep_6mrr():
   """native 6MRR (chain A) via v1's pdb parser -> (seq, idx, ref_batch)."""
   import sys
-  v1 = os.path.expanduser('~/v1-main')
+  v1 = dev_path('~/v1-main')
   if v1 not in sys.path:
     sys.path.insert(0, v1)
   from colabdesign.af.prep import prep_pdb
@@ -179,7 +182,7 @@ for _name, _uses in _AF3_JSON.items():
 # model runs. These three add a ground truth, which is what lets a test say the
 # prediction is RIGHT rather than merely finite.
 
-CIF_DIR = os.path.expanduser('~')
+CIF_DIR = dev_path('~')
 
 
 def _cif_chain(pdb_id, chain_id, drop_hetero=True):

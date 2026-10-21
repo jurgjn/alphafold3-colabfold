@@ -5,14 +5,17 @@ rf3's inference engine builds an atomworks Transform pipeline from
 Both are plain constructors, so the featurisation runs without the engine, the
 checkpoint or hydra.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
 import numpy as np
 import torch
 
-for p in ('/home/ubuntu/rf3_extra', '/home/ubuntu/foundry_rf3/src',
-          '/home/ubuntu/foundry_rf3/models/rf3/src'):
+for p in (dev_path('~/rf3_extra'), dev_path('~/foundry_rf3/src'),
+          dev_path('~/foundry_rf3/models/rf3/src')):
   sys.path.insert(0, p)
 from rf3.data.pipelines import build_af3_transform_pipeline
 from rf3.utils.inference import InferenceInput

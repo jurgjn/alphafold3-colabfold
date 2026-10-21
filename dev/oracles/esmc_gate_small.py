@@ -13,13 +13,16 @@ more than one at layer 3.
   ~/venv_esm/bin/python dev/oracles/esmc_gate_small.py \
       biohub/ESMC-300M-1500000 <out.npz>     # dump native, then compare in jax
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
 import numpy as np
 
-sys.path.insert(0, '/home/ubuntu/alphafold3')
-sys.path.insert(0, '/home/ubuntu/alphafold3/src')
+sys.path.insert(0, dev_path('~/alphafold3'))
+sys.path.insert(0, dev_path('~/alphafold3/src'))
 
 
 def dump_native(hub_dir, seq, out):
@@ -66,7 +69,7 @@ def compare(model_dir, native_npz, seq):
 
 if __name__ == '__main__':
   from dev.oracles.fold_check import parse_ca
-  seq, _ = parse_ca(os.path.expanduser('~/6MRR.pdb'))
+  seq, _ = parse_ca(dev_path('~/6MRR.pdb'))
   if sys.argv[1] == '--dump':
     dump_native(sys.argv[2], seq, sys.argv[3])
   else:

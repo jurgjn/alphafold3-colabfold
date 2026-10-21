@@ -20,6 +20,9 @@ that costs; it is not for leaving on.
 1.7.1: it symlinks 1.4.0 (plus optree) AHEAD of site-packages. Without it the
 featuriser dies in `BondList._bonds`.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 
 import os, sys, types
 import numpy as np
@@ -29,7 +32,7 @@ CASE = os.environ.get('CASE', '5k9p_plain')
 CKPT = os.environ['CKPT']
 MODEL = os.environ['MODEL']
 DUMP = os.environ['DUMP']
-JSONDIR = os.environ.get('JSONDIR', '/home/ubuntu/alphafold3/dev/oracles/native_json')
+JSONDIR = os.environ.get('JSONDIR', dev_path('~/alphafold3/dev/oracles/native_json'))
 SEED = os.environ.get('SEED', '0')
 CYCLES = os.environ.get('CYCLES', '10')
 if os.environ.get('HIGHPREC'):

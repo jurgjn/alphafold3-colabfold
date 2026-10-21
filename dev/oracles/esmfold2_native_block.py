@@ -1,10 +1,13 @@
 """Run native PairUpdateBlock 0 in pure fp32 (no autocast) on a fixed input."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import numpy as np, torch, glob
 from safetensors import safe_open
 from transformers.models.esmfold2.modeling_esmfold2_common import PairUpdateBlock
 
 torch.manual_seed(0)
-p = glob.glob('/home/ubuntu/.cache/huggingface/hub/models--biohub--ESMFold2/snapshots/*/model.safetensors')[0]
+p = glob.glob(dev_path('~/.cache/huggingface/hub/models--biohub--ESMFold2/snapshots/*/model.safetensors'))[0]
 f = safe_open(p, 'pt')
 sd = {k[len('folding_trunk.blocks.0.'):]: f.get_tensor(k).float()
       for k in f.keys() if k.startswith('folding_trunk.blocks.0.')}

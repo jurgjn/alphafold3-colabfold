@@ -13,6 +13,9 @@ for all of them is exactly the mistake that invites.
 6MRR is 68 residues, not 71 -- three CA records are altloc B, and the dedupe
 below is what gets that right.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, numpy as np, torch
 from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 from transformers.models.esmfold2.protein_utils import prepare_protein_features
@@ -27,7 +30,7 @@ A3 = {'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E','GLY
       'HIS':'H','ILE':'I','LEU':'L','LYS':'K','MET':'M','PHE':'F','PRO':'P','SER':'S',
       'THR':'T','TRP':'W','TYR':'Y','VAL':'V'}
 seq, xyz, seen = [], [], set()
-for l in open('/home/ubuntu/6MRR.pdb'):
+for l in open(dev_path('~/6MRR.pdb')):
     if not l.startswith('ATOM') or l[12:16].strip() != 'CA': continue
     k = l[21] + l[22:27]
     if k in seen: continue                       # <- the altloc dedupe I was missing
@@ -38,7 +41,7 @@ print('6MRR: %d residues' % len(SEQ)); print(SEQ)
 
 # The experimental line is a different class; pick it from the config, the same
 # way esmfold2_native_variants.py does, rather than assuming the base model.
-_local = os.path.expanduser('~/esmfold2_variants/%s' % _HUB[MODEL])
+_local = os.path.expanduser(dev_path('~/esmfold2_variants/%s') % _HUB[MODEL])
 _src = _local if os.path.exists(_local + '/config.json') else 'biohub/%s' % _HUB[MODEL]
 _arch = 'ESMFold2Model'
 if os.path.exists(_local + '/config.json'):

@@ -19,12 +19,15 @@ Parameters come from the ENVIRONMENT, never sys.argv: the harness rewrites argv
 to drive the CLI and any DataLoader worker re-importing this module would then
 parse the CLI's words as numbers.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys, time, json, random, statistics, warnings
 warnings.filterwarnings('ignore')
 
 L = int(os.environ.get('IF2_L', '64'))
 REPS = int(os.environ.get('IF2_REPS', '3'))
-ROOT = '/home/ubuntu/IntelliFold'
+ROOT = dev_path('~/IntelliFold')
 sys.path.insert(0, ROOT)
 
 rng = random.Random(L)                     # same sequence as every other harness
@@ -63,7 +66,7 @@ def _timed_pas(model, *a, **kw):
 II.predict_and_save = _timed_pas
 
 sys.argv = ['run_intellifold.py', inp, '--out_dir', f'/tmp/_if2_out_{L}',
-            '--cache', os.path.expanduser('~/model_v2'), '--model', 'v2',
+            '--cache', dev_path('~/model_v2'), '--model', 'v2',
             '--recycling_iters', '3', '--sampling_steps', '200',
             '--num_diffusion_samples', '1', '--override']
 # run_intellifold builds its parser under `if __name__ == "__main__"`, so import

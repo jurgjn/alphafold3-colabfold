@@ -4,16 +4,19 @@ Its InferenceDataset takes the whole config object, so this builds the default
 inference config and overrides only the input json -- the same path
 `opendde` inference itself runs, rather than a reimplementation.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
 import numpy as np
 import torch
 
-sys.path.insert(0, '/home/ubuntu/OpenDDE')
+sys.path.insert(0, dev_path('~/OpenDDE'))
 from opendde.data.inference.infer_dataloader import InferenceDataset
 
-CASE = os.environ.get('JSON', '/home/ubuntu/alphafold3/dev/oracles/native_json/5k9p_plain.json')
+CASE = os.environ.get('JSON', dev_path('~/alphafold3/dev/oracles/native_json/5k9p_plain.json'))
 OUT = sys.argv[1]
 
 # opendde's own config builder, driven exactly as its CLI does -- the overrides

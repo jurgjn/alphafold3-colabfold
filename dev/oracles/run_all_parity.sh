@@ -23,17 +23,18 @@
 # SERIALLY, ALWAYS. Two concurrent jobs OOM a 23 GB card. And note max|d| moves
 # ~20% between processes on the same input (XLA autotunes by timing), so read
 # corr and max|d|/rms; in-process reruns are bit-identical.
+. "$(dirname "${BASH_SOURCE[0]}")/../af3_dev_paths.sh"   # $REPO, $AF3_DEV_HOME, $AF3_PORTED_DIR
 set -u
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
-PY=${PY:-~/venv/bin/python}
-PY_ESM=${PY_ESM:-~/venv_esm/bin/python}
+PY=${PY:-$AF3_DEV_HOME/venv/bin/python}
+PY_ESM=${PY_ESM:-$AF3_DEV_HOME/venv_esm/bin/python}
 
 # --- vendor source overlays. One implementation usually serves a whole family,
 #     which is the leverage: ~/protenix covers both protenix releases and
 #     ~/openfold-3 covers openfold3 + openbind0.
-V_protenix=/home/ubuntu/protenix
-V_of3=/home/ubuntu/openfold-3
+V_protenix=$AF3_DEV_HOME/protenix
+V_of3=$AF3_DEV_HOME/openfold-3
 # openbind0 is OF3 v0.5.0 and its RELEASE matters, not just its repository:
 # v0.5.0's end-node triangle attention transposes the pair bias and main's does
 # not, while main loads openbind0's pairformer tensors without complaint (the
@@ -41,11 +42,11 @@ V_of3=/home/ubuntu/openfold-3
 # main certified the wrong convention for four days and cost 10.4 A on
 # ubiquitin. The tree is a worktree of the v0.5.0 tag:
 #   git -C ~/openfold-3 worktree add ~/openfold-3-v050 v0.5.0
-V_of3_ob=/home/ubuntu/openfold-3-v050
-V_if2=/home/ubuntu/IntelliFold
-V_dde=/home/ubuntu/OpenDDE
-V_rf3=/home/ubuntu/rf3_extra:/home/ubuntu/foundry_rf3/src:/home/ubuntu/foundry_rf3/models/rf3/src
-V_boltz2=/home/ubuntu/BoltzDesign1/boltz2/src
+V_of3_ob=$AF3_DEV_HOME/openfold-3-v050
+V_if2=$AF3_DEV_HOME/IntelliFold
+V_dde=$AF3_DEV_HOME/OpenDDE
+V_rf3=$AF3_DEV_HOME/rf3_extra:$AF3_DEV_HOME/foundry_rf3/src:$AF3_DEV_HOME/foundry_rf3/models/rf3/src
+V_boltz2=$AF3_DEV_HOME/BoltzDesign1/boltz2/src
 # The overlay is per MODEL, and a wrong one is a silent wrong answer, not an
 # ImportError -- rf3's MSA gate ran green against openfold-3 on PYTHONPATH.
 vendor () {
@@ -82,8 +83,8 @@ SUMMARY=${SUMMARY:-$LOGDIR/summary.tsv}
 [ -n "${REGRADE:-}" ] || {
   echo "== $(date -Is)  ours $(git -C "$ROOT" describe --always --dirty)"
   for v in "$V_protenix" "$V_of3" "$V_of3_ob" "$V_if2" "$V_dde" \
-           /home/ubuntu/foundry_rf3 /home/ubuntu/BoltzDesign1 \
-           /home/ubuntu/af3_upstream /home/ubuntu/ColabDesign2; do
+           $AF3_DEV_HOME/foundry_rf3 $AF3_DEV_HOME/BoltzDesign1 \
+           $AF3_DEV_HOME/af3_upstream $AF3_DEV_HOME/ColabDesign2; do
     printf '  %-40s %s\n' "$v" "$(git -C "$v" describe --always --dirty --tags 2>/dev/null || echo '?')"
   done
   for py in "$PY" "$PY_ESM" "${AF3_UPSTREAM_PY:-$HOME/venv_af3/bin/python}"; do
@@ -409,7 +410,7 @@ if want L1x; then
   echo "== L1x cross-chain (z-init and template on a complex)"
   for m in $MODELS; do
     gate L1x.zinit "$m" 'z_init|corr' dev/oracles/trunk_init_parity.py "$m" \
-      --chains_json /home/ubuntu/dimer_ours.json
+      --chains_json $AF3_DEV_HOME/dimer_ours.json
   done
   for m in $MODELS; do
     gate L1x.template "$m" 'template|corr' dev/oracles/template_parity.py "$m" \
@@ -534,7 +535,7 @@ if want L5af2; then
     dev/oracles/af2_fold_check.py alphafold2_ptm
   # against DEEPMIND'S OWN CODE, not our lineage -- everything else here
   # compares us to colabdesign2, which is the same port one generation back.
-  if [ -d "${AF2_ORIGINAL:-/home/ubuntu/af2_original}" ]; then
+  if [ -d "${AF2_ORIGINAL:-$AF3_DEV_HOME/af2_original}" ]; then
     # the WHOLES, not just the pieces: the trunk end to end (input embedder,
     # relative position, the three recycle adds, four stacks in order) and the
     # structure module as a stack of eight fold iterations. Multimer only --
@@ -542,19 +543,19 @@ if want L5af2; then
     # variant of either would compare two module trees rather than the port,
     # and the gate says N/A rather than printing a number.
     for _mod in trunk structure; do
-      PYTHONPATH_EXTRA=${AF2_ORIGINAL:-/home/ubuntu/af2_original} \
+      PYTHONPATH_EXTRA=${AF2_ORIGINAL:-$AF3_DEV_HOME/af2_original} \
         gate "L5af2.native_$_mod" alphafold2_ptm 'corr' \
         dev/oracles/af2_native_parity.py "$_mod" --variant multimer
     done
     for _mod in template template_multimer template_1d; do
-      PYTHONPATH_EXTRA=${AF2_ORIGINAL:-/home/ubuntu/af2_original} \
+      PYTHONPATH_EXTRA=${AF2_ORIGINAL:-$AF3_DEV_HOME/af2_original} \
         gate "L5af2.native_$_mod" alphafold2_ptm 'corr' \
         dev/oracles/af2_native_parity.py "$_mod"
     done
     # and everything that exists on BOTH paths, on both
     for _v in monomer multimer; do
       for _mod in evoformer extra_msa ipa heads msa; do
-        PYTHONPATH_EXTRA=${AF2_ORIGINAL:-/home/ubuntu/af2_original} \
+        PYTHONPATH_EXTRA=${AF2_ORIGINAL:-$AF3_DEV_HOME/af2_original} \
           gate "L5af2.native_${_mod}_${_v}" alphafold2_ptm 'corr' \
           dev/oracles/af2_native_parity.py "$_mod" --variant "$_v"
       done

@@ -14,6 +14,9 @@ success: protein CA, nucleic C1', a ligand its own heavy atoms after aligning on
 the protein it binds. (Scoring an RNA on the wrong atom is not hypothetical --
 it is the trap recorded in memory rna-parity-status.)
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -22,7 +25,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-_HOME = os.path.expanduser('~')
+_HOME = dev_path('~')
 
 # name -> (mmCIF, entity spec). `chains` is built lazily so folding_input is
 # imported inside main, after sys.argv has been neutralised for absl.

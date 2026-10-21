@@ -5,6 +5,9 @@ built alone with the blob's BLOCK-0 slice of the layer_stack parameters and fed
 the tensor native's corresponding module was fed, so no module inherits an
 earlier one's error.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys
 import numpy as np
 import haiku as hk
@@ -35,7 +38,7 @@ cfg.global_config.flash_attention_implementation = 'xla'
 model_registry.get(model).configure(cfg)
 pf = cfg.evoformer.pairformer
 full = afp.get_model_haiku_params(
-    model_dir=os.path.expanduser('~/ported/%s' % model))
+    model_dir=os.path.expanduser(dev_path('~/ported/%s') % model))
 PRE = [k for k in full if 'trunk_pairformer/' in k]
 root = PRE[0][:PRE[0].index('trunk_pairformer/')]
 print('%s: trunk scope %r, %d pairformer scopes' % (model, root, len(PRE)))

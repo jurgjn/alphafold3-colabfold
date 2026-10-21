@@ -6,7 +6,7 @@ L1 explicitly does NOT cover. Ten models carry an MSA stack; this adds the rest,
 starting with rosettafold3.
 
   JAX_DEFAULT_MATMUL_PRECISION=highest \
-    PYTHONPATH=src:.:/home/ubuntu/rf3_extra:/home/ubuntu/foundry_rf3/src:/home/ubuntu/foundry_rf3/models/rf3/src \
+    PYTHONPATH=src:.:~/rf3_extra:~/foundry_rf3/src:~/foundry_rf3/models/rf3/src \
     python dev/oracles/msa_parity.py rosettafold3
 
 The MSA module updates BOTH representations -- msa -> pair through the outer
@@ -14,6 +14,9 @@ product, pair -> msa through pair-weighted averaging -- so the gate compares the
 PAIR output, which is the half that survives into the trunk. Comparing only the
 msa rows would miss a wrong outer-product normalisation entirely.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -64,8 +67,7 @@ def native_rf3(model, msa, s_inputs, z, n_msa):
 
   from rf3.model.layers.pairformer_layers import MSAModule
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   raw = raw.get('state_dict', raw.get('model', raw))
   pre = 'shadow.recycler.msa_module.'
@@ -153,7 +155,7 @@ def native_of3(model, msa, s_inputs, z, n_msa):
   from openfold3.projects.of3_all_atom.config.model_config import model_config
 
   from denoise_parity import _OF3_CKPT
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'msa_module.'
@@ -222,7 +224,7 @@ def native_if2(model, msa, s_inputs, z, n_msa):
 
   from intellifold.openfold.model.pairformer import MSAModuleStack
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   cands = sorted({k.split('msa_stack.')[0] + 'msa_stack.' for k in sd
@@ -347,7 +349,7 @@ def native_opendde(model, msa, s_inputs, z, n_msa):
 
   from opendde.model.modules.pairformer import MSAModule
 
-  ckpt = os.path.expanduser('~/opendde_weights/opendde.pt')
+  ckpt = dev_path('~/opendde_weights/opendde.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'module.msa_module.'
@@ -409,7 +411,7 @@ def native_boltz2(model, msa, s_inputs, z, n_msa):
 
   from boltz.model.modules.trunkv2 import MSAModule
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd)
   pre = 'msa_module.'
@@ -497,8 +499,8 @@ def native_esmfold2(model, msa, s_inputs, z, n_msa):
   path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       'esmfold2_msa_%s.npz' % tag)
   if not os.path.exists(path):
-    raise SystemExit('run first:  ~/venv_esm/bin/python '
-                     'dev/oracles/esmfold2_msa_dump.py %s%s%s%s'
+    raise SystemExit(dev_path('run first:  ~/venv_esm/bin/python '
+                     'dev/oracles/esmfold2_msa_dump.py %s%s%s%s')
                      % (model,
                         ' --nonuniform' if os.environ.get('NONUNIFORM') else '',
                         ' --keep_final_update'
@@ -533,7 +535,7 @@ except ImportError:
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
+  ap.add_argument('--pdb', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--model_dir', default=None)
   ap.add_argument('--num_msa', type=int, default=8)
   args = ap.parse_args(argv)
@@ -746,7 +748,7 @@ def boltz2_layer_split(cfg, model_dir, n_msa, n_tok):
   from alphafold3.model import params as afp
   from alphafold3.model.network import modules
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd)
   pre = 'msa_module.layers.0.'

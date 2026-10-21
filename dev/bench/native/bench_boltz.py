@@ -3,13 +3,16 @@
 Warmup call first: torch pays cudnn autotune + allocator growth on call 1, which is the
 eager analogue of our XLA compile and does not belong in a steady-state number.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys, time
 from pathlib import Path
 from dataclasses import asdict
 
 import torch
 
-sys.path.insert(0, '/home/ubuntu/BoltzDesign1/boltz2/src')
+sys.path.insert(0, dev_path('~/BoltzDesign1/boltz2/src'))
 from boltz.data.types import Manifest
 from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 from boltz.model.models.boltz2 import Boltz2
@@ -21,11 +24,11 @@ RECYCLES = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 USE_KERNELS = (sys.argv[2] if len(sys.argv) > 2 else 'on') == 'on'
 REPS = 3
 proc = Path(sys.argv[4] if len(sys.argv) > 4
-            else '/home/ubuntu/boltz2_6mrr/out/boltz_results_6mrr/processed')
+            else dev_path('~/boltz2_6mrr/out/boltz_results_6mrr/processed'))
 
 dm = Boltz2InferenceDataModule(
     manifest=Manifest.load(proc / 'manifest.json'), target_dir=proc / 'structures',
-    msa_dir=proc / 'msa', mol_dir=Path('/home/ubuntu/.boltz/mols'), num_workers=0,
+    msa_dir=proc / 'msa', mol_dir=Path(dev_path('~/.boltz/mols')), num_workers=0,
     constraints_dir=proc / 'constraints', template_dir=proc / 'templates',
     extra_mols_dir=proc / 'mols', override_method=None)
 dm.setup('predict')
@@ -34,7 +37,7 @@ batch = {k: (v.cuda() if torch.is_tensor(v) else v) for k, v in batch.items()}
 
 st = BoltzSteeringParams(); st.fk_steering = False; st.physical_guidance_update = False
 model = Boltz2.load_from_checkpoint(
-    '/home/ubuntu/boltz2_weights/boltz2_conf.ckpt', strict=True, map_location='cpu',
+    dev_path('~/boltz2_weights/boltz2_conf.ckpt'), strict=True, map_location='cpu',
     predict_args={'recycling_steps': RECYCLES, 'sampling_steps': STEPS, 'diffusion_samples': 1,
                   'max_parallel_samples': 1, 'write_confidence_summary': False,
                   'write_full_pae': False, 'write_full_pde': False},

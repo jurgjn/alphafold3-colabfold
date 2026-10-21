@@ -10,6 +10,9 @@ Counts every call a fused arm sees, at the three kinds of site:
 
 Run:  FLASH=pallas PYTHONPATH=src:. python dev/oracles/kernel_sites.py <model>
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import collections
 import runpy
 import sys
@@ -79,7 +82,7 @@ def install(model):
 
 if __name__ == '__main__':
   model = sys.argv[1]
-  sys.argv = ['fold_check.py', model, '/home/ubuntu/6MRR.pdb']
+  sys.argv = ['fold_check.py', model, dev_path('~/6MRR.pdb')]
   install(model)
   try:
     runpy.run_path('dev/oracles/fold_check.py', run_name='__main__')

@@ -1,4 +1,7 @@
 """Build features + native CA + a native-reference fold for a benchmark set."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import numpy as np, torch, json
 from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 from transformers.models.esmfold2.protein_utils import prepare_protein_features
@@ -22,7 +25,7 @@ TARGETS = [("1CRN", 'A', "natural"), ("1ENH", 'A', "natural"), ("1PGB", 'A', "na
            ("1SHG", 'A', "natural"), ("2CI2", "I", "natural"), ("1UBQ", 'A', "natural"),
            ("3CHY", 'A', "natural"), ("1MBA", 'A', "natural"), ("2LZM", 'A', "natural"),
            ("6MRR", None, "DESIGNED"), ("1QYS", 'A', "DESIGNED")]
-PATHS = {"6MRR": "/home/ubuntu/6MRR.pdb", "1QYS": "/home/ubuntu/1QYS.pdb", "1UBQ": "1ubq.pdb"}
+PATHS = {"6MRR": dev_path("~/6MRR.pdb"), "1QYS": dev_path("~/1QYS.pdb"), "1UBQ": "1ubq.pdb"}
 
 m = ESMFold2Model.from_pretrained("biohub/ESMFold2", esmc_precision="bf16").cuda().eval()
 def rmsd(a, b):

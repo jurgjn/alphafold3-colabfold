@@ -27,6 +27,9 @@ ATOM LAYOUT. IntelliFold carries atoms DENSE, (token, slot<24), with
 coordinates live in that flat order. So "the vendor's flat atom order" here is
 token-major, slot-ascending, real atoms only.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import sys
@@ -34,10 +37,10 @@ import sys
 import numpy as np
 
 CKPT = os.path.expanduser(os.environ.get('IF2_CKPT',
-                                         '~/model_v2/intellifold_v2.pt'))
+                                         dev_path('~/model_v2/intellifold_v2.pt')))
 # IntelliFold's cache dir (`--cache`): only its CCD (ccd_v2.pkl) is read here;
 # the checkpoint is passed explicitly, so nothing is downloaded.
-CACHE = os.path.expanduser(os.environ.get('IF2_CACHE', '~/if2_cache'))
+CACHE = os.path.expanduser(os.environ.get('IF2_CACHE', dev_path('~/if2_cache')))
 SEED = 1
 
 
@@ -238,7 +241,7 @@ def _pipeline(out_dir, args, load_weights):
     def construct_template_featurizer():
       return TemplateHitFeaturizer(
           mmcif_dir=os.path.join(tdir, 'mmcif'), template_cache_dir='', max_hits=4,
-          kalign_binary_path=shutil.which('kalign') or os.path.expanduser('~/.local/bin/kalign'),
+          kalign_binary_path=shutil.which('kalign') or dev_path('~/.local/bin/kalign'),
           max_template_date='2021-09-30',
           release_dates_path=os.path.join(tdir, 'common', 'release_date_cache.json'),
           obsolete_pdbs_path=os.path.join(tdir, 'common', 'obsolete_to_successor.json'),

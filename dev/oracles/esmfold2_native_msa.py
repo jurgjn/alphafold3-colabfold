@@ -33,6 +33,9 @@ Three things it takes to get right, all of which cost a run each:
     in-repo scorer also reads 18.786 A -- so that one happened to agree, but
     only because the numbering lines up here; do not rely on it.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 
@@ -43,8 +46,8 @@ from transformers.models.esmfold2.modeling_esmfold2_experimental import (
     ESMFold2ExperimentalModel)
 
 VAR = os.environ.get('VAR', 'ESMFold2-Experimental')
-JSON = os.path.expanduser('~/1stp_msa.json')
-CIF = os.path.expanduser('~/1STP.cif')
+JSON = dev_path('~/1stp_msa.json')
+CIF = dev_path('~/1STP.cif')
 MAXD = int(os.environ.get('DEPTH', '256'))
 
 d = json.load(open(JSON))
@@ -86,7 +89,7 @@ dv = torch.tensor([e[2] for e in enc], dtype=torch.float32)[None]
 dv = 2.0 / np.pi * torch.arctan(dv / 3.0)                                 # AF3's scaling
 mm = torch.ones_like(msa, dtype=torch.float32)
 
-local = os.path.expanduser('~/esmfold2_variants/%s' % VAR)
+local = os.path.expanduser(dev_path('~/esmfold2_variants/%s') % VAR)
 m = ESMFold2ExperimentalModel.from_pretrained(local).cuda().eval()
 feats = {k: v.cuda() for k, v in U.prepare_protein_features(seq).items()}
 feats.pop('input_ids', None)

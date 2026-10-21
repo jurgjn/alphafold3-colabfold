@@ -1,6 +1,6 @@
 """Do a vendor's release lines diverge by MODULE, and does our port know?
 
-  python3 dev/oracles/release_line_sweep.py /home/ubuntu/protenix
+  python3 dev/oracles/release_line_sweep.py ~/protenix
 
 Written after the bug that cost the most this session. ESMFold2 ships two
 `MSAEncoder` classes, one per release line, with the block in OPPOSITE order --

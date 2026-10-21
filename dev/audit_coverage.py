@@ -37,6 +37,9 @@ counted as consumed. That second pass is why the report distinguishes
 """
 
 from __future__ import annotations
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '.')))
+from af3_dev_paths import dev_path  # noqa: E402
 
 import argparse
 import os
@@ -158,29 +161,29 @@ _LOADERS = {
     # been run on them at all. Four of those models are gone as of 2026-09-08;
     # the lesson (list every model, or the audit silently skips it) is not.
     **{m: ('protenix2', 'load_protenix_checkpoint',
-           '/home/ubuntu/protenix_weights/%s' % f)
+           dev_path('~/protenix_weights/%s') % f)
        for m, f in (
            ('protenix2', 'protenix-v2.pt'),
            ('protenix1', 'protenix_base_default_v1.0.0.pt'),
        )},
     'openfold3': ('openfold3', 'load_of3_checkpoint',
-                  '/home/ubuntu/of3-p2-155k.pt'),
+                  dev_path('~/of3-p2-155k.pt')),
     'openbind0': ('openfold3', 'load_of3_checkpoint',
-                 '/home/ubuntu/of3-ob-174k.pt'),
+                 dev_path('~/of3-ob-174k.pt')),
     'rosettafold3': ('rosettafold3', 'load_rf3_checkpoint',
-                     '/home/ubuntu/rf3_weights/'
-                     'rf3_foundry_01_24_latest_remapped.ckpt'),
+                     dev_path('~/rf3_weights/'
+                     'rf3_foundry_01_24_latest_remapped.ckpt')),
     'intellifold2': ('intellifold2', None,
-                     '/home/ubuntu/model_v2/intellifold_v2.pt'),
+                     dev_path('~/model_v2/intellifold_v2.pt')),
     'boltz2': ('boltz2', None,
-               '/home/ubuntu/boltz2_weights/boltz2_conf.ckpt'),
-    'opendde': ('opendde', None, '/home/ubuntu/opendde_weights/opendde.pt'),
+               dev_path('~/boltz2_weights/boltz2_conf.ckpt')),
+    'opendde': ('opendde', None, dev_path('~/opendde_weights/opendde.pt')),
     # chai's loader takes a DIRECTORY (five TorchScript archives) and returns
     # {component: state_dict} -- see the multi-component branch in main().
-    'chai1': ('chai1', 'load_chai1', '/home/ubuntu/chai1_weights'),
+    'chai1': ('chai1', 'load_chai1', dev_path('~/chai1_weights')),
     # the ESMFold2 family: one loader, the variant chosen by the directory
     **{m: ('esmfold2', 'load_esmfold2_checkpoint',
-           '/home/ubuntu/esmfold2_variants/%s' % hub)
+           dev_path('~/esmfold2_variants/%s') % hub)
        for m, hub in (
            ('esmfold2', 'ESMFold2'),
            ('esmfold2_fast', 'ESMFold2-Fast'),

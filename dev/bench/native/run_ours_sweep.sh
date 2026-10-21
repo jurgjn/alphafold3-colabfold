@@ -1,13 +1,14 @@
 #!/bin/bash
 # OUR ports across LENGTH, resumable, one cell at a time.
 #
-#   bash tools/benchmarks/run_ours_sweep.sh [out.tsv]
+#   bash dev/bench/native/run_ours_sweep.sh [out.tsv]
 #
 # Serialised on purpose: two of these at once OOM the GPU and, worse, inflate
 # each other's numbers without failing (see NATIVE_SETUP.md, "HOST CPU load").
 # Every cell is appended as it completes, so a kill loses one cell, not the run.
+. "$(dirname "${BASH_SOURCE[0]}")/../../af3_dev_paths.sh"   # $REPO, $AF3_DEV_HOME, $AF3_PORTED_DIR
 OUT=${1:-/tmp/ours_sweep.tsv}
-S=/tmp/claude-1000/-home-ubuntu-ColabDesign2/77aa66c7-a908-4cb6-bf0e-1ff700d68150/scratchpad
+S=${DATA:?set DATA to a working directory for the sweep cache}
 # ALL FOURTEEN on the AF3 graph. The old list had nine and carried `openbind`,
 # which was renamed `openbind0`, so that cell had been silently failing; it also
 # predated protenix1 and the esmfold2 family.
@@ -52,8 +53,8 @@ for N in $MSAS; do
     # bug, and a plot that shows them the same way hides one of them. Keep each
     # cell's stderr so the distinction is made from the message, not guessed.
     cell_err="${OUT}.${M}.${L}.${N}.err"
-    if SWEEP_CACHE_DIR=$S/sweep_cache timeout 7200 ~/venv/bin/python \
-         tools/benchmarks/bench_sweep.py "$M" "$HOME/ported/$M" "$L" "$N" 4 \
+    if SWEEP_CACHE_DIR=$S/sweep_cache timeout 7200 $AF3_DEV_HOME/venv/bin/python \
+         $REPO/dev/bench/native/bench_sweep.py "$M" "$AF3_PORTED_DIR/$M" "$L" "$N" 4 \
          >> "$OUT" 2>"$cell_err"; then
       rm -f "$cell_err"
     elif grep -qiE 'RESOURCE_EXHAUSTED|Out of memory|OOM when allocating' "$cell_err"; then

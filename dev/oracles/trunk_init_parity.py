@@ -16,6 +16,9 @@ paired samples, with three at ~1.5). Both call sites build the same features
 from the same weights, so one of those two statements is measuring something
 else -- and no cell could say which.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -44,7 +47,7 @@ def native_boltz2(model, batch, s_inputs, bonds, bond_types, n):
   from boltz.model.modules.encodersv2 import RelativePositionEncoder
   from boltz.model.modules.trunkv2 import ContactConditioning
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = raw.get('state_dict', raw.get('model', raw))
   g = lambda k: sd[k]
@@ -121,7 +124,7 @@ def native_boltz2_loop(model, batch, s_inputs, bonds, bond_types, n, passes):
   from boltz.model.layers.pairformer import PairformerModule
   from boltz.model.modules.trunkv2 import MSAModule
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = raw.get('state_dict', raw.get('model', raw))
   hp = raw.get('hyper_parameters', {})
@@ -244,8 +247,7 @@ def native_rf3(model, batch, s_inputs, bonds, bond_types, n):
 
   from rf3.model.layers.pairformer_layers import RelativePositionEncoding
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)['model']
   pre = 'shadow.feature_initializer.'
   g = lambda k: raw[pre + k]
@@ -318,7 +320,7 @@ def native_of3(model, batch, s_inputs, bonds, bond_types, n):
 
   from openfold3.core.utils.relpos import relpos_complex
 
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'input_embedder.'
@@ -362,10 +364,10 @@ def native_of3(model, batch, s_inputs, bonds, bond_types, n):
 
 
 _PROTENIX_SRC = {
-    'protenix1': ('protenix', '~/protenix_weights/'
-                  'protenix_base_default_v1.0.0.pt'),
-    'protenix2': ('protenix', '~/protenix_weights/protenix-v2.pt'),
-    'opendde': ('opendde', '~/opendde_weights/opendde.pt'),
+    'protenix1': ('protenix', dev_path('~/protenix_weights/'
+                  'protenix_base_default_v1.0.0.pt')),
+    'protenix2': ('protenix', dev_path('~/protenix_weights/protenix-v2.pt')),
+    'opendde': ('opendde', dev_path('~/opendde_weights/opendde.pt')),
 }
 
 
@@ -452,7 +454,7 @@ def native_if2(model, batch, s_inputs, bonds, bond_types, n):
 
   from intellifold.openfold.model.embedders import RelativePositionEncoding
 
-  sd = torch.load(os.path.expanduser('~/model_v2/intellifold_v2.pt'),
+  sd = torch.load(dev_path('~/model_v2/intellifold_v2.pt'),
                   map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'backbone_trunk.input_embedder.'
@@ -628,7 +630,7 @@ def ours(model, cfg, model_dir, batch, s_inputs):
       # ('diffuser/evoformer/left_single'). The relative encoding keeps its own
       # sub-scope, which the converter writes as
       # `diffuser/evoformer/~_relative_encoding/position_activations`.
-      if sc == '~':
+      if sc == dev_path('~'):
         # A bare `hk.get_parameter` in a module-level helper called from a
         # @hk.transparent method lands in the OWNER's bundle, which for the
         # contact-conditioning constants is `diffuser/evoformer` itself.
@@ -693,7 +695,7 @@ def ours_loop(model, cfg, model_dir, batch, s_inputs, passes):
     params[sc] = {}
     for k in init[sc]:
       key = ('diffuser/' + sc if sc.startswith('evoformer')
-             else 'diffuser/evoformer' if sc == '~'
+             else 'diffuser/evoformer' if sc == dev_path('~')
              else 'diffuser/evoformer/' + sc)
       src = full.get(key)
       v = None if src is None else src.get(k)
@@ -718,7 +720,7 @@ def ours_loop(model, cfg, model_dir, batch, s_inputs, passes):
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
+  ap.add_argument('--pdb', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--chains_json', default=None,
                   help='a fold-input JSON whose chains replace --pdb. THE ONLY '
                        'WAY TO REACH A CROSS-CHAIN CONVENTION: z-init is where '

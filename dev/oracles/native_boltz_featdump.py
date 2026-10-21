@@ -2,13 +2,16 @@
 diff against our batch. Every port bug found on 2026-09-11/12 was an INPUT
 convention, and the gates feed native OUR features, so this is the direction
 nothing checks."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
-sys.path.insert(0, '/home/ubuntu/BoltzDesign1/boltz2/src')
+sys.path.insert(0, dev_path('~/BoltzDesign1/boltz2/src'))
 from boltz.data.types import Manifest
 from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 
@@ -16,10 +19,10 @@ from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 # boltz's own process_inputs (see the prep script beside this one).
 import os
 proc = Path(os.environ.get(
-    'PROC', '/home/ubuntu/boltz2_6mrr/out/boltz_results_6mrr/processed'))
+    'PROC', dev_path('~/boltz2_6mrr/out/boltz_results_6mrr/processed')))
 dm = Boltz2InferenceDataModule(
     manifest=Manifest.load(proc / 'manifest.json'), target_dir=proc / 'structures',
-    msa_dir=proc / 'msa', mol_dir=Path('/home/ubuntu/.boltz/mols'), num_workers=0,
+    msa_dir=proc / 'msa', mol_dir=Path(dev_path('~/.boltz/mols')), num_workers=0,
     constraints_dir=proc / 'constraints', template_dir=proc / 'templates',
     extra_mols_dir=proc / 'mols', override_method=None)
 dm.setup('predict')

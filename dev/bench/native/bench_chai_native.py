@@ -11,10 +11,13 @@ comparable to our (featurise + forward), not to our forward alone -- the same
 caveat as native rosettafold3. Settings match bench_sweep.py: 3 recycles, 200
 diffusion timesteps, 1 sample, no ESM, no MSA, no template.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys, time, random, warnings, statistics
 warnings.filterwarnings('ignore')
 from pathlib import Path
-os.environ.setdefault('CHAI_DOWNLOADS_DIR', os.path.expanduser('~/chai1_weights'))
+os.environ.setdefault('CHAI_DOWNLOADS_DIR', dev_path('~/chai1_weights'))
 # chai's tqdm bars emit a line per diffusion step -- 199 per call, which buried
 # the actual result in tens of thousands of characters of progress output.
 os.environ['TQDM_DISABLE'] = '1'

@@ -19,19 +19,20 @@
 #
 # Runs on boltz_gpu_venv (torch+cu130) because ~/venv's torch is CPU-only and
 # must stay that way; px_deps symlinks the few pure-python packages it lacks.
+. "$(dirname "${BASH_SOURCE[0]}")/../af3_dev_paths.sh"   # $REPO, $AF3_DEV_HOME, $AF3_PORTED_DIR
 set -e
 CASE=${1:?usage: native_trunk_dump.sh <case-name>   (reads $JSONDIR/<case>.json)}
 JSONDIR=${JSONDIR:-$PWD/dev/oracles/native_json}
 OUT=${OUT:-$PWD/dev/oracles/native_trunk_$CASE.npz}
 DEPS=${PX_DEPS:?set PX_DEPS to a dir symlinking the pure-python packages boltz_gpu_venv lacks}
-CKPT=${CKPT:-/home/ubuntu/protenix_weights/protenix-v2.pt}
+CKPT=${CKPT:-$AF3_DEV_HOME/protenix_weights/protenix-v2.pt}
 MODEL=${MODEL:-protenix-v2}
 SEED=${SEED:-101}
 CYCLES=${CYCLES:-10}
-cd ~/protenix
-export PYTHONPATH=$DEPS:/home/ubuntu/protenix
+cd $AF3_DEV_HOME/protenix
+export PYTHONPATH=$DEPS:$AF3_DEV_HOME/protenix
 echo "=== native $MODEL trunk dump: $CASE (seed $SEED, $CYCLES cycles)"
-  ~/boltz_gpu_venv/bin/python -c "
+  $AF3_DEV_HOME/boltz_gpu_venv/bin/python -c "
 import sys, types, torch
 def _ln(x, shape, w=None, b=None, eps=1e-5):
     dims = tuple(range(x.dim() - len(shape), x.dim()))

@@ -17,6 +17,9 @@ compare the parsed file against the batch that produced it.
 
     PYTHONPATH=src:.:dev/oracles python dev/oracles/output_parity.py [models...]
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
@@ -29,9 +32,9 @@ from alphafold3.common import folding_input              # noqa: E402
 from alphafold3.model import model as model_lib          # noqa: E402
 
 CASES = {
-    'monomer': '/home/ubuntu/5k9p_nomsa.json',
-    'ligand': '/home/ubuntu/ligand_ours.json',
-    'dimer': '/home/ubuntu/dimer_ours.json',
+    'monomer': dev_path('~/5k9p_nomsa.json'),
+    'ligand': dev_path('~/ligand_ours.json'),
+    'dimer': dev_path('~/dimer_ours.json'),
 }
 
 # Each case is a fresh shape and so a FULL COMPILE -- budget ~10 min per

@@ -21,6 +21,9 @@ Only `esmfold2` has an MSA encoder now -- `msa=4` in
 `msa_encoder.enabled` false and carry no such weights, so they are n/a rather
 than ungated. (The two experimental msa=4 releases were dropped on 2026-09-09.)
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import glob
 import os
@@ -49,7 +52,7 @@ _HUB = {'esmfold2': 'ESMFold2'}
 def _state_dict(model):
   """The variant's flat state dict, from the local snapshot if there is one."""
   from safetensors.torch import load_file
-  d = os.path.expanduser('~/esmfold2_variants/%s' % _HUB[model])
+  d = os.path.expanduser(dev_path('~/esmfold2_variants/%s') % _HUB[model])
   if not os.path.isdir(d):
     from huggingface_hub import snapshot_download
     d = snapshot_download('biohub/%s' % _HUB[model])

@@ -17,13 +17,16 @@ sets and the class defaults differently (fix_sym_check, cyclic_pos_enc) is
 silently wrong -- a fake 5.8 A boltz2 "break" on 2026-10-18. And not
 ~/BoltzDesign1: that is a fork with twelve modified files.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import sys
 
 import numpy as np
 
-CACHE = os.path.expanduser('~/.boltz')
+CACHE = dev_path('~/.boltz')
 
 
 def _boltz_csv(paired, unpaired):

@@ -7,7 +7,7 @@ the ATOM encoder, which is where `SWA_ROPE_ATOM_ATTENTION`, `ATOM_ROPE`,
 `PER_BLOCK_ATOM_PAIR_LAYER_NORM` live -- six conventions with no
 activation-level check on any protenix model.
 
-  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:/home/ubuntu/protenix \
+  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:~/protenix \
     python dev/oracles/atom_parity.py protenix2
 
 The atom features and the window layout come from a REAL featurised 6MRR batch,
@@ -18,6 +18,9 @@ its own flat list as `token_atoms_layout[token_atoms_mask]`, i.e. row-major over
 real atoms (features.py AtomCrossAtt.compute_features) -- so the two sides index
 the same atoms, and the harness asserts that on ref_pos before comparing.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -41,13 +44,13 @@ _PROTENIX_CKPT = {
 # the checkpoint anyway. So it is one row, not a function.
 _ENC_SRC = {
     'protenix1': ('protenix.model.modules.transformer',
-                  '~/protenix_weights/protenix_base_default_v1.0.0.pt',
+                  dev_path('~/protenix_weights/protenix_base_default_v1.0.0.pt'),
                   'module.diffusion_module.atom_attention_encoder.'),
     'protenix2': ('protenix.model.modules.transformer',
-                  '~/protenix_weights/protenix-v2.pt',
+                  dev_path('~/protenix_weights/protenix-v2.pt'),
                   'module.diffusion_module.atom_attention_encoder.'),
     'opendde': ('opendde.model.modules.transformer',
-                '~/opendde_weights/opendde.pt',
+                dev_path('~/opendde_weights/opendde.pt'),
                 'module.diffusion_module.atom_attention_encoder.'),
 }
 
@@ -286,7 +289,7 @@ def native_of3(model, fb, feats, pos_noisy, s, z, n_tok):
   from openfold3.core.model.layers.sequence_local_atom_attention import (
       AtomAttentionEncoder)
 
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.atom_attn_enc.'
@@ -402,7 +405,7 @@ def native_if2(model, fb, feats, pos_noisy, s, z, n_tok):
 
   from intellifold.openfold.model.diffusion import AtomAttentionEncoder
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.atom_attention_encoder.'
@@ -563,8 +566,7 @@ def native_rf3(model, fb, feats, pos_noisy, s, z, n_tok):
   from rf3.model.layers.af3_diffusion_transformer import (
       AtomAttentionEncoderDiffusion)
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'shadow.diffusion_module.atom_attention_encoder.'
@@ -806,7 +808,7 @@ def native_esmfold2(model, fb, feats, pos_noisy, s, z, n_tok):
   return (np.asarray(a), sel(q), sel(c0), None, None)
 
 
-_BOLTZ2_CKPT = '~/boltz2_weights/boltz2_conf.ckpt'
+_BOLTZ2_CKPT = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
 
 
 def _boltz2_modules(need_decoder=False):
@@ -1182,7 +1184,7 @@ def ours(model, cfg, model_dir, fb, act_dense, s, z):
   for sc in init:
     params[sc] = {}
     for k in init[sc]:
-      key = ('diffuser/~/diffusion_head' if sc == '~'
+      key = ('diffuser/~/diffusion_head' if sc == dev_path('~')
              else 'diffuser/~/diffusion_head/' + sc)
       src = full.get(key)
       v = None if src is None else src.get(k)
@@ -1200,7 +1202,7 @@ def ours(model, cfg, model_dir, fb, act_dense, s, z):
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
+  ap.add_argument('--pdb', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--model_dir', default=None)
   args = ap.parse_args(argv)
   sys.argv = sys.argv[:1]
@@ -1457,16 +1459,16 @@ def main(argv=None):
 # rather than a new function.
 _DECODER_SRC = {
     'protenix1': ('protenix.model.modules.transformer',
-                  '~/protenix_weights/protenix_base_default_v1.0.0.pt',
+                  dev_path('~/protenix_weights/protenix_base_default_v1.0.0.pt'),
                   'module.diffusion_module.atom_attention_decoder.'),
     'protenix2': ('protenix.model.modules.transformer',
-                  '~/protenix_weights/protenix-v2.pt',
+                  dev_path('~/protenix_weights/protenix-v2.pt'),
                   'module.diffusion_module.atom_attention_decoder.'),
     # opendde's decoder is protenix's: same prefix, same 84 tensors, same
     # 3 blocks, same constructor (n_blocks, n_heads, c_token, c_atom,
     # c_atompair, n_queries, n_keys).
     'opendde': ('opendde.model.modules.transformer',
-                '~/opendde_weights/opendde.pt',
+                dev_path('~/opendde_weights/opendde.pt'),
                 'module.diffusion_module.atom_attention_decoder.'),
 }
 
@@ -1567,7 +1569,7 @@ def _native_decoder_of3(model, feats, a, q_ref, c_ref, p_ref, n_atom, c_token):
       AtomAttentionDecoder)
   from openfold3.projects.of3_all_atom.config.model_config import model_config
 
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.atom_attn_dec.'
@@ -1652,7 +1654,7 @@ def _native_decoder_if2(model, feats, a, q_ref, c_ref, p_ref, n_atom, c_token):
         'one in _RAW -- it returns None for the COMPARISON, which is correct, '
         'but the decoder consumes it as an input.')
   p_skip = _RAW['if2_p']
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'diffusion_module.atom_attention_decoder.'
@@ -1716,8 +1718,7 @@ def _native_decoder_rf3(model, feats, a, q_ref, c_ref, p_ref, n_atom, c_token):
     raise SystemExit('the rf3 decoder needs the encoder\'s pair tensor and '
                      'feature dict; native_rf3 did not park them in _RAW')
   R = _RAW['rf3']
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'shadow.diffusion_module.atom_attention_decoder.'
@@ -1869,7 +1870,7 @@ def _decoder(model, cfg, model_dir, fb, feats, q_ref, c_ref, p_ref, a_ref,
   for sc in init:
     params[sc] = {}
     for k in init[sc]:
-      key = ('diffuser/~/diffusion_head' if sc == '~'
+      key = ('diffuser/~/diffusion_head' if sc == dev_path('~')
              else 'diffuser/~/diffusion_head/' + sc)
       src = full.get(key)
       v = None if src is None else src.get(k)

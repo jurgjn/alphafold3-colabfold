@@ -46,6 +46,9 @@ CONVENTIONS a consumer must know (also printed into OUT_DIR/hf3_meta.json):
   * recycling_steps: HF3 runs range(1 + num_recycle) trunk passes; num_recycle :=
     recycling_steps (stock 9), as protenix's N_cycle = recycling_steps + 1.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import pickle
@@ -64,10 +67,10 @@ if not hasattr(np, 'object'):
   np.object = object
 
 HF3_ROOT = os.path.expanduser(os.environ.get(
-    'HF3_ROOT', '~/PaddleHelix/apps/protein_folding/helixfold3'))
+    'HF3_ROOT', dev_path('~/PaddleHelix/apps/protein_folding/helixfold3')))
 CKPT = os.path.expanduser(os.environ.get(
-    'HF3_CKPT', '~/helixfold3_params/HelixFold3-params-20250714/HelixFold3-20250714.pdparams'))
-CCD = os.path.expanduser(os.environ.get('HF3_CCD', '~/helixfold3_data/ccd_preprocessed_etkdg.pkl.gz'))
+    'HF3_CKPT', dev_path('~/helixfold3_params/HelixFold3-params-20250714/HelixFold3-20250714.pdparams')))
+CCD = os.path.expanduser(os.environ.get('HF3_CCD', dev_path('~/helixfold3_data/ccd_preprocessed_etkdg.pkl.gz')))
 MODEL_NAME = 'allatom_demo'
 SEED = 1
 sys.path.insert(0, HF3_ROOT)
@@ -334,7 +337,7 @@ def _args(out_dir):
       jackhmmer_binary_path='/nonexistent/jackhmmer', hhblits_binary_path='/nonexistent/hhblits',
       hhsearch_binary_path='/nonexistent/hhsearch', hmmsearch_binary_path='/nonexistent/hmmsearch',
       hmmbuild_binary_path='/nonexistent/hmmbuild', nhmmer_binary_path='/nonexistent/nhmmer',
-      kalign_binary_path=shutil.which('kalign') or os.path.expanduser('~/.local/bin/kalign'))
+      kalign_binary_path=shutil.which('kalign') or dev_path('~/.local/bin/kalign'))
 
 
 def _hf3_featurise(out_dir, use_msa, template_sto):

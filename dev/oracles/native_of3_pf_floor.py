@@ -5,14 +5,17 @@ sets itself) and TF32 off -- and the two outputs are compared. That is the
 resolution this cell has; our disagreement with native only means something
 above it.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys
 import numpy as np
 import torch
 
-TREE = os.environ.get('TREE', '/home/ubuntu/openfold-3-v050')
-CKPT = os.environ.get('CKPT', '/home/ubuntu/of3-ob-174k.pt')
+TREE = os.environ.get('TREE', dev_path('~/openfold-3-v050'))
+CKPT = os.environ.get('CKPT', dev_path('~/of3-ob-174k.pt'))
 sys.path.insert(0, TREE)
-sys.path.insert(0, os.path.expanduser('~/of3_stub'))
+sys.path.insert(0, dev_path('~/of3_stub'))
 from openfold3.core.model.latent.pairformer import PairFormerStack
 
 d = np.load(sys.argv[1])

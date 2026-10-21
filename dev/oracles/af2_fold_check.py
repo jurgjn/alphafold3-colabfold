@@ -38,6 +38,9 @@ implementations), and it is also sensitive enough for the job: any real
 mis-wiring of the featurisation or the parameters moves it by far more than the
 tolerance here. The per-atom numbers are still printed, as diagnostics.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -67,7 +70,7 @@ def build_inputs(seq):
   return inputs, chain_seq
 
 
-def fold(model_type, seq, num_recycle=0, bfloat16=False, data_dir='~',
+def fold(model_type, seq, num_recycle=0, bfloat16=False, data_dir=dev_path('~'),
          runner_cls=None):
   """-> atom37 positions (num_res, 37, 3)."""
   if runner_cls is None:
@@ -82,10 +85,10 @@ def fold(model_type, seq, num_recycle=0, bfloat16=False, data_dir='~',
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model_type', nargs='?', default='alphafold2_ptm')
-  ap.add_argument('target', nargs='?', default='~/6MRR.pdb')
+  ap.add_argument('target', nargs='?', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--recycle', type=int, default=0)
   ap.add_argument('--bfloat16', action='store_true')
-  ap.add_argument('--data_dir', default='~')
+  ap.add_argument('--data_dir', default=dev_path('~'))
   ap.add_argument('--save', help='write atom37 positions here (child runs)')
   ap.add_argument('--impl', default='af2', choices=('af2', 'colabdesign2'),
                   help="which AF2Runner to use; 'colabdesign2' is the reference")
@@ -108,7 +111,7 @@ def main(argv=None):
   # uncontended runs agree to 0.0024). One fold at a time on this card.
   if not args.compare:
     if args.impl == 'colabdesign2':
-      sys.path.insert(0, os.path.expanduser('~/ColabDesign2'))
+      sys.path.insert(0, dev_path('~/ColabDesign2'))
       from colabdesign2.af2.runner import AF2Runner as cls
       kw['runner_cls'] = cls
     pos = fold(args.model_type, seq, **kw)

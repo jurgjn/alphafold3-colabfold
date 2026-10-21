@@ -26,6 +26,9 @@ representative atom per token, and the capture names it
 (`token_reference_atom_index`), so those coordinates are placed exactly rather
 than assumed.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
@@ -35,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from confidence_parity import _cmp                          # noqa: E402
 
-CAP = os.path.expanduser('~/chai_6mrr/conf_seam.npz')
+CAP = dev_path('~/chai_6mrr/conf_seam.npz')
 
 
 def _chai_floor(z, ref_pae, ref_pde, L):
@@ -58,7 +61,7 @@ def _chai_floor(z, ref_pae, ref_pde, L):
   """
   import torch
 
-  path = os.path.expanduser('~/chai1_weights/models_v2/confidence_head.pt')
+  path = dev_path('~/chai1_weights/models_v2/confidence_head.pt')
   if not os.path.exists(path):
     print('  FLOOR UNAVAILABLE: no %s' % path)
     return
@@ -121,7 +124,7 @@ def main(argv=None):
 
   z = np.load(CAP)
   L = int(np.asarray(z['in|token_single_mask']).sum())
-  seq, _ = fold_check.parse_ca(os.path.expanduser('~/6MRR.pdb'))
+  seq, _ = fold_check.parse_ca(dev_path('~/6MRR.pdb'))
   batch, cfg, model_dir = fold_check._fold_setup('chai1', seq)
   cfg.global_config.bfloat16 = os.environ.get('BF16', 'none')
   fb = feat_batch.Batch.from_data_dict(batch)

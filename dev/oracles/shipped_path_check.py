@@ -19,6 +19,9 @@ This compares OURS to OURS. It does not replace a vendor gate; it says whether a
 vendor gate's verdict on the inline path carries over to the paths users run.
 Prints `__VERDICT PASS|FAIL` and exits non-zero on FAIL.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import copy
 import os
 import sys
@@ -54,7 +57,7 @@ def main(argv):
   import fold_check
 
   model_name = argv[0]
-  pdb = argv[1] if len(argv) > 1 else os.path.expanduser('~/6MRR.pdb')
+  pdb = argv[1] if len(argv) > 1 else dev_path('~/6MRR.pdb')
   seq, _ = fold_check.parse_ca(pdb)
   batch, cfg, model_dir = fold_check._fold_setup(model_name, seq)
   cfg.global_config.bfloat16 = 'none'

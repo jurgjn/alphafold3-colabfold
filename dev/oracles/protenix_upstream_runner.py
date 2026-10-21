@@ -11,6 +11,9 @@ model's `sample_diffusion` -- the only stochastic step -- which returns the
 injected coordinates and runs the real denoiser once on an injected
 (noised coordinates, sigma). See boltz2_upstream_runner.py for why.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import sys
@@ -22,7 +25,7 @@ os.environ.setdefault('LAYERNORM_TYPE', 'torch')
 
 import numpy as np
 
-CKPT_DIR = os.path.expanduser(os.environ.get('PROTENIX_CKPT_DIR', '~/protenix_weights'))
+CKPT_DIR = os.path.expanduser(os.environ.get('PROTENIX_CKPT_DIR', dev_path('~/protenix_weights')))
 NAMES = {'protenix2': 'protenix-v2', 'protenix1': 'protenix_base_default_v1.0.0'}
 
 
@@ -187,7 +190,7 @@ def _configs(model, json_path, dump_dir, dtype):
     c.data.template.prot_template_mmcif_dir = os.path.join(tdir, 'mmcif')
     c.data.template.release_dates_path = os.path.join(tdir, 'release_dates.json')
     c.data.template.obsolete_pdbs_path = os.path.join(tdir, 'obsolete.json')
-    c.data.template.kalign_binary_path = shutil.which('kalign') or os.path.expanduser('~/.local/bin/kalign')
+    c.data.template.kalign_binary_path = shutil.which('kalign') or dev_path('~/.local/bin/kalign')
     c.data.template.fetch_remote = False
   return c
 

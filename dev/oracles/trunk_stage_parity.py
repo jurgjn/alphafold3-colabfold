@@ -16,6 +16,9 @@ PASSES=n on this side must match --model.N_cycle n on the dump, and the
 comparison takes our LAST pass -- the dump keeps native's last cycle. Reading
 `taps[name][0]` instead made a cycle-2 recycle term look 37% small.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 
 import os, sys
 import numpy as np
@@ -81,7 +84,7 @@ p = afp.get_model_haiku_params(model_dir=model_dir)
 # Calling Evoformer directly drops the Model's own `diffuser/` scope prefix, and
 # the blob's ROOT scope ('diffuser' itself, which holds boltz2's
 # evoformer_conditioning_embed_atom_features_bias) becomes haiku's '~'.
-p = {('~' if k == 'diffuser'
+p = {(dev_path('~') if k == 'diffuser'
       else k[len('diffuser/'):] if k.startswith('diffuser/') else k): v
      for k, v in p.items()}
 out, pass_rms, _ = fwd.apply(p, jax.random.PRNGKey(0), b)

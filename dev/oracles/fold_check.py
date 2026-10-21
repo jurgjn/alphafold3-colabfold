@@ -6,6 +6,9 @@ featurisation. This runs the whole model.
 
   PYTHONPATH=src:. python dev/oracles/fold_check.py protenix2 [6MRR.pdb]
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
@@ -57,7 +60,7 @@ def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
   from alphafold3.model.components import utils
   from alphafold3.model.pipeline import model_features
 
-  model_dir = model_dir or os.path.expanduser('~/ported/%s' % model_name)
+  model_dir = model_dir or os.path.expanduser(dev_path('~/ported/%s') % model_name)
   spec = model_registry.get(model_name)
   fold_input = folding_input.Input(
       name=model_name,
@@ -213,7 +216,7 @@ def fold(model_name, seq, model_dir=None, seed=0, templates=None, chains=None,
 def main(argv):
   sys.argv = sys.argv[:1]                       # tokamax parses argv lazily
   model_name = argv[0]
-  pdb = argv[1] if len(argv) > 1 else os.path.expanduser('~/6MRR.pdb')
+  pdb = argv[1] if len(argv) > 1 else dev_path('~/6MRR.pdb')
   seq, native = parse_ca(pdb)
   print('%s: %d residues from %s' % (model_name, len(seq), os.path.basename(pdb)))
   # SEEDS lets one run cover several seeds: best-of-5 from ONE seed is a noisy

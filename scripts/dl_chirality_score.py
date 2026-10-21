@@ -7,20 +7,25 @@ chirality signal has to earn its keep -- and where a gap shows:
     native RoseTTAFold3   15/15 L kept, 11/11 D built as D, 1.5-1.8 A
     this port             15/15 L kept,  2/11 D built as D, 2.3 A
 
-    python scripts/dl_chirality_score.py <tag> [<tag> ...]
+    DL_RUNS=<runs dir> python scripts/dl_chirality_score.py <tag> [<tag> ...]
 
-Reads $S/dl_<tag>/5kx0/. The sign of the CA signed volume separates the two
+Reads $DL_RUNS/dl_<tag>/5kx0/ (run_alphafold.py --output_dir per tag on
+examples/regression/5kx0_cyclic_dl_peptide.json) and the native 5KX0.cif from
+$AF3_DEV_HOME. The sign of the CA signed volume separates the two
 configurations cleanly: L gives +0.77 in the CCD ideal, D gives -0.77.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../dev')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json, os, sys, warnings
 warnings.filterwarnings('ignore')
-sys.path.insert(0, '/home/ubuntu/alphafold3/src')
-sys.path.insert(0, '/home/ubuntu/alphafold3/scripts')
+sys.path.insert(0, dev_path('~/alphafold3/src'))
+sys.path.insert(0, dev_path('~/alphafold3/scripts'))
 import numpy as np
 from Bio.PDB import MMCIFParser
 from chirality_check import ccd_ideal, centres, signed_volume
 
-S = '/tmp/claude-1000/-home-ubuntu-ColabDesign2/77aa66c7-a908-4cb6-bf0e-1ff700d68150/scratchpad/run'
+S = os.environ.get('DL_RUNS') or sys.exit('set DL_RUNS to the directory holding dl_<tag>/5kx0/')
 D_CODES = {'DAL','DAR','DAS','DCY','DGL','DGN','DHI','DIL','DLE','DLY','DPN',
            'DPR','DSN','DTH','DTR','DTY','DVA'}
 
@@ -57,7 +62,7 @@ def ca_trace(path):
   return np.array([r['CA'].coord for ch in st for r in ch if 'CA' in r])
 
 want = expected()
-ref_ca = ca_trace('/home/ubuntu/5KX0.cif')
+ref_ca = ca_trace(dev_path('~/5KX0.cif'))
 print(f'{"run":16s} {"L kept":>8s} {"D built as D":>13s} {"CA-RMSD":>9s} {"ptm":>5s} {"pLDDT":>6s}')
 for tag in sys.argv[1:]:
   base = f'{S}/dl_{tag}/5kx0'

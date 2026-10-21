@@ -5,8 +5,11 @@ The trunk now reproduces the reference at corr 0.9887 but the model still folds
 Feed the graph's own z and s_inputs into the reference's `sample` and see which:
 a ~1.7 A fold means the trunk is fine and the graph's diffusion is wrong.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys, os, numpy as np, jax, jax.numpy as jnp, haiku as hk
-sys.path.insert(0, '/home/ubuntu/alphafold3'); sys.path.insert(0, '/home/ubuntu/alphafold3/src')
+sys.path.insert(0, dev_path('~/alphafold3')); sys.path.insert(0, dev_path('~/alphafold3/src'))
 sys.argv = sys.argv[:1]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from esmfold2_dumps import state_dict as _sd_of, native as _native_of
@@ -28,8 +31,8 @@ from converters import esmfold2 as CV
 # followed it, so every harness below had been unrunnable since.
 import esmfold2_reference as R
 
-seq, xyz_true = parse_ca(os.path.expanduser('~/6MRR.pdb'))
-d = os.path.expanduser('~/ported/esmfold2')
+seq, xyz_true = parse_ca(dev_path('~/6MRR.pdb'))
+d = dev_path('~/ported/esmfold2')
 spec = model_registry.get('esmfold2')
 fi = folding_input.Input(name='x', chains=[folding_input.ProteinChain(
     id='A', sequence=seq, ptms=[], unpaired_msa='', paired_msa='', templates=[])], rng_seeds=[0])

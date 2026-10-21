@@ -6,7 +6,7 @@ comparison of the module existed, which also bounds an earlier claim: zeroing
 our template contribution on 6MRR changed nothing, and that shows the path is
 inert when NO template is supplied, not that the embedder is right when one is.
 
-  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:/home/ubuntu/protenix \
+  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:~/protenix \
     python dev/oracles/template_parity.py protenix2
 
 THE SEAM. Native protenix's `TemplateEmbedder` takes the template features
@@ -26,6 +26,9 @@ The template is the target's own structure (a self-template). For a module gate
 the features only need to be realistic and non-degenerate; making it a
 biologically interesting template would test nothing extra here.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -145,7 +148,7 @@ def native_protenix(model, feats, z, pair_mask, hidden_scale_up):
   from protenix.model.modules.pairformer import TemplateEmbedder
 
   from denoise_parity import _PROTENIX_CKPT
-  ckpt = os.path.expanduser('~/protenix_weights/' + _PROTENIX_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/protenix_weights/') + _PROTENIX_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('model', sd)
   pre = 'module.template_embedder.'
@@ -206,8 +209,7 @@ def native_rf3(model, feats, z, pair_mask, hidden_scale_up):
 
   from rf3.model.layers.pairformer_layers import RF3TemplateEmbedder
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   raw = raw.get('state_dict', raw.get('model', raw))
   pre = 'shadow.recycler.template_embedder.'
@@ -279,7 +281,7 @@ def native_boltz2(model, feats, z, pair_mask, hidden_scale_up):
     e3 = np.cross(e1, e2)
     return np.column_stack([e1, e2, e3]), ca
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   _ckpt = torch.load(ckpt, map_location='cpu', weights_only=False)
   # keep the FULL checkpoint: `hyper_parameters` carries use_templates_v2, and
   # it is gone once this is narrowed to the state dict.
@@ -442,7 +444,7 @@ def native_of3(model, feats, z, pair_mask, hidden_scale_up):
   from openfold3.projects.of3_all_atom.config.model_config import model_config
 
   from denoise_parity import _OF3_CKPT
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'template_embedder.'
@@ -512,7 +514,7 @@ def native_if2(model, feats, z, pair_mask, hidden_scale_up):
 
   from intellifold.openfold.model.embedders import TemplateEmbedder
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   cands = sorted({k.rsplit('.', 1)[0] for k in sd
@@ -592,7 +594,7 @@ def native_opendde(model, feats, z, pair_mask, hidden_scale_up):
 
   from converters.opendde import RESTYPE_PERM
 
-  ckpt = os.path.expanduser('~/opendde_weights/opendde.pt')
+  ckpt = dev_path('~/opendde_weights/opendde.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'module.template_embedder.'
@@ -655,7 +657,7 @@ except ImportError:
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--cif', default=os.path.expanduser('~/5K9P.cif'),
+  ap.add_argument('--cif', default=dev_path('~/5K9P.cif'),
                   help='a SINGLE-chain mmCIF; folding_input.Template rejects '
                        'more than one (5CAJ has 2, which is what caught this)')
   ap.add_argument('--chain', default='A')

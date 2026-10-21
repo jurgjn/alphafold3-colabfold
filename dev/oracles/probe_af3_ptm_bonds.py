@@ -13,10 +13,13 @@ The modified residue's atoms are selected by `residue_index` here, which is what
 actually identifies them: an atomised residue is one token per atom and they all
 carry the same index.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys
 os.environ.setdefault("JAX_DEFAULT_MATMUL_PRECISION", "highest")
-for e in ("/home/ubuntu/alphafold3/src", "/home/ubuntu/alphafold3",
-          "/home/ubuntu/alphafold3/dev/oracles"):
+for e in (dev_path("~/alphafold3/src"), dev_path("~/alphafold3"),
+          dev_path("~/alphafold3/dev/oracles")):
     sys.path.insert(0, e)
 import numpy as np
 import fold_check

@@ -7,7 +7,7 @@ matches the original. This is the missing direction: the original repo, its own
 config, its own parameters, identical inputs.
 
   git clone https://github.com/google-deepmind/alphafold ~/af2_original
-  PYTHONPATH=src:.:dev/oracles:/home/ubuntu/af2_original \
+  PYTHONPATH=src:.:dev/oracles:~/af2_original \
       python dev/oracles/af2_native_parity.py template
 
 Gates (`--module`):
@@ -16,6 +16,9 @@ Gates (`--module`):
              coverage against the original at all
   evoformer  one EvoformerIteration
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -24,9 +27,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-AF2_ORIGINAL = os.environ.get('AF2_ORIGINAL', '/home/ubuntu/af2_original')
+AF2_ORIGINAL = os.environ.get('AF2_ORIGINAL', dev_path('~/af2_original'))
 PARAMS = os.path.expanduser(os.environ.get('AF2_PARAMS',
-                                           '~/params/params_model_1_ptm.npz'))
+                                           dev_path('~/params/params_model_1_ptm.npz')))
 PREFIX = 'alphafold/alphafold_iteration/evoformer/'
 
 # The two paths. `params` is what each side's checkpoint is called, `config` the
@@ -36,9 +39,9 @@ PREFIX = 'alphafold/alphafold_iteration/evoformer/'
 # weights converted at load), so for the monomer variant the comparison is
 # genuinely cross-architecture and is exactly what tests convert.py.
 VARIANTS = {
-    'monomer': dict(params='~/params/params_model_1_ptm.npz',
+    'monomer': dict(params=dev_path('~/params/params_model_1_ptm.npz'),
                     config='model_1_ptm'),
-    'multimer': dict(params='~/params/params_model_1_multimer_v3.npz',
+    'multimer': dict(params=dev_path('~/params/params_model_1_multimer_v3.npz'),
                      config='model_1_multimer_v3'),
 }
 
@@ -248,7 +251,7 @@ def template_multimer_gate(n=24, seed=0):
 
   ckpt = os.path.expanduser(
       os.environ.get('AF2_MULTIMER_PARAMS',
-                     '~/params/params_model_1_multimer_v3.npz'))
+                     dev_path('~/params/params_model_1_multimer_v3.npz')))
   params = np.load(ckpt, allow_pickle=True)
   p_orig = _subtree(params, 'template_embedding')
   if not p_orig:
@@ -342,7 +345,7 @@ def template_1d_gate(n=24, seed=0):
   # it builds its own two Linears, so it needs their weights
   ckpt = os.path.expanduser(
       os.environ.get('AF2_MULTIMER_PARAMS',
-                     '~/params/params_model_1_multimer_v3.npz'))
+                     dev_path('~/params/params_model_1_multimer_v3.npz')))
   raw = np.load(ckpt, allow_pickle=True)
   p1d = {}
   for scope in ('template_single_embedding', 'template_projection'):

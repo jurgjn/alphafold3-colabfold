@@ -23,6 +23,9 @@ per atom. The atom set and order are the same in both token spaces (only
 atom_to_token_idx differs), so `positions`/`denoised` are in the vendor's flat
 atom order and the layout below is the residue one.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import sys
@@ -35,7 +38,7 @@ os.environ.setdefault('LAYERNORM_TYPE', 'torch')
 import numpy as np
 
 CKPT = os.path.expanduser(os.environ.get('OPENDDE_CKPT',
-                                         '~/opendde_weights/opendde.pt'))
+                                         dev_path('~/opendde_weights/opendde.pt')))
 NAMES = {'opendde': 'opendde_v1'}
 
 
@@ -207,7 +210,7 @@ def _configs(model, out_dir, dtype='fp32', n_cycle=None, n_sample=None):
     c.data.template.prot_template_mmcif_dir = os.path.join(tdir, 'mmcif')
     c.data.template.release_dates_path = os.path.join(tdir, 'release_dates.json')
     c.data.template.obsolete_pdbs_path = os.path.join(tdir, 'obsolete.json')
-    c.data.template.kalign_binary_path = shutil.which('kalign') or os.path.expanduser('~/.local/bin/kalign')
+    c.data.template.kalign_binary_path = shutil.which('kalign') or dev_path('~/.local/bin/kalign')
     c.data.template.fetch_remote = False
     # Those two caches are release-managed assets OpenDDE checks by SIZE (download._ensure_managed_asset) and
     # re-downloads when they differ; ours hold only this case's hits (each template's release date read off its

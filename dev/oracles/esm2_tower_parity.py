@@ -13,6 +13,9 @@ Two rows per sequence:
 
   PYTHONPATH=src:. python dev/oracles/esm2_tower_parity.py
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import subprocess
@@ -23,9 +26,9 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TRACE = os.path.expanduser(os.environ.get(
-    'CHAI_ESM_TRACE', '~/chai1_weights/esm/traced_sdpa_esm2_t36_3B_UR50D_fp16.pt'))
-VENDOR_PY = os.path.expanduser(os.environ.get('CHAI_VENDOR_PY', '~/venv_chai/bin/python'))
-ESM2_DIR = os.path.expanduser(os.environ.get('ESM2_DIR', '~/ported/esm2'))
+    'CHAI_ESM_TRACE', dev_path('~/chai1_weights/esm/traced_sdpa_esm2_t36_3B_UR50D_fp16.pt')))
+VENDOR_PY = os.path.expanduser(os.environ.get('CHAI_VENDOR_PY', dev_path('~/venv_chai/bin/python')))
+ESM2_DIR = os.path.expanduser(os.environ.get('ESM2_DIR', dev_path('~/ported/esm2')))
 
 
 def vendor(seqs, out):

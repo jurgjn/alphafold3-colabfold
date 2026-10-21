@@ -6,7 +6,7 @@ that predates the injection-ladder method. This closes it the way
 diffusion_parity.py closed L2: instantiate the vendor's own head, load the real
 weights into it, and run BOTH heads on the SAME inputs.
 
-  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:/home/ubuntu/protenix \
+  JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:~/protenix \
     python dev/oracles/confidence_parity.py protenix2
 
 Unlike L1/L2 this cannot run on purely synthetic input: both heads consume an
@@ -19,6 +19,9 @@ end up embedding are compared explicitly before anything else is trusted; if
 that check fails the logits are being computed on different geometry and no
 correlation below it means anything.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import os
 import sys
@@ -108,7 +111,7 @@ def native_protenix(model, batch, pos, rng, n, max_atoms):
   _stub_layer_norm()
   from protenix.model.modules.confidence import ConfidenceHead
 
-  ckpt = os.path.expanduser('~/protenix_weights/' + _PROTENIX_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/protenix_weights/') + _PROTENIX_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('model', sd)
   pre = 'module.confidence_head.'
@@ -241,7 +244,7 @@ def native_of3(model, batch, pos, rng, n, max_atoms):
 
   from openfold3.core.model.heads import prediction_heads as ph
 
-  ckpt = os.path.expanduser('~/' + _OF3_CKPT[model])
+  ckpt = os.path.expanduser(dev_path('~/') + _OF3_CKPT[model])
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'aux_heads.'
@@ -345,7 +348,7 @@ def native_if2(model, batch, pos, rng, n, max_atoms):
   from intellifold.openfold.config import model_config
   from intellifold.openfold.model.heads import ConfidenceHead
 
-  ckpt = os.path.expanduser('~/model_v2/intellifold_v2.pt')
+  ckpt = dev_path('~/model_v2/intellifold_v2.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('state_dict', sd.get('model', sd))
   pre = 'confidence_head.'
@@ -469,8 +472,7 @@ def native_rf3(model, batch, pos, rng, n, max_atoms):
 
   from rf3.model.layers.af3_auxiliary_heads import ConfidenceHead
 
-  ckpt = os.path.expanduser(
-      '~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+  ckpt = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)['model']
   pre = 'shadow.confidence_head.'
   sub = {k[len(pre):]: v for k, v in raw.items() if k.startswith(pre)}
@@ -579,7 +581,7 @@ def native_opendde(model, batch, pos, rng, n, max_atoms):
 
   from opendde.model.modules.confidence import ConfidenceHead
 
-  ckpt = os.path.expanduser('~/opendde_weights/opendde.pt')
+  ckpt = dev_path('~/opendde_weights/opendde.pt')
   sd = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = sd.get('model', sd)
   pre = 'module.confidence_head.'
@@ -705,7 +707,7 @@ def native_boltz2(model, batch, pos, rng, n, max_atoms):
 
   from boltz.model.modules.confidencev2 import ConfidenceModule
 
-  ckpt = os.path.expanduser('~/boltz2_weights/boltz2_conf.ckpt')
+  ckpt = dev_path('~/boltz2_weights/boltz2_conf.ckpt')
   raw = torch.load(ckpt, map_location='cpu', weights_only=False)
   sd = raw.get('state_dict', raw.get('model', raw))
   hp = raw.get('hyper_parameters', {})
@@ -1037,7 +1039,7 @@ class exact_cdist:
 def main(argv=None):
   ap = argparse.ArgumentParser()
   ap.add_argument('model')
-  ap.add_argument('--pdb', default=os.path.expanduser('~/6MRR.pdb'))
+  ap.add_argument('--pdb', default=dev_path('~/6MRR.pdb'))
   ap.add_argument('--model_dir', default=None)
   args = ap.parse_args(argv)
   sys.argv = sys.argv[:1]

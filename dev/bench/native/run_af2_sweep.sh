@@ -1,19 +1,20 @@
 #!/bin/bash
 # AlphaFold 2 across LENGTH x MSA cluster count, resumable, one cell at a time.
 #
-#   bash tools/benchmarks/run_af2_sweep.sh [out.tsv]
+#   bash dev/bench/native/run_af2_sweep.sh [out.tsv]
 #
 # Same shape and same guards as run_ours_sweep.sh: serialised, flock-protected,
 # waits for a quiet GPU, appends each cell as it lands. AF2 needs its own driver
 # because it is a sibling network rather than a model on the AF3 graph.
+. "$(dirname "${BASH_SOURCE[0]}")/../../af3_dev_paths.sh"   # $REPO, $AF3_DEV_HOME, $AF3_PORTED_DIR
 OUT=${1:-/tmp/af2_sweep.tsv}
-S=/tmp/claude-1000/-home-ubuntu-ColabDesign2/77aa66c7-a908-4cb6-bf0e-1ff700d68150/scratchpad
+S=${DATA:?set DATA to a working directory for the sweep cache}
 MODELS=${MODELS:-af2_ptm af2_multimer}
 LENGTHS=${LENGTHS:-64 128 192 256 384 512}
 # AF2's MSA sizes are real tensor shapes, not a config truncation, so these cost
 # real time. 512 is AF2's own default cluster count.
 MSAS=${MSAS:-1 128 512}
-PARAMS=${PARAMS:-$HOME/params}
+PARAMS=${PARAMS:-$AF3_DEV_HOME/params}
 touch "$OUT"
 exec 9>"${OUT}.lock"
 if ! flock -n 9; then echo "another af2 sweep holds ${OUT}.lock; refusing"; exit 1; fi
@@ -29,8 +30,8 @@ for N in $MSAS; do
     done
     echo "=== $M $L msa=$N ==="
     cell_err="${OUT}.${M}.${L}.${N}.err"
-    if SWEEP_CACHE_DIR=$S/sweep_cache AF3_SRC=$HOME/alphafold3 timeout 7200 \
-         ~/venv/bin/python tools/benchmarks/bench_sweep_af2.py "$M" "$PARAMS" "$L" "$N" 4 \
+    if SWEEP_CACHE_DIR=$S/sweep_cache AF3_SRC=$REPO timeout 7200 \
+         $AF3_DEV_HOME/venv/bin/python $REPO/dev/bench/native/bench_sweep_af2.py "$M" "$PARAMS" "$L" "$N" 4 \
          >> "$OUT" 2>"$cell_err"; then
       rm -f "$cell_err"
     elif grep -qiE 'RESOURCE_EXHAUSTED|Out of memory|OOM when allocating' "$cell_err"; then

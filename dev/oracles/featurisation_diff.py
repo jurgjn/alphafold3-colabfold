@@ -13,6 +13,9 @@ side is atom k on theirs" is proven rather than assumed (that check is what
 turned protenix's `ref_element` from a 100% mismatch into a documented 1-index
 shift).
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
@@ -56,7 +59,7 @@ def main(argv=None):
     chains = list(folding_input.Input.from_json(open(seq).read()).chains)
     seq = getattr(chains[0], 'sequence', '')
   if seq is None:
-    seq = fold_check.parse_ca(os.path.expanduser('~/6MRR.pdb'))[0]
+    seq = fold_check.parse_ca(dev_path('~/6MRR.pdb'))[0]
   d = np.load(npz)
   # Dumps written by the native_*_dump.py hooks prefix batch fields with
   # 'batch_'; accept either naming.

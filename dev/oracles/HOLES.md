@@ -2424,7 +2424,7 @@ in none of our venvs):
 
     ~/of3_venv            a venv layered on boltz_gpu_venv by ONE .pth line:
                           site-packages/_boltz_gpu.pth ->
-                            /home/ubuntu/boltz_gpu_venv/lib/python3.12/site-packages
+                            ~/boltz_gpu_venv/lib/python3.12/site-packages
                           (`venv --system-site-packages` inherits the BASE
                            interpreter, not the venv it was called from, so the
                            .pth is the part that does the work)
@@ -2435,7 +2435,7 @@ in none of our venvs):
                           pixi), template-realignment only, and it RAISES --
                           `--use_templates false` must never reach it.
 
-    PYTHONPATH=/home/ubuntu/openfold-3-v050:$HOME/of3_stub ~/of3_venv/bin/python \
+    PYTHONPATH=~/openfold-3-v050:$HOME/of3_stub ~/of3_venv/bin/python \
       openfold3/run_openfold.py predict --query_json <q>.json \
       --inference_ckpt_path ~/of3-ob-174k.pt --num_diffusion_samples 5 \
       --num_model_seeds 1 --use_msa_server false --use_templates false \
@@ -2475,7 +2475,7 @@ What the measurement needs, and the two routes:
 
          ~/of3_deps -> gemmi, ml_collections, absl, biotite  (from ~/venv)
 
-         PYTHONPATH=/home/ubuntu/openfold-3:$HOME/of3_deps \
+         PYTHONPATH=~/openfold-3:$HOME/of3_deps \
            ~/boltz_gpu_venv/bin/python ...
 
      Verified: `PairFormerStack` imports, cuda True, and of3-ob-174k.pt loads

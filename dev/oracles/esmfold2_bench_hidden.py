@@ -1,8 +1,11 @@
 """Pass 1 (GPU): ESM-C hidden states for one scheme, all targets -> disk."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 import sys, gc, json, time, numpy as np, jax, jax.numpy as jnp
-sys.path.insert(0, '/home/ubuntu/alphafold3')
+sys.path.insert(0, dev_path('~/alphafold3'))
 from alphafold3.model import esm as C
 # the reference moved from converters/oracles/ to dev/oracles/ when the
 # repo split what SHIPS from what only verifies; this import had not
@@ -25,7 +28,7 @@ def rtn(w, bits, group):
 
 meta = json.load(open('bench_meta.json'))
 tg = dict(np.load('bench_targets.npz'))
-snap = os.path.expanduser('~/.cache/huggingface/hub/models--biohub--ESMC-6B/snapshots')
+snap = dev_path('~/.cache/huggingface/hub/models--biohub--ESMC-6B/snapshots')
 sd = load_esmfold2_checkpoint(os.path.join(snap, os.listdir(snap)[0]))
 dims = C.derive_dims(sd)
 p_host = C.map_esmc_to_af3(sd, dims); del sd; gc.collect()

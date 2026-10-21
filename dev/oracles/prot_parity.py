@@ -5,9 +5,12 @@ says nothing about featurisation -- only that what we converted computes what
 native computes. That is exactly the question the audit could not answer:
 "complete" is not "correct".
 
-  PYTHONPATH=/home/ubuntu/protenix:/home/ubuntu/alphafold3:/home/ubuntu/alphafold3/src \
+  PYTHONPATH=~/protenix:~/alphafold3:~/alphafold3/src \
   FP32=1 JAX_DEFAULT_MATMUL_PRECISION=highest ~/venv/bin/python prot_parity.py
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys, types
 import numpy as np
 
@@ -49,7 +52,7 @@ def cmp(tag, got, ref):
 
 def run(model):
     print('=== %s ===' % model, flush=True)
-    sd = torch.load(os.path.expanduser('~/protenix_weights/%s' % CKPT[model]),
+    sd = torch.load(os.path.expanduser(dev_path('~/protenix_weights/%s') % CKPT[model]),
                     map_location='cpu', weights_only=False)
     sd = sd.get('model', sd)
     sd = {k[len('module.'):] if k.startswith('module.') else k: v for k, v in sd.items()}
@@ -62,7 +65,7 @@ def run(model):
     model_registry.get(model).configure(cfg)
     if os.environ.get('FP32') == '1':
         cfg.global_config.bfloat16 = 'none'
-    p = afp.get_model_haiku_params(model_dir=os.path.expanduser('~/ported/%s' % model))
+    p = afp.get_model_haiku_params(model_dir=os.path.expanduser(dev_path('~/ported/%s') % model))
     n = 48
     rng = np.random.default_rng(0)
     s = (rng.normal(size=(n, d['c_s'])) * 0.5).astype(np.float32)

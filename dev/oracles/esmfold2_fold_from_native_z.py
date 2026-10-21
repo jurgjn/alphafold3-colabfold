@@ -10,6 +10,9 @@ amplified, a bad one means the diffusion is wrong.
   MODEL=esmfold2_lm600m NATIVE=<npz> PYTHONPATH=src:. python \
       dev/oracles/esmfold2_fold_from_native_z.py
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 import functools
@@ -19,8 +22,8 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-sys.path.insert(0, '/home/ubuntu/alphafold3')
-sys.path.insert(0, '/home/ubuntu/alphafold3/src')
+sys.path.insert(0, dev_path('~/alphafold3'))
+sys.path.insert(0, dev_path('~/alphafold3/src'))
 sys.argv = sys.argv[:1]
 from alphafold3.model import model as af3_model, model_registry, params as afp
 from alphafold3.model.components import utils
@@ -46,8 +49,8 @@ nat = dict(np.load(NATIVE))
 z_native = nat['trunk_out'][0].astype(np.float32)
 lm_z = nat['lm_z'][0]
 
-seq, xyz_true = parse_ca(os.path.expanduser('~/6MRR.pdb'))
-d = os.path.expanduser('~/ported/%s' % MODEL)
+seq, xyz_true = parse_ca(dev_path('~/6MRR.pdb'))
+d = os.path.expanduser(dev_path('~/ported/%s') % MODEL)
 spec = model_registry.get(MODEL)
 fi = folding_input.Input(name='x', chains=[folding_input.ProteinChain(
     id='A', sequence=seq, ptms=[], unpaired_msa='', paired_msa='',
@@ -88,7 +91,7 @@ b = jax.tree_util.tree_map(jnp.asarray, utils.remove_invalidly_typed_feats(batch
 p = afp.get_model_haiku_params(model_dir=d)
 p = {(k[len('diffuser/'):] if k.startswith('diffuser/') else k): v
      for k, v in p.items()}
-p = {(k[len('~/'):] if k.startswith('~/') else k): v for k, v in p.items()}
+p = {(k[len(dev_path('~/')):] if k.startswith(dev_path('~/')) else k): v for k, v in p.items()}
 out = fwd.apply(p, jax.random.PRNGKey(0), b, jnp.asarray(z_native))
 pos = np.asarray(out['atom_positions'])
 ca = pos[:, :, 1, :]

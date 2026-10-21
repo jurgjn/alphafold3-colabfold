@@ -1,11 +1,14 @@
 """protenix2 alone: ours vs native across length, on one axis."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../../dev')))
+from af3_dev_paths import dev_path  # noqa: E402
 import re, os, sys
 import numpy as np, matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 S = sys.argv[1]
-HERE = '/home/ubuntu/alphafold3/docs/benchmarks'
+HERE = dev_path('~/alphafold3/docs/benchmarks')
 
 ours = {}
 for l in open(f'{S}/sweep_a10.tsv'):

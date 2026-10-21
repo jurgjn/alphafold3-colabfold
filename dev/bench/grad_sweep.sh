@@ -2,15 +2,16 @@
 # One model per process: a backward pass through a 48-block trunk does not
 # reliably free between models in one process, and each check is self-contained
 # (its epsilon sweep only has to be internally consistent).
-cd /home/ubuntu/alphafold3
+. "$(dirname "${BASH_SOURCE[0]}")/../af3_dev_paths.sh"   # $REPO, $AF3_DEV_HOME, $AF3_PORTED_DIR
+cd $REPO
 OUT=$1; : > $OUT
-mkdir -p /home/ubuntu/alphafold3/dev/bench/out
+mkdir -p $REPO/dev/bench/out
 for m in alphafold3 openfold3 openbind0 protenix05 protenix1 protenix1_20250630 \
          protenix_mini protenix_tiny protenix2 intellifold2 opendde boltz2 \
          rosettafold3 chai1 esmfold2 esmfold2_fast esmfold2_lm600m \
          esmfold2_lm300m af2_ptm af2_multimer; do
-  log=/home/ubuntu/alphafold3/dev/bench/out/grad.$m.log
-  PYTHONPATH=src:. timeout 1800 ~/venv/bin/python dev/oracles/grad_check.py "$m" > "$log" 2>&1
+  log=$REPO/dev/bench/out/grad.$m.log
+  PYTHONPATH=src:. timeout 1800 $AF3_DEV_HOME/venv/bin/python dev/oracles/grad_check.py "$m" > "$log" 2>&1
   # the summary line, or the reason there isn't one
   prec=$(grep -E "^  precision" "$log" | tail -1 | awk '{print $2}')
   g=$(grep -E "^  loss" "$log" | tail -1 | sed 's/^  //')

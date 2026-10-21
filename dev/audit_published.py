@@ -25,6 +25,9 @@ caught by `--apply`, which is the check that survived.
 A blob that does not fit the graph raises at apply() time, or worse runs a head
 on init values -- chai-1 shipped exactly that once.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '.')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import hashlib
 import os
@@ -94,7 +97,7 @@ def _applies(model_name, model_dir):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     'oracles'))
     import fold_check
-    seq, _ = fold_check.parse_ca(os.path.expanduser('~/6MRR.pdb'))
+    seq, _ = fold_check.parse_ca(dev_path('~/6MRR.pdb'))
     batch, cfg, _ = fold_check._fold_setup(model_name, seq,
                                            model_dir=model_dir)
     p = afp.get_model_haiku_params(model_dir=model_dir)
@@ -114,7 +117,7 @@ def _applies(model_name, model_dir):
 
 def main(argv=None):
   ap = argparse.ArgumentParser(description=__doc__.split('\n', 1)[0])
-  ap.add_argument('--dir', default='~/ported')
+  ap.add_argument('--dir', default=dev_path('~/ported'))
   ap.add_argument('--apply', action='store_true',
                   help='also try applying each blob to its graph (slow, decisive)')
   a = ap.parse_args(argv)

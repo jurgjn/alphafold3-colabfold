@@ -1,10 +1,13 @@
 """CLI: python -m tools.module_trace {list,run,compare,show}"""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import argparse
 import json
 import os
 import sys
 
-DEFAULT_ROOT = '~/module_traces'
+DEFAULT_ROOT = dev_path('~/module_traces')
 
 
 def main(argv=None):

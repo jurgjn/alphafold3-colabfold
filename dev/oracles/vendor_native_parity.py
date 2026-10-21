@@ -28,6 +28,9 @@ logits, one denoise step, pLDDT / PAE / PDE. Atoms are aligned by (token, atom
 name), so an atom one side has and the other does not is REPORTED, never
 silently dropped. Prints `__VERDICT PASS|FAIL`.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import json
 import os
 import subprocess
@@ -44,7 +47,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import af3_native_parity as P   # noqa: E402  (cases, compare, grade)
 
-_H = os.path.expanduser('~')
+_H = dev_path('~')
 # model -> (interpreter, PYTHONPATH for the vendor's tree or None, runner)
 VENDORS = {
     'boltz2': (_H + '/venv_boltz/bin/python', None, 'boltz2_upstream_runner.py'),

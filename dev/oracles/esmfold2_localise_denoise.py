@@ -4,8 +4,11 @@ Both run on their own trunk (which agrees to corr 0.9887) but on the SAME noisy
 coordinates and the same t_hat, so a divergence here is the score network, not
 the sampler and not the trunk.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys, os, numpy as np, jax, jax.numpy as jnp, haiku as hk
-sys.path.insert(0, '/home/ubuntu/alphafold3'); sys.path.insert(0, '/home/ubuntu/alphafold3/src')
+sys.path.insert(0, dev_path('~/alphafold3')); sys.path.insert(0, dev_path('~/alphafold3/src'))
 sys.argv = sys.argv[:1]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from esmfold2_dumps import state_dict as _sd_of, native as _native_of
@@ -29,12 +32,12 @@ from converters import esmfold2 as CV
 import esmfold2_reference as R
 
 T_HAT = 8.0
-seq, _ = parse_ca(os.path.expanduser('~/6MRR.pdb'))
+seq, _ = parse_ca(dev_path('~/6MRR.pdb'))
 # MODEL selects the release on BOTH sides. It used to pick the reference's
 # weights while the graph always loaded ~/ported/esmfold2, so every variant but
 # the base one compared two different models -- esmfold2_fast read corr 0.069
 # with the graph's std identical to the base model's, which is the tell.
-d = os.path.expanduser('~/ported/%s' % MODEL)
+d = os.path.expanduser(dev_path('~/ported/%s') % MODEL)
 spec = model_registry.get(MODEL)
 fi = folding_input.Input(name='x', chains=[folding_input.ProteinChain(
     id='A', sequence=seq, ptms=[], unpaired_msa='', paired_msa='', templates=[])], rng_seeds=[0])
@@ -223,7 +226,7 @@ _p = afp.get_model_haiku_params(model_dir=d)
 def _strip(k):
   if k.startswith('diffuser/'):
     k = k[len('diffuser/'):]
-  return k[len('~/'):] if k.startswith('~/') else k
+  return k[len(dev_path('~/')):] if k.startswith(dev_path('~/')) else k
 _p = {_strip(k): v for k, v in _p.items()}
 _STACKS_SEL = ZERO_ATOM if ZERO_ATOM in ('enc', 'dec') else ''
 if _CHUNKS:

@@ -1,8 +1,11 @@
 """Pass 2 (GPU): fold every target from saved hidden states, 3 seeds."""
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 import sys, json, numpy as np, jax, jax.numpy as jnp
-sys.path.insert(0, '/home/ubuntu/alphafold3')
+sys.path.insert(0, dev_path('~/alphafold3'))
 from converters import esmfold2 as E
 # the reference moved from converters/oracles/ to dev/oracles/ when the
 # repo split what SHIPS from what only verifies; this import had not

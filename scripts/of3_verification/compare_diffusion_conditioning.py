@@ -11,6 +11,9 @@ Covers, in one shot:
 
 Usage: python3 compare_diffusion_conditioning.py    SABOTAGE=1 to self-test
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../../dev')))
+from af3_dev_paths import dev_path  # noqa: E402
 
 import dataclasses
 import os
@@ -142,7 +145,7 @@ def main():
   # In the real model hk.get_parameter inside the transparent _conditioning
   # attaches to the enclosing DiffusionHead scope; standalone it lands on '~'.
   head_scope = params['diffuser/~/diffusion_head']
-  block_params['~'] = {
+  block_params[dev_path('~')] = {
       'fourier_embedding_weight': jnp.asarray(head_scope['fourier_embedding_weight']),
       'fourier_embedding_bias': jnp.asarray(head_scope['fourier_embedding_bias']),
   }

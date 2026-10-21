@@ -10,13 +10,16 @@ single, the trunk pair, the coordinates -- to say which path carries a gap.
   JAX_DEFAULT_MATMUL_PRECISION=highest PYTHONPATH=src:.:dev/oracles \\
     python dev/oracles/chai1_confidence_bisect.py
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-CAP = os.path.expanduser(os.environ.get('CHAI_CONF_CAP', '~/chai_6mrr/conf_seam.npz'))
+CAP = os.path.expanduser(os.environ.get('CHAI_CONF_CAP', dev_path('~/chai_6mrr/conf_seam.npz')))
 ORDER = ['token_single_input_repr', 'token_single_trunk_repr', 'token_pair_trunk_repr',
          'token_single_mask', 'atom_single_mask', 'atom_coords', 'token_reference_atom_index',
          'atom_token_index', 'atom_within_token_index']
@@ -25,7 +28,7 @@ ORDER = ['token_single_input_repr', 'token_single_trunk_repr', 'token_pair_trunk
 def chai_head():
   import torch
   import chai1_upstream_runner as R
-  m = torch.jit.load(os.path.expanduser('~/chai1_weights/models_v2/confidence_head.pt'), map_location='cpu')
+  m = torch.jit.load(dev_path('~/chai1_weights/models_v2/confidence_head.pt'), map_location='cpu')
   m.eval()
   R._fp32_graphs(m)
   fwd = m._c._get_method('forward_256')
@@ -54,7 +57,7 @@ def ours_head(L):
   from alphafold3.model.components import haiku_modules as hm
   from alphafold3.model.network import confidence_head as ch
 
-  seq, _ = fold_check.parse_ca(os.path.expanduser('~/6MRR.pdb'))
+  seq, _ = fold_check.parse_ca(dev_path('~/6MRR.pdb'))
   batch, cfg, model_dir = fold_check._fold_setup('chai1', seq)
   fb = feat_batch.Batch.from_data_dict(batch)
   pb = fb.pseudo_beta_info.token_atoms_to_pseudo_beta

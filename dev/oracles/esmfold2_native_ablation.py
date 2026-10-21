@@ -1,3 +1,6 @@
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import numpy as np, torch
 from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 from transformers.models.esmfold2.protein_utils import prepare_protein_features
@@ -7,7 +10,7 @@ def rmsd(a,b):
     n=min(len(a),len(b)); a,b=a[:n]-a[:n].mean(0),b[:n]-b[:n].mean(0)
     u,_,vt=np.linalg.svd(a.T@b); d=np.sign(np.linalg.det(u@vt))
     return float(np.sqrt((((a@(u@np.diag([1,1,d])@vt))-b)**2).sum(1).mean()))
-nat = ca('/home/ubuntu/6MRR.pdb')
+nat = ca(dev_path('~/6MRR.pdb'))
 r = dict(np.load('esmfold2_nomsa.npz'))
 lmh = torch.tensor(r['lm_z.in']).cuda()
 

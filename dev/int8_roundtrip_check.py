@@ -22,13 +22,16 @@ Publishing a storage format nobody has read back is how a blob goes out broken.
 This loads BOTH blobs through the real loader (which dequantises int8 records on
 the way in) and compares every leaf.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '.')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys, os, numpy as np
-sys.path.insert(0, '/home/ubuntu/alphafold3/src'); sys.path.insert(0, '/home/ubuntu/alphafold3')
+sys.path.insert(0, dev_path('~/alphafold3/src')); sys.path.insert(0, dev_path('~/alphafold3'))
 from alphafold3.model import params
 m = sys.argv[1]
 int8_root = os.path.expanduser(sys.argv[2] if len(sys.argv) > 2
-                               else '~/ported_int8')
-fp32 = params.get_model_haiku_params(model_dir=os.path.expanduser(f'~/ported/{m}'))
+                               else dev_path('~/ported_int8'))
+fp32 = params.get_model_haiku_params(model_dir=dev_path(f'~/ported/{m}'))
 q8 = params.get_model_haiku_params(model_dir=os.path.join(int8_root, m))
 # FULL (scope, name) pairs, not `set(fp32) ^ set(q8)`. That compared SCOPE names
 # only and merely PRINTED the count, so a blob quantised before a parameter

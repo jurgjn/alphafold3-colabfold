@@ -12,6 +12,9 @@ Runs in ~/venv_esm (torch + transformers + ESM-C), NOT the jax venv:
     ~/venv_esm/bin/python dev/oracles/esmfold2_native_variants.py \
         [ESMFold2-Experimental-Fast ...]
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os
 import sys
 
@@ -66,7 +69,7 @@ def kabsch(a, b):
 
 def main(argv):
   names = argv or DEFAULT
-  seq, native = parse_ca(os.path.expanduser('~/6MRR.pdb'))
+  seq, native = parse_ca(dev_path('~/6MRR.pdb'))
   print('6MRR: %d residues' % len(seq))
   feats0 = prepare_protein_features(seq)
   a2t = feats0['atom_to_token'][0].numpy().astype(int)
@@ -79,7 +82,7 @@ def main(argv):
       rep[a2t[i]] = i
 
   for name in names:
-    local = os.path.expanduser('~/esmfold2_variants/%s' % name)
+    local = os.path.expanduser(dev_path('~/esmfold2_variants/%s') % name)
     src = local if os.path.exists(local + '/config.json') else 'biohub/%s' % name
     try:
       import json

@@ -10,14 +10,17 @@ Both include the confidence head.
   PYTHONPATH=~/rf3_extra:~/foundry_rf3/src:~/foundry_rf3/models/rf3/src \
       ~/venv/bin/python bench_rf3_native.py <input> [reps]
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import sys, time, warnings
 warnings.filterwarnings('ignore')
 from pathlib import Path
 
-INP = sys.argv[1] if len(sys.argv) > 1 else '/home/ubuntu/6MRR.pdb'
+INP = sys.argv[1] if len(sys.argv) > 1 else dev_path('~/6MRR.pdb')
 REPS = int(sys.argv[2]) if len(sys.argv) > 2 else 4
-CKPT = '/home/ubuntu/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt'
-CFG_DIR = '/home/ubuntu/foundry_rf3/models/rf3/configs'
+CKPT = dev_path('~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt')
+CFG_DIR = dev_path('~/foundry_rf3/models/rf3/configs')
 
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate

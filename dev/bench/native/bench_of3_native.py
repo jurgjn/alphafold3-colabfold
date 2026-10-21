@@ -13,6 +13,9 @@ Must run under a CUDA-torch venv: `~/venv` is torch+cpu and would silently
 measure CPU. Prints NO_TIMINGS loudly if the patch never fires -- runpy-style
 re-execution discards patches, which cost an entire run on protenix2.
 """
+import os as _os, sys as _sys  # dev/af3_dev_paths.py: vendor trees, venvs and weights
+_sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../..')))
+from af3_dev_paths import dev_path  # noqa: E402
 import os, sys, time, json, random, statistics, warnings
 warnings.filterwarnings('ignore')
 
@@ -26,8 +29,8 @@ L = int(os.environ.get('OF3_L', sys.argv[1] if len(sys.argv) > 1
                        and sys.argv[1].isdigit() else 64))
 REPS = int(os.environ.get('OF3_REPS', sys.argv[2] if len(sys.argv) > 2
                           and sys.argv[2].isdigit() else 2))
-ROOT = '/home/ubuntu/openfold-3'
-CKPT = '/home/ubuntu/of3-p2-155k.pt'
+ROOT = dev_path('~/openfold-3')
+CKPT = dev_path('~/of3-p2-155k.pt')
 sys.path.insert(0, ROOT)
 
 rng = random.Random(L)                      # same seed/alphabet as bench_sweep.py
