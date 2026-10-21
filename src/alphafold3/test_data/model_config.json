@@ -187,6 +187,7 @@
     "bfloat16": "all",
     "final_init": "zeros",
     "flash_attention_implementation": "triton",
+    "glu_kernel": "auto",
     "half_dtype": "bfloat16",
     "model": "alphafold3",
     "pair_attention_chunk_size": [
@@ -285,10 +286,12 @@
         "num_samples": 5,
         "return_trajectory": false,
         "rho": 7.0,
+        "schedule_tail": "",
         "sigma_max": 160.0,
         "sigma_min": 0.0004,
         "step_scale": 1.5,
-        "steps": 200
+        "steps": 200,
+        "stepwise": false
       },
       "eval_batch_dim_shard_size": 5,
       "eval_batch_size": 5,
@@ -314,6 +317,7 @@
     }
   },
   "num_recycles": 10,
+  "recycle_last_only": false,
   "return_confidence_logits": false,
   "return_distogram": false,
   "return_embeddings": false
