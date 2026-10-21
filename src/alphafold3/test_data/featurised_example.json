@@ -19,6 +19,7 @@
     "msa": "871c93669d8a7dd046f8ba6a1ea7b9fc52e1a2e040c8d9bdc4ae73a77f95d3f7",
     "msa_mask": "13a46a8a2c5305d2a07bb9587ad092d97749d2b2a2d10ad5d64474a4f0f4c803",
     "num_alignments": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+    "num_paired_alignments": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
     "polymer_ligand_bonds": "<<None>>",
     "pred_dense_atom_mask": "1e388e40167a4d31291903d74c98544868d0dc574706cdfd259ddd65f56d2993",
     "profile": "6ec7da33d5f9801357ca6c82725416ef59025c7a8810bfd67fed2262845b480b",
