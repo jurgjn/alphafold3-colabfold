@@ -359,7 +359,10 @@ for the conventions that differ between these codebases and why.
 
 ## Installation and Running Your First Prediction
 
-See the [installation documentation](docs/installation.md).
+See the [installation documentation](docs/installation.md). To run in Google
+Colab instead, with every model above, use ColabFold's
+[ColabFold2_preview.ipynb](https://colab.research.google.com/github/sokrypton/ColabFold/blob/main/ColabFold2_preview.ipynb)
+(it installs this package from PyPI).
 
 Once you have installed AlphaFold 3, you can test your setup using e.g. the
 following input JSON file named `fold_input.json`:

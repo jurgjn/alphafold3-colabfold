@@ -1,12 +1,14 @@
-"""Build the Colab end-to-end test notebook FROM the notebook we ship.
+"""Build the Colab end-to-end test notebook FROM the notebook users run.
 
 The test used to be a hand-kept copy of the install cell, which meant it
 drifted the moment the real one changed -- and a test of last week's notebook
-is not a test. This takes cells 2/3/4 of `ColabFold2_preview.ipynb` verbatim
-(install, input, run) and appends one cell that asserts on the result, so the
-thing under test is the thing users get.
+is not a test. This takes the install, input and run cells of
+`ColabFold2_preview.ipynb` verbatim and appends one cell that asserts on the
+result, so the thing under test is the thing users get. That notebook lives in
+the ColabFold repository; it is fetched from its main branch unless a local
+copy (or another URL) is given.
 
-    python dev/bench/results/make_e2e.py
+    python dev/bench/results/make_e2e.py [NOTEBOOK_PATH_OR_URL]
     colab --auth adc exec -f dev/bench/results/e2e.ipynb --timeout 1400
 
 Form fields are overridden through AF3_NB_OVERRIDES, which the install cell
@@ -17,8 +19,12 @@ small and off the MSA server so a failure is ours.
 import json
 import os
 import pathlib
+import sys
+import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
+NOTEBOOK = ('https://raw.githubusercontent.com/sokrypton/ColabFold/main/'
+            'ColabFold2_preview.ipynb')
 OVERRIDES = {
     'model': os.environ.get('E2E_MODEL', 'openbind0'),
     'protein': 'PIAQIHILEGRSDEQKETLIREVSEAISRSLDAPLTSVRVIITEMAKGHFGIGGELASK',
@@ -49,11 +55,17 @@ print('RESULT:', 'PASS' if (cifs and atoms > 100 and ligand_ok) else 'FAIL')
 
 
 def main():
-  nb = json.loads((ROOT / 'ColabFold2_preview.ipynb').read_text())
+  source = sys.argv[1] if len(sys.argv) > 1 else NOTEBOOK
+  if source.startswith(('http://', 'https://')):
+    with urllib.request.urlopen(source) as r:
+      nb = json.loads(r.read().decode('utf-8'))
+  else:
+    nb = json.loads(pathlib.Path(source).read_text())
+  by_id = {c['metadata'].get('id'): c for c in nb['cells']}
   setenv = ('import os\n'
             f'os.environ["AF3_NB_OVERRIDES"] = {json.dumps(json.dumps(OVERRIDES))}\n'
             'print("overrides:", os.environ["AF3_NB_OVERRIDES"])\n')
-  cells = [setenv] + [''.join(nb['cells'][i]['source']) for i in (2, 3, 4)] + [CHECK]
+  cells = [setenv] + [''.join(by_id[i]['source']) for i in ('install', 'input', 'run')] + [CHECK]
   for src in cells:
     assert '\n%%time' not in src, 'a cell magic after #@title aborts under colab-cli'
   out = {'cells': [{'cell_type': 'code', 'metadata': {}, 'source': s.splitlines(keepends=True),
@@ -61,7 +73,7 @@ def main():
          'metadata': nb['metadata'], 'nbformat': 4, 'nbformat_minor': 0}
   dst = ROOT / 'dev/bench/results/e2e.ipynb'
   dst.write_text(json.dumps(out, indent=1) + '\n')
-  print(f'wrote {dst} from the shipped notebook ({len(cells)} cells, '
+  print(f'wrote {dst} from {source} ({len(cells)} cells, '
         f'model={OVERRIDES["model"]})')
 
 
