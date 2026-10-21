@@ -61,6 +61,18 @@ def random_rotation(key):
 # vendor's sampler and ours walk the same trajectory however each generates them.
 TRAJ_INJECT = None
 
+# A guidance hook on the fused sampler (`sample`): None in a plain run. When set,
+# `hook(positions_denoised, sigma, step) -> positions_denoised` is applied to the
+# denoiser's every prediction of the clean structure, inside the traced step --
+# after the first denoising call and, on chai's second-order path, after the
+# second -- with sigma = the step's noise_level_prev and step = its index
+# (0 .. steps-1). Positions are one sample's dense (tokens, atoms, 3); the hook
+# must be jax-traceable. This is the point Restraint-Guided Inference
+# (colabfold.rgi) restrains at; it used to reach it by patching this module's
+# source, which tied it to one release. Read when the model is traced, so set it
+# before the first call (a jit cache keyed without it will not see a change).
+DENOISED_HOOK = None
+
 
 def random_augmentation(
     rng_key: jnp.ndarray,
@@ -695,13 +707,16 @@ def gamma_scale_for(batch, global_config):
 
 
 def make_denoising_body(denoising_step, mask, config, global_config, chai,
-                        gamma_scale=None):
+                        gamma_scale=None, hook=None):
   """The per-step body, shared by the scanned path and a Python-driven one.
 
   Lifted out of `sample` so a live animation runs the SAME step a normal
   fold runs. Reimplementing it would be a second EDM sampler to keep in
   agreement with this one, and the churn, the -0.0 guard and chai's
   non-textbook Heun step are exactly the details that would drift.
+
+  `hook` (see DENOISED_HOOK) is applied to each denoised prediction; the step
+  input then carries the step index as its LAST element.
   """
   def apply_denoising_step(carry, step_noise):
     # noise_level_prev arrives as a scan INPUT, not in the vmapped carry. Both
@@ -715,6 +730,9 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai,
     # traces that work ONCE per step and broadcasts it where it meets the
     # per-sample stream. Every per-sample quantity (key split, augmentation,
     # noise, positions) is untouched.
+    step = None
+    if hook is not None:          # the step index rides last (see `sample`)
+      *step_noise, step = step_noise
     injected = None
     if len(step_noise) == 5:      # TRAJ_INJECT: this step's rot, trans, eps
       noise_level, noise_level_prev, *injected = step_noise
@@ -780,6 +798,8 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai,
       positions_denoised = denoising_step(positions_noisy, t_hat, companion=companion)
     else:
       positions_denoised = denoising_step(positions_noisy, t_hat)
+    if hook is not None:
+      positions_denoised = hook(positions_denoised, noise_level_prev, step)
     if global_config is not None and global_config.model in model_config.REALIGN_SAMPLER:
       # ESMFold2 rigid-aligns the NOISY coords onto the denoised prediction
       # before taking the Euler step. It augments (rotates and translates) the
@@ -799,8 +819,10 @@ def make_denoising_body(denoising_step, mask, config, global_config, chai,
       # were sampled with this, so the deviation is the specification.
       # No step_scale either: chai's is 1.0.
       positions_out = positions_noisy + d_t * grad
-      grad2 = (positions_out - denoising_step(positions_out, noise_level)
-               ) / noise_level
+      denoised2 = denoising_step(positions_out, noise_level)
+      if hook is not None:
+        denoised2 = hook(denoised2, noise_level_prev, step)
+      grad2 = (positions_out - denoised2) / noise_level
       positions_out = jnp.where(
           noise_level > 0,
           positions_out + d_t * (grad2 + grad) / 2.0,
@@ -916,7 +938,7 @@ def sample(
 
   apply_denoising_step = make_denoising_body(
       denoising_step, mask, config, global_config, chai,
-      gamma_scale=gamma_scale_for(batch, global_config))
+      gamma_scale=gamma_scale_for(batch, global_config), hook=DENOISED_HOOK)
 
   num_samples = config.num_samples
   noise_levels = noise_schedule_for(config, chai)
@@ -941,12 +963,15 @@ def sample(
   # remainder==0 -- which is the 3.5s case, not something to design around.)
   # xs = (noise_levels[i], noise_levels[i-1]) for i = 1..steps: the pair the
   # carry used to supply, now unbatched under the vmap above.
+  xs = ((noise_levels[1:], noise_levels[:-1]) if TRAJ_INJECT is None else
+        (noise_levels[1:], noise_levels[:-1], jnp.asarray(TRAJ_INJECT['rot']),
+         jnp.asarray(TRAJ_INJECT['trans']), jnp.asarray(TRAJ_INJECT['eps'])))
+  if DENOISED_HOOK is not None:
+    xs = (*xs, jnp.arange(len(noise_levels) - 1))
   result, (trajectory, _denoised_traj) = hk.scan(
       apply_denoising_step,
       init,
-      (noise_levels[1:], noise_levels[:-1]) if TRAJ_INJECT is None else
-      (noise_levels[1:], noise_levels[:-1], jnp.asarray(TRAJ_INJECT['rot']),
-       jnp.asarray(TRAJ_INJECT['trans']), jnp.asarray(TRAJ_INJECT['eps'])),
+      xs,
       unroll=1,
   )
   positions_out = result[1]

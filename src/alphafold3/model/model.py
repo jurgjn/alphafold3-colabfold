@@ -763,6 +763,8 @@ class Model(hk.Module):
       # num_samples * num_tokens; it is a scan input on both paths now, so the
       # driver has to hand over both.
       carry, noise_level = diffusion_state
+      if diffusion_head.DENOISED_HOOK is not None:
+        raise NotImplementedError('DENOISED_HOOK guides the fused sampler only, not a stepped (live) run')
       body = diffusion_head.make_denoising_body(
           denoising_step, batch.predicted_structure_info.atom_mask,
           sample_config, self.global_config,
