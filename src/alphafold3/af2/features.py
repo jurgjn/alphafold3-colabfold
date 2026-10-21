@@ -271,6 +271,28 @@ def from_af3_batch(batch, num_seq: int = 1, num_templates: int = 1,
   '''
   tok = batch.token_features
   L = num_real_tokens(batch)
+  # The protein-only refusal of `protein_chains`, for callers that arrive with a
+  # batch rather than a fold input (run_alphafold.py, via inference.py). Without
+  # it an RNA, DNA or ligand token is folded as an unknown residue and its atoms
+  # are written at the origin -- a structure with no error anywhere.
+  other = ~np.asarray(tok.is_protein)[:L].astype(bool)
+  if other.any():
+    kinds = [k for k in ('rna', 'dna', 'ligand')
+             if np.asarray(getattr(tok, 'is_' + k))[:L].astype(bool).any()]
+    raise ValueError(
+        f'AlphaFold 2 is protein-only and this input carries {int(other.sum())} '
+        f'non-protein token(s) ({", ".join(kinds) or "non-protein"}). AF2 has no '
+        'representation for these, so folding it would silently answer a '
+        'different question. Use an AF3-family model, or remove them from the '
+        'input explicitly.')
+  # ...and of its modified residues: an atomised residue is several tokens on
+  # one (chain, residue), which AF2 would fold as that many residues.
+  res = np.stack([np.asarray(tok.asym_id)[:L], np.asarray(tok.residue_index)[:L]], -1)
+  if len(np.unique(res, axis=0)) != L:
+    raise ValueError(
+        'AlphaFold 2 is protein-only and this input carries a modified residue '
+        '(it tokenises to one token per atom, which AF2 cannot express). Use an '
+        'AF3-family model, or remove the modification from the input explicitly.')
 
   inputs = blank_features(L, N=num_seq, T=num_templates)
   inputs['residue_index'] = np.asarray(tok.residue_index)[:L].astype(int)
