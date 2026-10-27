@@ -704,3 +704,55 @@ def helixfold3_written_atoms(struc: structure.Structure) -> structure.Structure:
     keep[in_chain] &= ~(((struc.atom_name[in_chain] == 'OXT') & (res != last))
                         | ((struc.atom_name[in_chain] == 'OP3') & (res != first)))
   return struc if keep.all() else struc.filter(keep)
+
+
+def mol1_rebuild_cterminal_oxygens(struc: structure.Structure) -> structure.Structure:
+  """Mol-1's written C-termini (mol/runner/inference.py fix_cterminal_carboxyl_oxygens).
+
+  For each chain's LAST residue that has C, CA, O and OXT, the oxygen nearer C is
+  kept as O and OXT is placed as its reflection across the C->CA axis: the O/OXT
+  permutation symmetry can leave one of the two under-constrained. Mol-1 applies
+  it after its confidences, to the coordinates it writes, and so do we.
+  """
+  names = np.asarray(struc.atom_name)
+  chains = np.asarray(struc.chain_id)
+  res = np.asarray(struc.res_id)
+  coords = np.array(struc.coords, dtype=np.float32)
+  changed = False
+  for chain in dict.fromkeys(chains):
+    in_chain = np.flatnonzero(chains == chain)
+    last = in_chain[res[in_chain] == res[in_chain[-1]]]   # the chain's last residue, as Mol-1 finds it
+    pos = {n: i for i, n in zip(last, names[last])}
+    if not {'C', 'CA', 'O', 'OXT'} <= set(pos):
+      continue
+    a, ca, o, oxt = (coords[pos[n]] for n in ('C', 'CA', 'O', 'OXT'))
+    b = o if np.linalg.norm(o - a) <= np.linalg.norm(oxt - a) else oxt
+    u = (ca - a) / max(float(np.linalg.norm(ca - a)), 1e-8)
+    v = b - a
+    coords[pos['O']] = b
+    coords[pos['OXT']] = a + 2.0 * float(v @ u) * u - v
+    changed = True
+  return struc.copy_and_update_coords(coords) if changed else struc
+
+
+def protenix_ptm_iptm(tm_global: np.ndarray, has_frame: np.ndarray,
+                      asym_id: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+  """The Protenix family's pTM and ipTM (protenix/model/sample_confidence.py).
+
+  `tm_global` is the per-pair TM term, [samples, N, N] over the real tokens, with
+  the TM normalisation over all N -- what AF3's tmscore_adjusted_pae_global holds.
+  pTM averages each row over ALL tokens, ipTM over the tokens on other chains,
+  and both take the maximum over the rows of tokens that have a frame. With no
+  framed token both are 0; with one chain ipTM is 0 (an empty interface sum over
+  eps), so a monomer ranks by 0.2 * pTM.
+  """
+  has_frame = np.asarray(has_frame).astype(bool)
+  tm = np.asarray(tm_global, np.float32)
+  if not has_frame.any():
+    zero = np.zeros(tm.shape[:-2], np.float32)
+    return zero, zero
+  asym = np.asarray(asym_id)
+  diff = (asym[None, :] != asym[:, None]).astype(np.float32)
+  ptm = tm.mean(-1)[..., has_frame].max(-1)
+  iptm = ((tm * diff).sum(-1) / (1e-8 + diff.sum(-1)))[..., has_frame].max(-1)
+  return ptm, iptm

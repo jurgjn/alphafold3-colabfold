@@ -1572,6 +1572,14 @@ class Model(hk.Module):
     if hf3:
       # no interface pair with weight (a monomer, or only frameless partners): 0, not NaN
       iptm = np.nan_to_num(iptm, nan=0.0)
+    px = model_name in model_config.PROTENIX_FAMILY
+    if px:
+      # the Protenix family's own pTM / ipTM (sample_confidence.py): rows averaged over all
+      # tokens (pTM) or the other chains' (ipTM), the max over framed rows; a monomer's ipTM is 0
+      ptm, iptm = confidences.protenix_ptm_iptm(
+          np.asarray(result['tmscore_adjusted_pae_global'])[:, :num_tokens, :num_tokens],
+          np.asarray(batch.frames.mask)[:num_tokens],  # pyrefly: ignore[missing-attribute]
+          np.asarray(asym_ids))
     ptm_iptm_average = 0.8 * iptm + 0.2 * ptm
 
     if len(np.unique(asym_ids[:num_tokens])) > 1:
@@ -1651,8 +1659,9 @@ class Model(hk.Module):
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(len(pred_structures), 32)
     ) as executor:
+      # helixfold3 and the protenix family flag a clash the same way: polymer chain pairs only
       has_clash = list(executor.map(
-          confidences.has_clash_helixfold3 if hf3 else confidences.has_clash, pred_structures))
+          confidences.has_clash_helixfold3 if hf3 or px else confidences.has_clash, pred_structures))
       fraction_disordered = list(
           executor.map(confidences.fraction_disordered, pred_structures)
       )
@@ -1661,6 +1670,8 @@ class Model(hk.Module):
       ranking_score = (
           # helixfold3's ranking_confidence (helixfold/model/utils.py)
           0.8 * iptm[idx] + 0.2 * ptm[idx] - 1.0 * has_clash[idx] if hf3 else
+          # the protenix family's: its disorder term is hard-coded 0
+          0.8 * iptm[idx] + 0.2 * ptm[idx] - 100.0 * has_clash[idx] if px else
           confidences.get_ranking_score(
               ptm=ptm[idx],
               iptm=iptm[idx],
@@ -1669,6 +1680,8 @@ class Model(hk.Module):
           ))
       if hf3:
         pred_structure = confidences.helixfold3_written_atoms(pred_structure)
+      if model_name == 'mol1':
+        pred_structure = confidences.mol1_rebuild_cterminal_oxygens(pred_structure)
       yield InferenceResult(
           predicted_structure=pred_structure,
           numerical_data={

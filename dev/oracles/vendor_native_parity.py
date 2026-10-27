@@ -104,6 +104,10 @@ VENDORS = {
     # ~/venv_helixfold3 (python 3.10, paddlepaddle-gpu 3.1.0 cu126 + its
     # requirements.txt); the runner puts the app on its own path.
     'helixfold3': (_H + '/venv_helixfold3/bin/python', None, 'helixfold3_upstream_runner.py'),
+    # Mol-1 @bfc01fa (~/vendor_src/Mol-1, a Protenix bd54a05 fork) installed editable into
+    # ~/venv_mol1 (python 3.12, torch 2.12 cu130, its requirements.txt pins minus the optional
+    # opt_core / cuequivariance kernels); reference data in ~/mol1_data, checkpoint ~/mol1_weights.
+    'mol1': (_H + '/venv_mol1/bin/python', None, 'mol1_upstream_runner.py'),
 }
 
 
