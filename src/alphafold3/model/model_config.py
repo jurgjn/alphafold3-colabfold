@@ -43,6 +43,10 @@ MODELS = (
     'opendde',
     'boltz2',
     'protenix2',
+    # Molence Bio's Mol-1: a Protenix-v2 fork (upstream bd54a05) at c_z 448,
+    # with 8 leading "PairMixer" blocks (no triangle attention) and a trunk run
+    # at pair width 320 between bias-free adapters. See MOL1_SETTINGS.
+    'mol1',
     'rosettafold3',
     'chai1',
     # ESMFold2: an ESM-C-conditioned all-atom diffusion predictor. Rides the
@@ -307,13 +311,17 @@ TEMPLATE_UNK_BACKBONE = ('openfold3', 'openbind0')
 # variants were being ported, each time surfacing only as a shape error or an
 # uncovered-parameter count, never as anything that named the cause.
 #
-# Deliberately TWO members. This fork carried six protenix model types
-# (protenix05, protenix1_20250630, protenix_mini, protenix_tiny alongside these);
-# they were removed on 2026-09-08 to stop spreading parity work across variants
-# that differ only in training run or size. Everything below is still written as
-# a FAMILY rather than a pair, because that is what made adding a variant a
-# one-liner, and re-adding one should stay that way.
-PROTENIX_FAMILY = ('protenix1', 'protenix2')
+# This fork carried six protenix model types (protenix05, protenix1_20250630,
+# protenix_mini, protenix_tiny alongside v1 and v2); the four were removed on
+# 2026-09-08 to stop spreading parity work across variants that differ only in
+# training run or size. Everything below is still written as a FAMILY, because
+# that is what made adding a variant a one-liner.
+#
+# Mol-1 (Molence Bio) joins as a fork of Protenix bd54a05, i.e. v2.0.0's model
+# code: every v2 forward branch is its own. What it adds -- the PairMixer stage
+# and the narrower trunk -- is configuration (Evoformer.pairmixer,
+# trunk_pair_channel), not a family branch.
+PROTENIX_FAMILY = ('protenix1', 'protenix2', 'mol1')
 
 
 # Models whose forward graph follows OpenFold3's conventions rather than stock

@@ -271,6 +271,36 @@ def _widen_helixfold3(cfg):
   _apply_settings(cfg, HELIXFOLD3_SETTINGS, 'helixfold3')
 
 
+# Mol-1 (Molence Bio, 577 M): Protenix-v2's model code at c_z 448 and c_m 192,
+# with its 48-block trunk split in two (mol/model/modules/pairformer.py
+# PairformerStack): blocks 0-7 are "PairMixer" blocks -- pairformer blocks with no
+# triangle attention -- at 448, then 40 ordinary pairformer blocks at 320 between
+# two bias-free width adapters (448->320, 320->448). Everything outside that stack
+# runs at 448. hidden_scale_up holds throughout: each triangle multiplication's
+# hidden width is its own stack's c_z, which the AF3 graph does by default.
+# Triangle-attention heads are c_z // 32 per stack: 14 at 448 (MSA module pair
+# stack, confidence pairformer), 10 in the 320 trunk. Read off the checkpoint by
+# converters/mol1.py, which refuses a mismatch.
+MOL1_SETTINGS = (
+    ('evoformer.pair_channel', 448),
+    ('evoformer.msa_channel', 192),
+    ('evoformer.trunk_pair_channel', 320),
+    ('evoformer.pairmixer.num_layer', 8),
+    ('evoformer.pairformer.num_layer', 40),
+    ('evoformer.pairformer.pair_attention.num_head', 10),
+    ('evoformer.msa_stack.pair_attention.num_head', 14),
+    ('evoformer.msa_stack.msa_attention.num_head', 8),
+    ('evoformer.msa_stack.msa_attention.value_dim', 8),
+    ('evoformer.template.template_stack.pair_attention.num_head', 2),
+    ('heads.confidence.pairformer.pair_attention.num_head', 14),
+    ('heads.diffusion.conditioning.pair_channel', 448),
+)
+
+
+def _widen_mol1(cfg):
+  _apply_settings(cfg, MOL1_SETTINGS, 'mol1')
+
+
 def _widen_protenix2(cfg):
   '''set cfg in place to Protenix-v2's c_z=256 trunk widening; raise on a missing path.'''
   for dotted, value in PROTENIX2_SETTINGS:
@@ -389,7 +419,7 @@ TEMPLATE_POLICIES = {
     'boltz2': dict(altloc='first', modified='unk_n', realign='whole_chain'),
     # protenix's template featuriser (OpenDDE copies it): prefilter, kalign to the whole SEQRES, a modified residue UNK
     **{m: dict(modified='unk_n', realign='whole_chain', prefilter=True, hit_letter='X')
-       for m in ('protenix1', 'protenix2', 'opendde')},
+       for m in ('protenix1', 'protenix2', 'mol1', 'opendde')},
     # HelixFold3 runs AlphaFold 2's template pipeline (TemplateHitFeaturizer): the same prefilter
     # (_assess_hit: a near-duplicate of the query is dropped -- 5K9P on itself never reaches it),
     # the hit's own alignment kept (AF2 realigns only on a sequence mismatch), a modified residue read as UNK
@@ -436,7 +466,7 @@ _SAMPLER_CONSTANTS = {
     # protenix and OpenDDE: AF3's constants and grid, but InferenceNoiseScheduler
     # overwrites the last sigma (0.0064) with 0, so the final step lands on the
     # denoised structure (x = den - 0.5 (x - den)) instead of a quarter of the way.
-    **{m: dict(schedule_tail='replace') for m in ('protenix1', 'protenix2', 'opendde')},
+    **{m: dict(schedule_tail='replace') for m in ('protenix1', 'protenix2', 'mol1', 'opendde')},
     # IntelliFold's native stack appends a 0 to AF3's 201 points: 201 steps.
     'intellifold2': dict(schedule_tail='extend'),
     # RF3's inference engine samples num_steps=50 (configs/inference_engine/
@@ -567,6 +597,7 @@ _WIDENERS = {
     'opendde': _widen_opendde,
     'boltz2': _widen_boltz2,
     'protenix2': _widen_protenix2,
+    'mol1': _widen_mol1,
     'protenix1': _widen_protenix1,
     'helixfold3': _widen_helixfold3,
     'rosettafold3': _widen_rosettafold3,
@@ -785,9 +816,12 @@ _FEATURISE = {
                # tokenising (remove_leaving_atoms), an unflagged OXT stays (featurise_input ccd_leaving_atoms)
                ccd_leaving_atoms=not os.environ.get('AF3_NO_DECLARED_BONDS'),
                drop_inner_terminal_atoms='protenix',
-               # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width
+               # replay native's MC dropout and per-pass MSA subsets from the seed; the value is the pair width.
+               # Mol-1 never applies MC dropout at inference (mc_dropout_apply_rate 0.0, configs inference.py),
+               # though it still makes the draw
                **({} if os.environ.get('AF3_NO_PX_NATIVE_RNG')
-                  else {'native_rng': {'protenix1': 128, 'protenix2': 256}[m]}))
+                  else {'native_rng': {'protenix1': 128, 'protenix2': 256, 'mol1': 448}[m],
+                        **({'native_rng_mc_rate': 0.0} if m == 'mol1' else {})}))
        for m in model_config.PROTENIX_FAMILY},
     # EXPERIMENT (see the if2 tail investigation): align the atom key window's
     # edge to the atom count rounded up to a whole query block, which is what
@@ -1012,7 +1046,7 @@ for _m in ('esmfold2_lm600m', 'esmfold2_lm300m'):
 # chai-1 too builds an unknown amino acid from the CCD UNK (6 atoms per X on unk_residues, ours 4), as do protenix,
 # opendde and rf3 (their natives' UNK carry CB and CG); boltz's const.ref_atoms["UNK"] is N CA C O CB
 if not os.environ.get('AF3_NO_CCD_UNK'):
-  for _m in ('chai1', 'protenix1', 'protenix2', 'opendde', 'rosettafold3'):
+  for _m in ('chai1', 'protenix1', 'protenix2', 'mol1', 'opendde', 'rosettafold3'):
     _FEATURISE.setdefault(_m, {})['ccd_unk'] = True
   # intellifold2 too: it forks boltz's featuriser, so its UNK is the same N CA C O CB
   # (stock-IntelliFold comparison, unknown case: CB the one atom ours lacked)
@@ -1028,7 +1062,7 @@ for _m, _policy in TEMPLATE_POLICIES.items():
   _FEATURISE.setdefault(_m, {}).setdefault('templates', _policy)
 
 if not os.environ.get('AF3_NO_MASK_PADDED_ATOMS'):
-  for _m in (('boltz2', 'chai1', 'intellifold2', 'openbind0', 'opendde', 'openfold3', 'protenix1', 'protenix2',
+  for _m in (('boltz2', 'chai1', 'intellifold2', 'mol1', 'openbind0', 'opendde', 'openfold3', 'protenix1', 'protenix2',
               'rosettafold3') + tuple(model_config.ESMFOLD2_FAMILY)):
     _FEATURISE.setdefault(_m, {})['mask_padded_atoms'] = True
 
@@ -1045,6 +1079,7 @@ _WEIGHTS_REPO = 'sokrypton/af3-any-model'
 # folder. openbind0 rides with openfold3 because it IS an OpenFold3 release.
 WEIGHTS_FOLDERS = {
     **{m: 'protenix' for m in model_config.PROTENIX_FAMILY},
+    'mol1': 'mol1',
     **{m: 'esmfold2' for m in model_config.ESMFOLD2_FAMILY},
     'openfold3': 'openfold3',
     'openbind0': 'openfold3',
@@ -1062,6 +1097,7 @@ _TRUNK_PASSES = {
     'boltz2': 4,         # boltz main.py --recycling_steps 3; range(recycling_steps + 1)
     'protenix1': 10,     # runner --cycle 10 (and use_default_params); range(N_cycle)
     'protenix2': 10,
+    'mol1': 20,          # mol pred --cycle 20 (batch_inference.py; configs base.py N_cycle 20)
     'opendde': 10,       # config/model_base.py N_cycle 10
     'rosettafold3': 10,  # inference_engine/rf3.yaml n_recycles 10; range(n_recycles)
     'chai1': 3,          # chai1.py num_trunk_recycles 3; range(num_trunk_recycles)
@@ -1340,6 +1376,9 @@ MODEL_SPECS = {
                         weights_source='https://github.com/jwohlwend/boltz'),
     'protenix2': ModelSpec('protenix2', weights_licence='the Apache License, Version 2.0',
                            weights_source='https://github.com/bytedance/Protenix'),
+    # The repository is Apache-2.0; the weights carry no separate statement.
+    'mol1': ModelSpec('mol1', weights_licence='the Apache License, Version 2.0',
+                      weights_source='https://github.com/molence/Mol-1'),
     'rosettafold3': ModelSpec('rosettafold3',
                               weights_licence='the BSD 3-Clause License',
                               weights_source='https://github.com/RosettaCommons/foundry'),
@@ -1376,6 +1415,7 @@ ALIASES = {
     'of3': 'openfold3',
     'if2': 'intellifold2', 'intellifold': 'intellifold2',
     'protenix': 'protenix2',
+    'mol-1': 'mol1', 'mol': 'mol1',
     'rf3': 'rosettafold3',
     'chai': 'chai1',
     'bioemu': 'bioemu2',

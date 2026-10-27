@@ -65,6 +65,14 @@ one is a `sources.py` entry, a converter alias and a `MODELS` line.
 |---|---|---|
 | `protenix2` | [Protenix-v2](https://github.com/bytedance/Protenix) (ByteDance) | Apache 2.0 |
 | `protenix1` | Protenix-v1 | Apache 2.0 |
+| `mol1` | [Mol-1](https://github.com/molence/Mol-1) (Molence Bio), a Protenix-v2 fork | Apache 2.0 |
+
+Mol-1 runs Protenix-v2's model code at a wider pair representation (c_z 448),
+with its 48-block trunk split in two: 8 "PairMixer" blocks (no triangle
+attention) at 448, then 40 pairformer blocks at 320 between two bias-free width
+adapters. Its own converter (`converters/mol1.py`) maps that split; everything
+else reuses the Protenix mappers. It recycles 20 times by default, against
+Protenix's 10.
 
 ### Other AF3-architecture models
 

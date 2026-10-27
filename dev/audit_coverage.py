@@ -166,6 +166,8 @@ _LOADERS = {
            ('protenix2', 'protenix-v2.pt'),
            ('protenix1', 'protenix_base_default_v1.0.0.pt'),
        )},
+    # Mol-1: a Protenix checkpoint, converted by its own mapper (split trunk)
+    'mol1': ('mol1', 'load_protenix_checkpoint', dev_path('~/mol1_weights/mol-1-base.pt')),
     'openfold3': ('openfold3', 'load_of3_checkpoint',
                   dev_path('~/of3-p2-155k.pt')),
     'openbind0': ('openfold3', 'load_of3_checkpoint',
@@ -200,6 +202,7 @@ _LOADERS = {
 _MAPPERS = {
     **{m: 'map_protenix2_to_af3' for m in (
         'protenix2', 'protenix1')},
+    'mol1': 'map_mol1_to_af3',
     'openfold3': 'map_openfold3_to_af3',
     'openbind0': 'map_openfold3_to_af3',
     'rosettafold3': 'map_rosettafold3_to_af3',

@@ -31,6 +31,8 @@ _ENTRY_POINTS = {
     'chai1': ('chai1', 'convert_chai1_weights'),
     'bioemu2': ('bioemu2', 'convert_bioemu2_weights'),
     'helixfold3': ('helixfold3', 'convert_helixfold3_weights'),
+    # Mol-1: protenix2's mappers outside its split trunk (converters/mol1.py)
+    'mol1': ('mol1', 'convert_mol1_weights'),
     # The two protein language models. Not AF3 models -- separate graphs with
     # their own loader -- but they convert the same way and were previously
     # reachable only by calling the function by hand.

@@ -151,14 +151,17 @@ def _randbelow(r, n):
     pass
 
 
-def mc_dropout_decision(seed, draws):
-  """native's once-per-run MC dropout draw, after the leaving-group samples (leaving_group_draws)"""
+def mc_dropout_decision(seed, draws, apply_rate=MC_APPLY_RATE):
+  """native's once-per-run MC dropout draw, after the leaving-group samples (leaving_group_draws).
+
+  `apply_rate` is the model's mc_dropout_apply_rate: protenix's 0.4, Mol-1's 0.0. The draw
+  is made either way -- native calls random.random() regardless -- so the stream is unchanged."""
   r = random.Random(seed)
   for n, b in draws:
     if b <= n:
       for i in range(b):
         _randbelow(r, n - i)
-  return r.random() < MC_APPLY_RATE
+  return r.random() < apply_rate
 
 
 def msa_sample_sizes(seed, n_msa, passes):
@@ -169,9 +172,10 @@ def msa_sample_sizes(seed, n_msa, passes):
   return [r % n_msa + 1 for r in raw[2:]]
 
 
-def replay(seed, *, leaving_draws, n_msa, n_tokens, pair_channel, passes, sms, threads_per_sm):
+def replay(seed, *, leaving_draws, n_msa, n_tokens, pair_channel, passes, sms, threads_per_sm,
+           mc_apply_rate=MC_APPLY_RATE):
   """per-pass draws: mc_dropout, MSA row subsets (as index lists) and the dropout philox offsets"""
-  mc = mc_dropout_decision(seed, leaving_draws)
+  mc = mc_dropout_decision(seed, leaving_draws, mc_apply_rate)
   sizes = msa_sample_sizes(seed, n_msa, passes)
   nelem = n_tokens * n_tokens * pair_channel
   offset, rows, drop_offsets = 0, [], []

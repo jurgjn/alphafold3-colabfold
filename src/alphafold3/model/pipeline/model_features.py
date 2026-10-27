@@ -1798,8 +1798,10 @@ def _crop_msa_padding(batch):
       batch[key] = np.asarray(batch[key])[order]
 
 
-def _native_rng(batch, seed, pair_channel, fold_input):
-  """Protenix's MC dropout and per-pass MSA subsets as native draws them for this seed -- see protenix_rng."""
+def _native_rng(batch, seed, pair_channel, fold_input, mc_apply_rate=None):
+  """Protenix's MC dropout and per-pass MSA subsets as native draws them for this seed -- see protenix_rng.
+
+  `mc_apply_rate`: the model's mc_dropout_apply_rate when it is not protenix's (Mol-1: 0.0)."""
   from alphafold3.common import folding_input
   from alphafold3.constants import chemical_components
   from alphafold3.model.pipeline import protenix_rng
@@ -1814,7 +1816,8 @@ def _native_rng(batch, seed, pair_channel, fold_input):
   sms, tps = _device_grid_params()
   mc, rows, offsets = protenix_rng.replay(
       seed, leaving_draws=draws, n_msa=n_msa, n_tokens=n_tok, pair_channel=pair_channel,
-      passes=NATIVE_RNG_PASSES, sms=sms, threads_per_sm=tps)
+      passes=NATIVE_RNG_PASSES, sms=sms, threads_per_sm=tps,
+      **({} if mc_apply_rate is None else {'mc_apply_rate': mc_apply_rate}))
   keep = np.zeros((NATIVE_RNG_PASSES, np.asarray(batch['msa_mask']).shape[0]), bool)
   for k, r in enumerate(rows):
     keep[k, r] = True
@@ -2320,7 +2323,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   if knobs.get('full_msa') or knobs.get('native_rng'):
     _crop_msa_padding(batch)
   if knobs.get('native_rng') and seed is not None and fold_input is not None:
-    _native_rng(batch, seed, knobs['native_rng'], fold_input)
+    _native_rng(batch, seed, knobs['native_rng'], fold_input, knobs.get('native_rng_mc_rate'))
   if knobs.get('templates') and fold_input is not None:
     # template_policy's one batch-level rule (modified='unk_restype'), before the gap fill reads the atom masks
     from alphafold3.model.pipeline import template_policy

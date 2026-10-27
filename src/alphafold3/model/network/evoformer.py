@@ -382,6 +382,17 @@ class Evoformer(hk.Module):
     lm_encoder: modules.PairFormerIteration.Config = base_config.autocreate(
         num_layer=0)
 
+    # Mol-1's "PairMixer": pairformer blocks WITHOUT triangle attention, run at
+    # the full pair width just before the trunk, inside the recycle loop. Count
+    # only -- the blocks take config.pairformer, as the coda does. 0 elsewhere.
+    pairmixer: modules.PairFormerIteration.Config = base_config.autocreate(
+        num_layer=0)
+    # The trunk's own pair width when it differs from pair_channel (Mol-1: 320
+    # against 448). Bias-free projections take the pair into the trunk and back
+    # out to pair_channel, so recycling, the MSA stack and the heads stay at
+    # pair_channel. None: the trunk runs at pair_channel, as every other model.
+    trunk_pair_channel: int | None = None
+
   def __init__(
       self,
       config: Config,
@@ -1113,12 +1124,37 @@ class Evoformer(hk.Module):
                                 pairformer_fn,
                                 self.config.pairformer.block_remat)
 
+      if self.config.pairmixer.num_layer:
+        # Mol-1: blocks 0..7 of its pairformer_stack, at full pair width
+        def pairmixer_fn(x):
+          pair_act, single_act = x
+          return modules.PairFormerIteration(
+              self.config.pairformer, self.global_config, with_single=True,
+              with_pair_attention=False, name='trunk_pairmixer',
+          )(act=pair_act, single_act=single_act, pair_mask=pair_mask,
+            seq_mask=batch.token_features.mask.astype(dtype),
+            use_dropout=use_dropout)
+
+        pair_activations, single_activations = _stack(
+            self.config.pairmixer.num_layer, pairmixer_fn,
+            self.config.pairformer.block_remat)(
+                (pair_activations, single_activations))
+
+      trunk_width = self.config.trunk_pair_channel
+      if trunk_width is not None and trunk_width != self.config.pair_channel:
+        # Mol-1's PairformerWidthAdapter: a bias-free linear, no layer norm
+        pair_activations = hm.Linear(trunk_width, name='trunk_pair_in')(
+            pair_activations)
+
       _esm_tap('trunk_in_pair', pair_activations)
       _esm_tap('trunk_in_single', single_activations)
       pair_activations, single_activations = pairformer_stack(
           (pair_activations, single_activations)
       )
       _esm_tap('trunk_out_pair', pair_activations)
+      if trunk_width is not None and trunk_width != self.config.pair_channel:
+        pair_activations = hm.Linear(
+            self.config.pair_channel, name='trunk_pair_out')(pair_activations)
 
       pair_pre_coda = pair_activations
       _esm_tap('z_pre_coda', pair_activations)
