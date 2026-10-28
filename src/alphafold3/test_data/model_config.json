@@ -132,6 +132,33 @@
         "use_glu_kernel": true
       }
     },
+    "pairmixer": {
+      "num_layer": 0,
+      "pair_attention": {
+        "dual_output": false,
+        "num_head": 4,
+        "qkv_dim": null
+      },
+      "pair_transition": {
+        "num_intermediate_factor": 4,
+        "use_glu_kernel": true
+      },
+      "shard_transition_blocks": true,
+      "single_attention": null,
+      "single_transition": null,
+      "triangle_multiplication_incoming": {
+        "channel_block": 32,
+        "equation": "kjc,kic->ijc",
+        "hidden_dim": null,
+        "use_glu_kernel": true
+      },
+      "triangle_multiplication_outgoing": {
+        "channel_block": 32,
+        "equation": "ikc,jkc->ijc",
+        "hidden_dim": null,
+        "use_glu_kernel": true
+      }
+    },
     "per_atom_conditioning": {
       "atom_transformer": {
         "attention": {
@@ -181,7 +208,8 @@
           "use_glu_kernel": true
         }
       }
-    }
+    },
+    "trunk_pair_channel": null
   },
   "global_config": {
     "bfloat16": "all",
