@@ -11,8 +11,8 @@ So config-dependence is handled by generating one table per (model, config
 signature), not by conditionals in Python.
 
 Usage:
-    python -m tools.module_trace.gen_param_shapes            # every available model
-    python -m tools.module_trace.gen_param_shapes rosettafold3 alphafold3
+    PYTHONPATH=src:. python -m dev.module_trace.gen_param_shapes            # every available model
+    PYTHONPATH=src:. python -m dev.module_trace.gen_param_shapes rosettafold3 alphafold3
 
 Writes colabdesign2/af3/param_shapes/<model>.json -- inside the package, so a pip
 install carries them (tools/ does not ship). models.build prefers these,

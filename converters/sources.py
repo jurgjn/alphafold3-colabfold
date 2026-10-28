@@ -94,6 +94,11 @@ SOURCES = {
     'protenix2': dict(
         url='https://huggingface.co/TMF001/protenix-v2-weights/resolve/main/protenix-v2.pt',
         file='protenix-v2.pt'),
+    # Mol-1 (Molence Bio, Apache-2.0): its release bucket, the URL `mol pred` itself downloads
+    # (mol/data/sources.py checkpoint_url).
+    'mol1': dict(
+        url='https://mol-1-release.oss-cn-shanghai.aliyuncs.com/checkpoint/mol-1-base.pt',
+        file='mol-1-base.pt'),
     # RoseTTAFold3 (RosettaCommons foundry). We use the EMA shadow weights.
     'rosettafold3': dict(
         url='https://files.ipd.uw.edu/pub/rf3/rf3_foundry_01_24_latest_remapped.ckpt',

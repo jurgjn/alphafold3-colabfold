@@ -627,7 +627,7 @@ _WEIGHTS_PRECISION = flags.DEFINE_enum(
     ' load, which is what makes them practical on a metered or slow connection'
     ' such as Colab. Measured cost on rosettafold3: within sampling noise on'
     ' protein, ligand, RNA and a D/L peptide, with stereochemistry unchanged --'
-    ' see docs/ported_models.md; every published int8 blob is gated by'
+    ' see README.md (the weight-size table); every published int8 blob is gated by'
     ' dev/int8_roundtrip_check.py at the 1/256 int8 floor. fp32 is published too'
     ' and is the exact bytes the converters wrote, if you want them. Ignored'
     ' when --model_dir points at weights you already have.')

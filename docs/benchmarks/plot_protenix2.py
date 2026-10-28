@@ -8,7 +8,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 S = sys.argv[1]
-HERE = dev_path('~/alphafold3/docs/benchmarks')
+HERE = os.path.dirname(os.path.abspath(__file__))   # writes beside itself
 
 ours = {}
 for l in open(f'{S}/sweep_a10.tsv'):

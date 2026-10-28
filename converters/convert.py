@@ -51,7 +51,20 @@ def fetch_checkpoint(model: str, out_dir: str) -> str:
   if src is None:
     raise SystemExit(
         f'{model!r} has no registered download; pass --checkpoint explicitly.')
+  if 'local' in src:
+    # shipped inside another vendor's assets (esm2 comes with chai-1's), not downloadable alone
+    raise SystemExit(
+        f'{model!r} is not downloaded on its own: it ships as {src["local"]!r} inside another '
+        "model's assets. Pass --checkpoint to that file.")
   os.makedirs(out_dir, exist_ok=True)
+  if 'repo' in src:
+    # a Hugging Face repository: its snapshot directory is what these converters take
+    try:
+      from huggingface_hub import snapshot_download
+    except ImportError as e:
+      raise SystemExit(f'{model!r} downloads from Hugging Face ({src["repo"]}); '
+                       'install huggingface_hub, or pass --checkpoint.') from e
+    return snapshot_download(repo_id=src['repo'], local_dir=out_dir)
   if 'files' in src:
     for url, rel in src['files']:
       dst = os.path.join(out_dir, rel)

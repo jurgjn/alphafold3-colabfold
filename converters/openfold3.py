@@ -995,7 +995,7 @@ def _convert_of3(checkpoint, output_dir, model_name, use_ema=True):
 def convert_openfold3_weights(checkpoint, output_dir, use_ema=True):
     """Convert an OpenFold3 preview-2 checkpoint to a loadable AF3-haiku blob.
 
-    The mapping is not mechanical -- see OF3_AF3_PORTING_NOTES.md for the
+    The mapping is not mechanical -- see docs/of3_af3_porting_notes.md for the
     residue-alphabet permutation, the i/j transposes in the confidence head and
     template embedder, and the two feature columns that must be kept.
     """

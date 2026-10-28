@@ -1,4 +1,4 @@
-"""Stock BioEmu2's steering potentials, for bioemu2_steering_parity.py.
+"""Stock BioEmu2's steering potentials, dumped for a by-hand comparison (no harness drives this runner).
 
     python bioemu2_steering_runner.py CASE.json COORDS.npy OUT.npz
 

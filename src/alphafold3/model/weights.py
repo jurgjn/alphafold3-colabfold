@@ -198,14 +198,16 @@ def _download_parallel(url: str, dst: str, log=print) -> None:
   _download(url, dst, log=log)
 
 
-def ensure_af2_params(model_dir: str, download: bool = True, log=print) -> str:
+def ensure_af2_params(model_dir: str | None, download: bool = True, log=print) -> str:
   """-> a directory holding `params_model_*.npz`, downloading them if needed.
 
   AF2 reads its parameters by filename, so this only has to guarantee the files
   exist; nothing is converted. `model_dir` may already be a user's own params
-  directory, in which case it is left alone.
+  directory, in which case it is left alone. None (no --model_dir) is the shared
+  weights cache, one directory for both AF2 models: DeepMind's tarball holds
+  every parameter set.
   """
-  model_dir = os.path.expanduser(model_dir)
+  model_dir = os.path.expanduser(model_dir) if model_dir else default_dir('af2')
   if glob.glob(os.path.join(model_dir, 'params_model_*.npz')):
     return model_dir
   # AF2's own layout puts them in a `params/` subdirectory; accept either.

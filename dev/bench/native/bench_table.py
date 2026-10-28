@@ -1,6 +1,6 @@
 """Read the sweep TSVs and print the native-vs-jax table.
 
-  python tools/benchmarks/bench_table.py ours.tsv [native.tsv]
+  python dev/bench/native/bench_table.py ours.tsv [native.tsv]
 
 Reads the shape bench_sweep.py emits (model, length, num_msa, tokens, compile,
 steady, all) and the free-text lines run_native_sweep.sh collects. OOM and

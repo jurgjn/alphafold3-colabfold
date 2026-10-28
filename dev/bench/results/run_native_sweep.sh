@@ -21,7 +21,7 @@ OUT=${1:-/tmp/native_sweep.tsv}
 # session scratchpad and the path was never updated when they were moved into
 # the repo, so every cell of the 2026-09-17 run died with "can't open file".
 # Same root cause as bench_sweep.py's calls into deleted helpers.
-BENCH=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+BENCH=$REPO/dev/bench/native   # the bench_*.py harnesses (this script lives in results/)
 # Generated INPUTS still live outside the repo (rf3's PDBs, boltz's processed
 # dirs); DATA overrides where to find them.
 S=${DATA:?set DATA to the directory holding the sweep inputs (nb/, nr/)}
