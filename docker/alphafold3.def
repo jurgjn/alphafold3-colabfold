@@ -1,0 +1,167 @@
+# Copyright 2024 DeepMind Technologies Limited
+#
+# AlphaFold 3 source code is licensed under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with the
+# License. You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# To request access to the AlphaFold 3 model parameters, follow the process set
+# out at https://github.com/google-deepmind/alphafold3. You may only use these
+# if received directly from Google. Use is subject to terms of use available at
+# https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
+#
+# Singularity/Apptainer equivalent of docker/Dockerfile. Build from the
+# repository root (paths in %files are relative to the working directory):
+#
+#   apptainer build alphafold3.sif docker/alphafold3.def
+#
+# Optional extras for `uv sync` (the Dockerfile's UV_EXTRAS build arg) can be
+# passed with --build-arg (requires Apptainer >= 1.2 / SingularityCE >= 4.0):
+#
+#   apptainer build --build-arg UV_EXTRAS="--extra foo" alphafold3.sif docker/alphafold3.def
+#
+# Run with:
+#
+#   apptainer run --nv alphafold3.sif --json_path=... --model_dir=... ...
+
+Bootstrap: docker
+From: nvidia/cuda:12.6.3-base-ubuntu24.04
+
+%arguments
+    UV_VERSION=0.9.24
+    UV_EXTRAS=
+
+%files
+    # The glob skips top-level dot entries (.git, .github, .gitignore and any
+    # local state), as Apptainer ignores dockerignore. Each
+    # match is copied separately; the trailing slash makes /app/alphafold a
+    # directory. Without .git, setuptools_scm uses its fallback_version.
+    ./* /app/alphafold/
+
+%environment
+    export PATH="/hmmer/bin:/alphafold3_venv/bin:$PATH"
+    export UV_PROJECT_ENVIRONMENT=/alphafold3_venv
+    # DSSP (predicted_disorder) reads the CCD from here at runtime.
+    export LIBCIFPP_DATA_DIR=/app/libcifpp
+    # To work around a known XLA issue causing the compilation time to greatly
+    # increase, the following environment variable setting XLA flags must be
+    # enabled when running AlphaFold 3. Note that if using CUDA capability 7
+    # GPUs, it is necessary to set the following XLA_FLAGS value instead:
+    # export XLA_FLAGS="--xla_disable_hlo_passes=custom-kernel-fusion-rewriter"
+    # (no need to disable gemm in that case as it is not supported for such GPU).
+    export XLA_FLAGS="--xla_gpu_enable_triton_gemm=false"
+    # Memory settings used for folding up to 5,120 tokens on A100 80 GB.
+    export XLA_PYTHON_CLIENT_PREALLOCATE=true
+    export XLA_CLIENT_MEM_FRACTION=0.95
+
+%post
+    set -eu
+
+    # Install python, git, wget, compilers and libs.
+    # * git is required for pyproject.toml toolchain's use of CMakeLists.txt.
+    # * gcc, g++, make are required for compiling HMMER and AlphaFold 3 libaries.
+    # * zlib is a required dependency of AlphaFold 3.
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update --quiet
+    apt-get install --yes --quiet python3.12 python3.12-dev
+    apt-get install --yes --quiet git wget gcc g++ make zlib1g-dev zstd patch
+    rm -rf /var/lib/apt/lists/*
+
+    # Install uv from the official release. The version is pinned for
+    # reproducibility (same version as the Dockerfile's ghcr.io/astral-sh/uv).
+    UV_TARBALL=uv-x86_64-unknown-linux-gnu.tar.gz
+    mkdir /uv_build
+    (cd /uv_build && \
+        wget -q https://github.com/astral-sh/uv/releases/download/{{ UV_VERSION }}/$UV_TARBALL && \
+        wget -q https://github.com/astral-sh/uv/releases/download/{{ UV_VERSION }}/$UV_TARBALL.sha256 && \
+        sha256sum --check $UV_TARBALL.sha256 && \
+        tar zxf $UV_TARBALL --strip-components=1 && \
+        install -m 0755 uv uvx /bin/)
+    rm -R /uv_build
+
+    # UV_COMPILE_BYTECODE=1 speeds up future container starts.
+    # UV_PROJECT_ENVIRONMENT explicitly sets the virtual environment location.
+    export UV_COMPILE_BYTECODE=1
+    export UV_PROJECT_ENVIRONMENT=/alphafold3_venv
+    uv venv $UV_PROJECT_ENVIRONMENT
+
+    export PATH="/hmmer/bin:/alphafold3_venv/bin:$PATH"
+
+    # Install HMMER. Alternatively, you could also install it using
+    # `apt-get install hmmer` instead of bulding it from source, but we want to
+    # have control over the exact version of HMMER and also apply the sequence
+    # limit patch. Also note that eddylab.org unfortunately doesn't support
+    # HTTPS and the tar file published on GitHub is explicitly not recommended
+    # to be used for building from source.
+
+    # Download, check hash, and extract the HMMER source code.
+    mkdir /hmmer_build /hmmer
+    wget http://eddylab.org/software/hmmer/hmmer-3.4.tar.gz --directory-prefix /hmmer_build
+    (cd /hmmer_build && echo "ca70d94fd0cf271bd7063423aabb116d42de533117343a9b27a65c17ff06fbf3 hmmer-3.4.tar.gz" | sha256sum --check)
+    (cd /hmmer_build && tar zxf hmmer-3.4.tar.gz && rm hmmer-3.4.tar.gz)
+
+    # Apply the --seq_limit patch to HMMER.
+    (cd /hmmer_build && patch -p0 < /app/alphafold/docker/jackhmmer_seq_limit.patch)
+
+    # Build HMMER.
+    (cd /hmmer_build/hmmer-3.4 && ./configure --prefix /hmmer)
+    (cd /hmmer_build/hmmer-3.4 && make -j)
+    (cd /hmmer_build/hmmer-3.4 && make install)
+    (cd /hmmer_build/hmmer-3.4/easel && make install)
+    rm -R /hmmer_build
+
+    cd /app/alphafold
+
+    # Install the exact dependency tree using uv.
+    # --frozen: do not update the lockfile during build.
+    # --all-groups: install development/test dependencies defined in pyproject.toml.
+    # --no-editable: install as a static package.
+    # If using this as a recipe for local installation, we recommend removing the
+    # --frozen and --no-editable flags.
+    UV_NO_CACHE=1 uv sync --frozen --all-groups --no-editable {{ UV_EXTRAS }}
+
+    # The wheel excludes test_data, but run_alphafold{,_data}_test.py look it
+    # up (and the examples) relative to the installed package, so link them in
+    # from the source tree.
+    SITE_PACKAGES=$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+    ln -s /app/alphafold/src/alphafold3/test_data $SITE_PACKAGES/alphafold3/test_data
+    ln -s /app/alphafold/examples $SITE_PACKAGES/../examples
+
+    # components.cif is no longer shipped in the wheel (upstream commit 5ef5f9e);
+    # fetch the same pinned CCD snapshot as CI. LIBCIFPP_DATA_DIR stays set at
+    # runtime because DSSP (predicted_disorder) also reads it.
+    export LIBCIFPP_DATA_DIR=/app/libcifpp
+    mkdir -p $LIBCIFPP_DATA_DIR
+    wget -qO- https://pdbsnapshots.s3.us-west-2.amazonaws.com/20260101/pub/pdb/data/monomers/components.cif.gz \
+        | gunzip > $LIBCIFPP_DATA_DIR/components.cif
+
+    # Build chemical components database (this binary was installed by uv sync).
+    uv run --frozen --no-sync build_data
+
+%runscript
+    # The image is read-only at runtime, so call the venv's python directly
+    # rather than `uv run` (which would try to sync the environment). An
+    # absolute path is used because Singularity keeps the host's working
+    # directory instead of honouring Docker's WORKDIR.
+    exec python3 /app/alphafold/run_alphafold.py "$@"
+
+%help
+    AlphaFold 3. Example:
+
+    apptainer run --nv \
+        --bind $HOME/af_input:/root/af_input \
+        --bind $HOME/af_output:/root/af_output \
+        --bind <MODEL_PARAMETERS_DIR>:/root/models \
+        --bind <DB_DIR>:/root/public_databases \
+        alphafold3.sif \
+        --json_path=/root/af_input/fold_input.json \
+        --model_dir=/root/models \
+        --db_dir=/root/public_databases \
+        --output_dir=/root/af_output
