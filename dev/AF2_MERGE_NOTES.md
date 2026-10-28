@@ -5,6 +5,13 @@ We currently carry `modules.py` and `modules_multimer.py`, selected by
 both. This records what is actually different, measured against the real
 checkpoints, so the work can start from facts rather than from reading.
 
+**Status: done; this is a historical record.** The merge finished: there are no
+`*_multimer.py` files under
+[`src/alphafold3/af2/model/`](../src/alphafold3/af2/model/), and `af2/runner.py`
+routes monomer types through the multimer graph. The notes were written in
+ColabDesign2 (dated 2026-08-07 onward), so paths such as
+`colabdesign2/af2/alphafold/model/` and `RunModel` name that tree, not this one.
+
 ## How close they already are
 
     103 of 109 monomer scopes exist in multimer

@@ -1,13 +1,29 @@
-# OpenFold3 → AlphaFold3 Weight Porting: Code Changes and Implications
+# OpenFold3 to AlphaFold3 weight porting
 
 This document records every change made to the AlphaFold3 (JAX/Haiku) codebase
 to run OpenFold3 (PyTorch) weights, and what each change implies for anyone trying to
-reproduce or re-implement AlphaFold3 from the released source.
+reproduce or re-implement AlphaFold3 from the released source. It is the record
+of the first port; [ported_models.md](ported_models.md) covers the models that
+followed.
+
+> **Status.** This was written when OpenFold3 was the only ported model, and the
+> mechanism it describes has since been generalised. The findings stand; these
+> names do not:
+>
+> | written here | now |
+> |---|---|
+> | `global_config.of3_weights`, `--of3_weights` | removed; each branch is gated on `global_config.model`, usually through a membership table in `src/alphafold3/model/model_config.py` (`OPENFOLD3_LINEAGE`, `TRANSPOSED_COLUMN_PAIR_BIAS`) or a spec flag such as `trained_fourier` |
+> | `convert_of3_weights.py`, `src/alphafold3/model/of3_weight_converter.py` | [`converters/openfold3.py`](../converters/openfold3.py), run via `python -m converters.convert --model openfold3` ([converters/README.md](../converters/README.md)) |
+> | `src/alphafold3/model/of3_weight_converter_test.py` | `dev/openfold3_test.py` |
+> | `map_of3_to_af3` | `map_openfold3_to_af3` |
+>
+> The scripts in `scripts/of3_verification/` still import the old module and do
+> not run as-is; see [their README](../scripts/of3_verification/README.md).
 
 **Repositories**
 - AF3 source: [sokrypton/alphafold3](https://github.com/sokrypton/alphafold3) (fork of google-deepmind/alphafold3)
-- OF3 source: [aqlaboratory/openfold3](https://github.com/aqlaboratory/openfold)
-- OF3 weights: `s3://openfold/staging/of3-p2-155k.pt` (public, no sign required)
+- OF3 source: [aqlaboratory/openfold3](https://github.com/aqlaboratory/openfold3)
+- OF3 weights: `https://openfold.s3.amazonaws.com/staging/of3-p2-155k.pt` (public, no sign-in; `converters/sources.py`)
 
 ---
 
@@ -18,13 +34,14 @@ Google DeepMind released the AlphaFold3 source code but not the model weights
 for the same architecture. Since both implement the same algorithm, the weights are
 portable — but not without changes.
 
-All OF3-specific branches in AF3 are gated on `global_config.of3_weights = True`,
-set automatically via `--of3_weights` at the command line. Standard AF3 behavior
-is unchanged when the flag is absent.
+All OF3-specific branches in AF3 were gated on `global_config.of3_weights = True`,
+set via `--of3_weights` at the command line; today they are gated on
+`global_config.model` (see the status note above). Either way, standard AF3
+behaviour is unchanged when the model is `alphafold3`.
 
 ---
 
-## Model Architecture Changes
+## Model architecture changes
 
 These changes live in `src/alphafold3/model/`. They cannot be handled in the weight
 converter alone because they reflect genuine differences in how OF3 and AF3 implement
@@ -46,9 +63,9 @@ or apply the same algorithm.
 
 ---
 
-## Weight Converter
+## Weight converter
 
-`convert_of3_weights.py` + `src/alphafold3/model/of3_weight_converter.py`
+`converters/openfold3.py` (originally `convert_of3_weights.py` + `src/alphafold3/model/of3_weight_converter.py`)
 
 Handles the systematic PyTorch → JAX/Haiku translation:
 
@@ -110,7 +127,8 @@ So mapping `linear_i → left` is **correct in the trunk and wrong in the confid
 The conversion was audited three ways, using the scripts in
 `scripts/of3_verification/` (see the README there). They need the OF3 checkpoint
 plus, for the module comparisons, an importable `openfold3`. The fast unit tests
-are in `src/alphafold3/model/of3_weight_converter_test.py`.
+were in `src/alphafold3/model/of3_weight_converter_test.py` and are now
+`dev/openfold3_test.py`.
 
 **Weight coverage.** Instrumenting `_get`/`_has` over a full conversion shows
 4172 of 4936 checkpoint tensors are read. The remaining 764 are all under
@@ -179,7 +197,7 @@ and a hand-built stand-in risks a false result more than it buys confidence.
 
 ---
 
-## Implications for AlphaFold3 Reproduction
+## Implications for AlphaFold3 reproduction
 
 ### 1. Atom cross-attention padding (N-terminal backbone distortion)
 
@@ -211,7 +229,9 @@ triangle_bias[h, q, k] = Linear(z.T[q, k]) = Linear(z[k, q])
 AF3's Algorithm 15 specifies the pair bias between query q and key k as `Linear(z[q, k])`. OF3 computes `Linear(z[k, q])` — the **transposed** pair bias. This is a deviation from the paper. The model trained with this convention and learned to compensate, so predictions are good in practice. Our AF3 fix reproduces the OF3 convention:
 
 ```python
-if self.transpose and self.global_config.of3_weights:
+# network/modules.py (originally gated on global_config.of3_weights)
+if (self.transpose
+    and self.global_config.model in model_config.TRANSPOSED_COLUMN_PAIR_BIAS):
     nonbatched_bias = jnp.swapaxes(nonbatched_bias, -1, -2)
 ```
 
@@ -227,7 +247,7 @@ Both AF3 and OF3 initialize the random Fourier embedding weights with seed 42, b
 
 ---
 
-## Summary: What the Released AF3 Code Gets Wrong
+## Summary: what the released AF3 code gets wrong
 
 | Issue | Severity | Affects AF3 weights too? |
 |---|---|---|

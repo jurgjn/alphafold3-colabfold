@@ -1,15 +1,49 @@
-# module_trace
+# Module tracer
 
 Run one input through one model and record **every haiku module's output**, so two
 runs can be diffed module by module. Built to answer one question fast: *which
-module is the first to differ?*
+module is the first to differ?* It is a debugging tool for people changing the
+graph or a converter; nothing in the served package imports it.
 
+## Usage
+
+Run from the repository root, as a module of `dev/`, with this tree's `src/` on
+the path:
+
+```bash
+PYTHONPATH=src:. ~/venv/bin/python -m dev.module_trace list
+PYTHONPATH=src:. ~/venv/bin/python -m dev.module_trace run --model openfold3 --case 6mrr_single_seq --label baseline
+PYTHONPATH=src:. ~/venv/bin/python -m dev.module_trace compare ~/module_traces/openfold3/6mrr_single_seq/{baseline,after_change}
+PYTHONPATH=src:. ~/venv/bin/python -m dev.module_trace show ~/module_traces/openfold3/6mrr_single_seq/baseline
+PYTHONPATH=src:. ~/venv/bin/python -m dev.module_trace table
 ```
-python -m tools.module_trace list
-python -m tools.module_trace run --model openfold3 --case 6mrr_single_seq --label baseline
-python -m tools.module_trace compare ~/module_traces/openfold3/6mrr_single_seq/{baseline,after_change}
-python -m tools.module_trace show ~/module_traces/openfold3/6mrr_single_seq/baseline
-```
+
+`list` shows every case and model and whether its inputs exist on this machine.
+`table` prints one row per stored trace. Traces go to
+`~/module_traces/<model>/<case>/<label>/` (`--out` overrides; `~` resolves through
+[`dev_path`](../af3_dev_paths.py), so `AF3_DEV_HOME` moves it). `run` takes
+`--num-recycles` (default 0), `--diffusion-steps` (200) and `--seed` (1);
+`compare` takes `--tol` (1e-6), `--section modules|outputs` and `--limit`.
+
+`run` executes the model, so it wants a GPU and the same serialisation as the
+[parity oracles](../oracles/README.md): one job on the card at a time.
+
+**Known breakage (2026-10-28):** `run` currently stops at `models.build` with
+`ModuleNotFoundError: No module named 'colabdesign2'`. `_repo_table` in
+[`models.py`](models.py) still imports the ColabDesign2 package to find its
+checked-in shape tables, and that package does not exist in this repository.
+`list`, `show`, `compare` and `table` are unaffected.
+
+## Contents
+
+| file | purpose |
+| --- | --- |
+| [`__main__.py`](__main__.py) | the CLI: `list`, `run`, `compare`, `show`, `table` |
+| [`trace.py`](trace.py) | builds the case and model, intercepts every module call, writes the trace |
+| [`compare.py`](compare.py) | walks two traces in execution order and reports the first divergence |
+| [`cases.py`](cases.py) | the input registry: each case's batch, reference structure and declared channels |
+| [`models.py`](models.py) | the traceable models and their checkpoints, built by init plus merge so a partial port still traces |
+| [`gen_param_shapes.py`](gen_param_shapes.py) | generator for parameter-shape tables; its usage line and output directory still name ColabDesign2's `tools/` and `colabdesign2/` layout, which this repository does not have |
 
 ## How it captures
 
@@ -54,15 +88,17 @@ contamination. A changed call count is itself a difference (the graph changed).
 
 ## Cases and models
 
-Cases live in `cases.py`. Active now: `6mrr_single_seq` (68-residue protein,
-single sequence, no template/MSA) and `6mrr_self_template`. Registered for later,
-and deliberately taken from AlphaFold3's own canonical inputs rather than
-invented: `af3_featurised_example` (DeepMind's featurised test batch -- real
-16384-row MSA, 4 templates, polymer-ligand bonds) and the 13 `alphafold3/examples`
-JSONs covering homodimer, protein-protein, CCD ligand + covalent bond, SMILES
-ligand, ions, DNA duplex, methylated DNA, RNA hairpin, modified RNA,
-glycosylation and phosphorylation.
+Cases live in `cases.py`, and every registered case is active. The workhorse is
+`6mrr_single_seq` (68-residue protein, single sequence, no template or MSA), with
+`6mrr_self_template` beside it. The rest are deliberately taken from AlphaFold3's
+own canonical inputs rather than invented: `af3_featurised_example` (DeepMind's
+featurised test batch -- real 16384-row MSA, 4 templates, polymer-ligand bonds)
+and the 13 `alphafold3/examples` JSONs (`af3_*`) covering homodimer,
+protein-protein, CCD ligand + covalent bond, SMILES ligand, ions, DNA duplex,
+methylated DNA, RNA hairpin, modified RNA, glycosylation and phosphorylation.
+A few structures with a known answer follow (`1stp_streptavidin`, `1ehz_trna`,
+`7bny_emcv_2a`, `lig_btn`, `lig_atp`, `lig_hem`). `list` prints the current set.
 
-Models come from `models.py` (one entry per `global_config.model` name), loaded by
-the init+merge path so a partially ported model still traces, with the unported
+Models come from `models.py` (`CHECKPOINTS`: alphafold3, openfold3, intellifold2,
+opendde, boltz2, protenix2, rosettafold3, chai1), loaded by the init+merge path so a partially ported model still traces, with the unported
 scopes listed in `params_left_at_init`.

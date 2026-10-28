@@ -1,10 +1,23 @@
 # Native oracle setup and runtime benchmarks
 
-Every native implementation we compare against, how it is installed, and how to
-time it. Written because working this out consumed most of a session and none of
-it is discoverable from the code.
+Every native implementation we time against, how it is installed, and how to
+time it. For anyone producing or checking a runtime comparison between a port and
+its vendor. Written because working this out consumed most of a session and none
+of it is discoverable from the code.
 
-## Which natives exist, and what a comparison against them MEANS
+These are the **benchmark** environments (`~/boltz_gpu_venv` plus side-loads).
+The parity harness uses a separate, clean venv per vendor (`~/venv_boltz`,
+`~/venv_protenix`, ... ; see `VENDORS` in
+[`vendor_native_parity.py`](../../oracles/vendor_native_parity.py)), and nothing
+here should be installed into those. Every `~/...` below is the home-relative
+layout that [`dev_path`](../../af3_dev_paths.py) and `af3_dev_paths.sh` resolve
+(`AF3_DEV_HOME`, `AF3_PORTED_DIR`).
+
+Everything here needs the GPU to itself: one measurement at a time, on a quiet
+host (see [Traps that produced wrong numbers](#traps-that-produced-wrong-numbers)).
+None of it runs in CI.
+
+## Which natives exist, and what a comparison against them means
 
 | port | native framework | comparison is | entry point |
 |---|---|---|---|
@@ -37,32 +50,39 @@ Standing constraint: **never install into `~/venv`** (the jax test env), and
 go into a side directory loaded with PYTHONPATH -- the pattern `~/rf3_extra`
 already established.
 
-    boltz2        ~/boltz_gpu_venv (CUDA torch); weights ~/boltz2_weights/boltz2_conf.ckpt
-                  source tree ~/BoltzDesign1/boltz2/src
-    rosettafold3  ~/venv + PYTHONPATH=~/rf3_extra:~/foundry_rf3/src:~/foundry_rf3/models/rf3/src
-                  weights ~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt
-    chai1         ~/chai_venv, CHAI_DOWNLOADS_DIR=~/chai1_weights
-    protenix2     ~/venv, repo ~/protenix, checkpoint ~/checkpoint/protenix-v2.pt
-                  (symlink to ~/protenix_weights); needs the esm + fast-layernorm
-                  stubs in tools/oracles/protenix2/run_native.py
-    opendde       ~/venv, repo ~/OpenDDE, checkpoint ~/opendde_weights/opendde.pt
-                  same two stubs
-    openfold3     repo ~/openfold-3, checkpoint ~/of3-p2-155k.pt
-    intellifold2  repo ~/IntelliFold, torch checkpoint ~/model_v2/intellifold_v2.pt
-      torch path: ~/boltz_gpu_venv/bin/python with
-                  PYTHONPATH=~/if2_extra:~/IntelliFold
-                  --cache ~/model_v2   (the runner looks for
-                  `<cache>/intellifold_v2.pt`, which is what that file is called)
-      jax path:   `intellifold predict` (installed in ~/venv), model dir ./model_v2
+```text
+boltz2        ~/boltz_gpu_venv (CUDA torch); weights ~/boltz2_weights/boltz2_conf.ckpt
+              source tree ~/BoltzDesign1/boltz2/src
+rosettafold3  ~/venv + PYTHONPATH=~/rf3_extra:~/foundry_rf3/src:~/foundry_rf3/models/rf3/src
+              weights ~/rf3_weights/rf3_foundry_01_24_latest_remapped.ckpt
+chai1         ~/chai_venv, CHAI_DOWNLOADS_DIR=~/chai1_weights
+protenix2     ~/boltz_gpu_venv + PYTHONPATH=~/if2_extra:~/protenix (not ~/venv,
+              which is torch+cpu: see below), repo ~/protenix, checkpoint ~/checkpoint/protenix-v2.pt
+              (symlink to ~/protenix_weights); needs the esm + fast-layernorm
+              stubs (the ones dev/oracles/native_protenix_fold.py installs)
+opendde       as protenix2, repo ~/OpenDDE, checkpoint ~/opendde_weights/opendde.pt
+              same two stubs
+openfold3     repo ~/openfold-3, checkpoint ~/of3-p2-155k.pt
+intellifold2  repo ~/IntelliFold, torch checkpoint ~/model_v2/intellifold_v2.pt
+  torch path: ~/boltz_gpu_venv/bin/python with
+              PYTHONPATH=~/if2_extra:~/IntelliFold
+              --cache ~/model_v2   (the runner looks for
+              `<cache>/intellifold_v2.pt`, which is what that file is called)
+  jax path:   `intellifold predict` (installed in ~/venv), model dir ./model_v2
+```
 
 ### The `~/if2_extra` side-load, and one trap in it
 
-    ~/boltz_gpu_venv/bin/pip install --target ~/if2_extra \
-        accelerate ml_collections biopython modelcif
+```bash
+~/boltz_gpu_venv/bin/pip install --target ~/if2_extra \
+    accelerate ml_collections biopython modelcif
+```
 
 Then **delete numpy from the side-load**:
 
-    rm -rf ~/if2_extra/numpy ~/if2_extra/numpy-*.dist-info ~/if2_extra/numpy.libs
+```bash
+rm -rf ~/if2_extra/numpy ~/if2_extra/numpy-*.dist-info ~/if2_extra/numpy.libs
+```
 
 pip pulls numpy 2.5.2 into the target dir, and on PYTHONPATH it SHADOWS the
 venv's numpy. numba requires <2.3, so IntelliFold dies with a numba import error
@@ -130,11 +150,13 @@ torch/numpy/scipy/pandas/triton/nvidia so the venv's versions stay authoritative
 
 **It does not take AF3-format JSON.** openfold3 has its own `InferenceQuerySet`:
 
-    {"seeds": [1],
-     "queries": {"L64": {"chains": [{"molecule_type": "protein",
-                                     "chain_ids": ["A"], "sequence": "..."}]}}}
+```json
+{"seeds": [1],
+ "queries": {"L64": {"chains": [{"molecule_type": "protein",
+                                 "chain_ids": ["A"], "sequence": "..."}]}}}
+```
 
-See `examples/example_inference_inputs/`. Every other port here takes the AF3
+See `examples/example_inference_inputs/` in the openfold-3 checkout. Every other port here takes the AF3
 fold-input list. Its `predict` subcommand takes --query-json /
 --inference-ckpt-path / --output-dir / --num-diffusion-samples /
 --num-model-seeds; `--seed` belongs to `train`, not `predict`.
@@ -153,7 +175,7 @@ next one with FileExistsError -- clear it between attempts.
 
 RESULT: 64 tokens, warm, forward-only: native 13.56 s vs our 2.99 s = 4.5x.
 
-## A harness that measures nothing must SAY so
+## A harness that measures nothing must say so
 
 `runpy.run_path()` re-executes the module as `__main__` and builds a FRESH
 `InferenceRunner` class, so a patch applied to the previously imported class is
@@ -164,13 +186,28 @@ instead of a plausible zero -- keep that guard in every harness.
 
 ## Timing harnesses (this directory)
 
-    bench_sweep.py       OURS: one ported model, one length. Uses the jax
-                         compilation cache AND pre-inits tokamax's user context
-                         (both matter -- see below).
-    bench_boltz.py       native boltz-2, on a pre-built batch (forward vs forward)
-    bench_rf3_native.py  native rf3; also times the PIPELINE so featurisation can
-                         be subtracted
-    bench_chai_native.py native chai-1; records the BUCKET it actually folded
+| file | what it times |
+|---|---|
+| [`bench_sweep.py`](bench_sweep.py) | OURS: one ported model, one length, one TSV line. Uses the jax compilation cache AND pre-inits tokamax's user context (both matter -- see below). `bench_sweep.py <model> <model_dir> <length> <num_msa> [calls]` |
+| [`bench_sweep_af2.py`](bench_sweep_af2.py) | ours, AlphaFold 2 (a sibling network, so it needs its own driver); same TSV shape |
+| [`bench_boltz.py`](bench_boltz.py) | native boltz-2, on a pre-built batch (forward vs forward) |
+| [`bench_rf3_native.py`](bench_rf3_native.py) | native rf3; also times the PIPELINE so featurisation can be subtracted |
+| [`bench_chai_native.py`](bench_chai_native.py) | native chai-1; records the BUCKET it actually folded |
+| [`bench_of3_native.py`](bench_of3_native.py) | native openfold3, forward only (`OF3_L`, `OF3_REPS`) |
+| [`bench_if2_torch.py`](bench_if2_torch.py), [`bench_if2_jax.py`](bench_if2_jax.py) | IntelliFold-2's torch original and IntelliGen's own jax port (`IF2_L`, `IF2_REPS`) |
+| [`run_ours_sweep.sh`](run_ours_sweep.sh), [`run_af2_sweep.sh`](run_af2_sweep.sh) | resumable length sweeps of our ports and of AF2; need `DATA` set to a working directory |
+| [`run_mem_sweep.sh`](run_mem_sweep.sh) | peak device memory per (model, length); read the peak column only |
+| [`bench_table.py`](bench_table.py) | joins our sweep TSV and a native one into the comparison table |
+| `native_*.tsv`, `ours_a10.tsv` | recorded results on the A10 |
+
+Each script's docstring or header carries its exact command line and the
+interpreter and `PYTHONPATH` it needs, for example:
+
+```bash
+DATA=/path/to/sweep-cache bash dev/bench/native/run_ours_sweep.sh ours.tsv
+CHAI_DOWNLOADS_DIR=~/chai1_weights ~/chai_venv/bin/python dev/bench/native/bench_chai_native.py 256 6
+python3 dev/bench/native/bench_table.py ours.tsv native.tsv
+```
 
 Settings are matched across all of them: 3 recycles, 200 diffusion steps, 1
 sample, num_msa=1024, single sequence, no template, confidence on. Sequences are

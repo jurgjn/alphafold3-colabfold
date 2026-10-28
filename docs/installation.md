@@ -1,4 +1,16 @@
-# Installation and Running Your First Prediction
+# Installation and running your first prediction
+
+:ledger: **Note: This fork.** These are DeepMind's AlphaFold 3 installation
+instructions, kept for this fork, which runs further AF3-architecture models
+through `--model` and is also published on PyPI as `alphafold3-colabfold`. The
+genetic databases and the AlphaFold 3 model parameters below are needed only for
+the local data pipeline and for `--model=alphafold3`; the other models fetch
+their own weights on first use. The PyPI wheel holds the `alphafold3` package
+only: `run_alphafold.py` and `fetch_databases.sh` are in this repository, and
+JAX, Haiku, RDKit and absl are in the `runtime` dependency group of
+`pyproject.toml`, not in the wheel's requirements. See the
+[README](../README.md#the-models-this-fork-runs) for the models, their weights
+and the Colab notebook.
 
 You will need a machine running Linux; AlphaFold 3 does not support other
 operating systems. Full installation requires up to 1 TB of disk space to keep
@@ -29,7 +41,7 @@ The instructions provided below describe how to:
 1.  Obtain model parameters.
 1.  Build the AlphaFold 3 Docker container or Singularity image.
 
-## Provisioning a Machine
+## Provisioning a machine
 
 Clean Ubuntu images are available on Google Cloud, AWS, Azure, and other major
 platforms.
@@ -62,7 +74,7 @@ We verified the following installation steps from this point.
 
 These instructions are for rootless Docker.
 
-### Installing Docker on Host
+### Installing Docker on host
 
 Note these instructions only apply to Ubuntu 22.04 LTS images, see above.
 
@@ -90,7 +102,7 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 sudo docker run hello-world
 ```
 
-### Enabling Rootless Docker
+### Enabling rootless Docker
 
 Official Docker instructions are
 [here](https://docs.docker.com/engine/security/rootless/#distribution-specific-hint).
@@ -102,9 +114,9 @@ sudo apt-get install -y uidmap systemd-container
 sudo machinectl shell $(whoami)@ /bin/bash -c 'dockerd-rootless-setuptool.sh install && sudo loginctl enable-linger $(whoami) && DOCKER_HOST=unix:///run/user/1001/docker.sock docker context use rootless'
 ```
 
-## Installing GPU Support
+## Installing GPU support
 
-### Installing NVIDIA Drivers
+### Installing NVIDIA drivers
 
 Official Ubuntu instructions are
 [here](https://documentation.ubuntu.com/server/how-to/graphics/install-nvidia-drivers/).
@@ -131,7 +143,7 @@ Make sure that the latest NVIDIA driver is installed and running.
 
 Proceed only if `nvidia-smi` has a sensible output.
 
-### Installing NVIDIA Support for Docker
+### Installing NVIDIA support for Docker
 
 Official NVIDIA instructions are
 [here](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
@@ -180,15 +192,16 @@ Mon Nov  11 12:00:00 2024
 +-----------------------------------------------------------------------------------------+
 ```
 
-## Obtaining AlphaFold 3 Source Code
+## Obtaining AlphaFold 3 source code
 
-Install `git` and download the AlphaFold 3 repository:
+Install `git` and download this repository (DeepMind's original is
+https://github.com/google-deepmind/alphafold3):
 
 ```sh
-git clone https://github.com/google-deepmind/alphafold3.git
+git clone https://github.com/sokrypton/alphafold3.git
 ```
 
-## Obtaining Genetic Databases
+## Obtaining genetic databases
 
 This step requires `wget` and `zstd` to be installed on your machine. On
 Debian-based systems install them by running `sudo apt install wget zstd`.
@@ -262,7 +275,7 @@ You can use theses two scripts:
     `fetch_databases.sh` command above, and the default `<SSD_DB_DIR>` is
     `/mnt/disks/ssd/public_databases`.
 
-## Obtaining Model Parameters
+## Obtaining model parameters
 
 You can download the AlphaFold 3 model parameters from
 https://storage.googleapis.com/alphafold3/af3.bin.zst. Use is subject to these
@@ -272,7 +285,13 @@ Download the model parameters to a directory of your choosing, referred to as
 `<MODEL_PARAMETERS_DIR>` in the following instructions. As with the databases,
 this should *not* be a subdirectory in the AlphaFold 3 repository directory.
 
-## Building the Docker Container That Will Run AlphaFold 3
+The other models this fork runs (`--model=...`) do not use these parameters:
+they download their converted weights to `~/.cache/alphafold3/weights/` (or
+`$AF3_WEIGHTS_DIR`) on first use, or read them from `--model_dir`. In a container
+that cache is lost with the container, so mount a directory there (e.g.
+`--volume $HOME/af3_weights:/root/.cache/alphafold3/weights`) to keep it.
+
+## Building the Docker container that will run AlphaFold 3
 
 Then, build the Docker container. This builds a container with all the right
 python dependencies:
@@ -290,9 +309,8 @@ docker build --ulimit nofile=65535:65535 -t alphafold3 -f docker/Dockerfile .
 ```
 
 Create an input JSON file, using either the example in the
-[README](https://github.com/google-deepmind/alphafold3?tab=readme-ov-file#installation-and-running-your-first-prediction)
-or a
-[custom input](https://github.com/google-deepmind/alphafold3/blob/main/docs/input.md),
+[README](../README.md#installation-and-running-your-first-prediction), one of
+the [examples](../examples/README.md), or a [custom input](input.md),
 and place it in a directory, e.g. `$HOME/af_input`. You can now run AlphaFold 3!
 
 ```sh
@@ -351,7 +369,7 @@ docker run -it \
 If you get an error like the following, make sure the models and data are in the
 paths (flags named `--volume` above) in the correct locations.
 
-```
+```text
 docker: Error response from daemon: error while creating mount source path '/srv/alphafold3_data/models': mkdir /srv/alphafold3_data/models: permission denied.
 ```
 
@@ -364,7 +382,7 @@ docker run alphafold3 python run_alphafold.py --help
 
 for more information.
 
-:ledger: **Optional: Enable Google cloud storage path support**
+### Optional: enable Google Cloud Storage path support
 
 AlphaFold 3 supports reading and writing specific files directly from Google
 Cloud Storage (`gs://` paths). Since GCS is an optional feature, the required
@@ -391,7 +409,7 @@ The following command-line flags support `gs://` paths:
 `--jackhmmer_binary_path`) do **not** support `gs://` paths and must be local
 file paths.
 
-## Running Using Singularity Instead of Docker
+## Running using Singularity instead of Docker
 
 You may prefer to run AlphaFold 3 within Singularity. You'll still need to
 *build* the Singularity image from the Docker container. Afterwards, you will
@@ -409,7 +427,7 @@ sudo dpkg --install singularity-ce_4.2.1-jammy_amd64.deb
 sudo apt-get install -f
 ```
 
-### Build the Singularity Container From the Docker Image
+### Build the Singularity container from the Docker image
 
 After building the *Docker* container above with `docker build -t`, start a
 local Docker registry and upload your image `alphafold3` to it. Singularity's
@@ -486,7 +504,7 @@ accuracy testing for this mode). This mode can be useful for utilizing machines
 without a GPU if you don't mind the longer folding times (roughly 100x slower
 than on a GPU).
 
-### Direct installation without Docker on Linux or Mac OS
+### Direct installation without Docker on Linux or macOS
 
 Since JAX doesn't support running natively on Mac GPU as of 2026, you have to
 resort to running AlphaFold 3 in the slow CPU-only mode even though it has a GPU
@@ -498,20 +516,21 @@ resort to running AlphaFold 3 in the slow CPU-only mode even though it has a GPU
 3.  Install [uv](https://docs.astral.sh/uv/). See
     https://docs.astral.sh/uv/getting-started/installation/ for installation
     instructions.
-4.  Clone the AlphaFold 3 GitHub repository
+4.  Clone this repository
 
     ```sh
-    git clone https://github.com/google-deepmind/alphafold3.git
+    git clone https://github.com/sokrypton/alphafold3.git
     ```
 
 5.  Navigate in the `alphafold3` directory and run the following commands to
-    install AlphaFold 3:
+    install AlphaFold 3. JAX, Haiku and RDKit are in the `runtime` dependency
+    group, which a plain `uv sync` does not install:
 
     ```sh
     cd alphafold3
     uv venv --python 3.12
     source .venv/bin/activate
-    uv sync
+    uv sync --group runtime
     uv run build_data
     ```
 
@@ -521,14 +540,15 @@ resort to running AlphaFold 3 in the slow CPU-only mode even though it has a GPU
     uv run python run_alphafold_data_test.py
     ```
 
-7.  You can now run AlphaFold 3. Make sure to set flags `--jax_backend="cpu"`
-    and `--flash_attention_implementation="xla"`:
+7.  You can now run AlphaFold 3. With the default `--jax_backend=auto`, a
+    machine where JAX sees no GPU runs on the CPU and uses
+    `--flash_attention_implementation=xla`; you can also set both explicitly:
 
     ```sh
     uv run run_alphafold.py \
       --json_path="..." \
       --output_dir="..." \
-      --model_dir="..."
+      --model_dir="..." \
       --jax_backend="cpu" \
-      --flash_attention_implementation="xla" \
+      --flash_attention_implementation="xla"
     ```

@@ -1,14 +1,29 @@
-# OF3 → AF3 conversion verification
+# OpenFold3 conversion verification
 
-Manual verification harness for `src/alphafold3/model/of3_weight_converter.py`.
-These are **not** unit tests and do not run in CI — they need a real OpenFold3
-checkpoint and, for the module comparisons, an importable `openfold3`. The fast
-unit tests that do run unattended live in
-`src/alphafold3/model/of3_weight_converter_test.py`.
+The manual harness that verified the first OpenFold3 to AlphaFold3 weight
+conversion, kept for anyone re-auditing that port. These are **not** unit tests
+and do not run in CI: they need a real OpenFold3 checkpoint and, for the module
+comparisons, an importable `openfold3`. Between them they caught four real
+porting bugs; see [of3_af3_porting_notes.md](../../docs/of3_af3_porting_notes.md)
+for the findings.
 
-Run them after any change to the converter or to an `of3_weights`-gated branch in
-the model. Between them they caught four real porting bugs; see
-`OF3_AF3_PORTING_NOTES.md` for the findings.
+> **Stale: these scripts do not run as-is.** Every script imports
+> `alphafold3.model.of3_weight_converter`, which no longer exists (checked
+> 2026-10-28: `ImportError` on CPU). The converter is now
+> [`converters/openfold3.py`](../../converters/openfold3.py); it still provides
+> `load_of3_checkpoint`, `_get` and `_has`, but `map_of3_to_af3` is now
+> `map_openfold3_to_af3`. The `compare_*` scripts also set
+> `global_config.of3_weights = True`, a flag that has been replaced by
+> `global_config.model = 'openfold3'`. Porting them is mechanical but has not
+> been done, so the numbers below are from the original run.
+>
+> What covers the same ground today:
+>
+> | check | where |
+> |---|---|
+> | unit tests of the silent conventions (alphabet permutations, i/j crossing) | `dev/openfold3_test.py` |
+> | unread checkpoint tensors (replaces the structural audits) | `dev/audit_coverage.py openfold3`, see [converters/README.md](../../converters/README.md) |
+> | end-to-end parity against the native model | `dev/oracles/vendor_native_parity.py` |
 
 ## Prerequisites
 
@@ -18,17 +33,19 @@ the model. Between them they caught four real porting bugs; see
 | `OPENFOLD3_PATH` | checkout of `aqlaboratory/openfold3` | `../openfold3` |
 | `AF3_NATIVE_DIR` | directory with native AF3 `af3.bin.zst` | `../af3_of3/weights/af3_native` |
 
-Fallbacks assume the repos are siblings. `torch` is required throughout; `jax` +
+Fallbacks (in `_paths.py`) assume the repos are siblings. `torch` is required throughout; `jax` +
 `haiku` for the `compare_*` scripts; `AF3_NATIVE_DIR` is optional (only
 `audit_structure.py` uses it, and it degrades gracefully).
 
-The public checkpoint is at `s3://openfold/staging/of3-p2-155k.pt` (no sign-in).
+The public checkpoint is at
+`https://openfold.s3.amazonaws.com/staging/of3-p2-155k.pt` (no sign-in);
+`python -m converters.convert --model openfold3` downloads it.
 
 ## Structural audits
 
 Cheap, and they catch dropped or misnamed weights.
 
-```
+```bash
 python3 audit_structure.py     # unread tensors; diff vs native AF3 names/shapes
 python3 audit_probed.py        # as above, but distinguishes _has() probes from _get() reads;
                                # also lists square matrices (shape-invisible transposes)
@@ -38,7 +55,7 @@ python3 dump_param_digest.py out.json   # {param: [shape, md5]}, to diff two con
 
 Expected: every tensor read except the `sample_diffusion.*` duplicates and
 `version_tensor`; no shape mismatches against native AF3 apart from the
-documented `of3_weights` deviations (the diffusion transformer layer-stack
+documented OpenFold3 deviations (the diffusion transformer layer-stack
 naming, and `single_cond_initial_*` at 833 rather than 831 rows).
 
 `dump_param_digest.py` is the tool for "did my converter edit change anything I
@@ -51,7 +68,7 @@ identical inputs, with converted weights, and compare outputs. This is the only
 check that catches square-matrix transposes, SwiGLU gate-vs-value order, and
 block ordering inside a layer stack — none of which change any shape.
 
-```
+```bash
 python3 compare_pair_features.py            # trunk/MSA input embeddings, confidence pair embed, template aatype
 python3 compare_pairformer_block.py [i]     # trunk PairFormer block i (default 0; try 0 and 47)
 python3 compare_msa_block.py [i]            # MSA module block i (try 0 and 3 — the last drops the MSA update)
@@ -68,7 +85,7 @@ inputs are not in-distribution; judge by the *relative* error.
 Each `compare_*` script honours `SABOTAGE=1`, which perturbs one weight so you
 can confirm the harness actually discriminates before trusting a pass:
 
-```
+```bash
 SABOTAGE=1 python3 compare_pairformer_block.py     # expect MISMATCH, rel ~0.4
 ```
 

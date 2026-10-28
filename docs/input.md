@@ -1,6 +1,11 @@
-# AlphaFold 3 Input
+# AlphaFold 3 input
 
-## Specifying Input Files
+This page describes the input JSON that `run_alphafold.py` reads. In this fork
+the same input drives every `--model`; per-model limits (AlphaFold 2 is
+protein-only, for instance) are in the
+[README](../README.md#the-models-this-fork-runs).
+
+## Specifying input files
 
 You can provide inputs to `run_alphafold.py` in one of two ways:
 
@@ -20,7 +25,7 @@ if the optional `gcsfs` dependency is installed. See the
 [installation instructions](installation.md#optional-enable-google-cloud-storage-path-support)
 for details and a complete list of supported paths.
 
-## Input Format
+## Input format
 
 AlphaFold 3 uses a custom JSON input format differing from the
 [AlphaFold Server JSON input format](https://github.com/google-deepmind/alphafold/tree/main/server).
@@ -41,9 +46,9 @@ The custom AlphaFold 3 format allows:
 *   Specifying multiple random seeds.
 
 Multiple examples of input JSON files are provided in
-https://github.com/google-deepmind/alphafold3/tree/main/examples.
+[`examples/`](../examples/README.md).
 
-## AlphaFold Server JSON Compatibility
+## AlphaFold Server JSON compatibility
 
 The [AlphaFold Server](https://alphafoldserver.com/) uses a separate
 [JSON format](https://github.com/google-deepmind/alphafold/tree/main/server)
@@ -58,7 +63,7 @@ defined here in the AlphaFold 3 codebase as `alphafold3`. If the detected input
 JSON format is `alphafoldserver`, then the converter will translate that into
 the JSON format `alphafold3`.
 
-### Multiple Inputs
+### Multiple inputs
 
 The top-level of the `alphafoldserver` JSON format is a list, allowing
 specification of multiple inputs in a single JSON. In contrast, the `alphafold3`
@@ -77,7 +82,7 @@ If the JSON in `alphafoldserver` format specifies glycans, the converter will
 raise an error. This is because translating glycans specified in the
 `alphafoldserver` format to the `alphafold3` format is not currently supported.
 
-### Random Seeds
+### Random seeds
 
 The `alphafoldserver` JSON format allows users to specify `"modelSeeds": []`, in
 which case a seed is chosen randomly for the user. On the other hand, the
@@ -106,14 +111,14 @@ The converter iterates through the list provided in the `sequences` field of the
 `alphafoldserver` JSON format, assigning an `id` to each entity using the
 following order ("reverse spreadsheet style"):
 
-```
+```text
 A, B, ..., Z, AA, BA, CA, ..., ZA, AB, BB, CB, ..., ZB, ...
 ```
 
 For any entity with `count > 1`, an `id` is assigned arbitrarily to each "copy"
 of the entity.
 
-## Top-level Structure
+## Top-level structure
 
 The top-level structure of the input JSON is:
 
@@ -165,7 +170,8 @@ The fields specify the following:
     `alphafold3`. See
     [AlphaFold Server JSON Compatibility](#alphafold-server-json-compatibility)
     for more information.
-*   `version: int`: The version of the input JSON. This must be set to 1 or 2.
+*   `version: int`: The version of the input JSON. This must be set to 1, 2, 3,
+    or 4.
     See
     [AlphaFold Server JSON Compatibility](#alphafold-server-json-compatibility)
     and [versions](#versions) below for more information.
@@ -173,7 +179,7 @@ The fields specify the following:
 ## Versions
 
 The top-level `version` field (for the `alphafold3` dialect) can be either `1`,
-`2`, or `3`. The following features have been added in respective versions:
+`2`, `3`, or `4`. The following features have been added in respective versions:
 
 *   `1`: the initial AlphaFold 3 input format.
 *   `2`: added the option of specifying external MSA and templates using newly
@@ -427,14 +433,14 @@ try increasing the number of RDKit conformer iterations using the
 Ions are treated as ligands, e.g. a magnesium ion would simply be a ligand with
 `ccdCodes: ["MG"]`.
 
-## Multiple Sequence Alignment
+## Multiple sequence alignment
 
 Protein and RNA chains allow setting a custom Multiple Sequence Alignment (MSA).
 If not set, the data pipeline will automatically build MSAs for protein and RNA
 entities using Jackhmmer/Nhmmer search over genetic databases as described in
 the paper.
 
-### RNA Multiple Sequence Alignment
+### RNA multiple sequence alignment
 
 RNA `unpairedMsa` can be either:
 
@@ -446,7 +452,7 @@ RNA `unpairedMsa` can be either:
 3.  Set to a non-empty A3M string. AlphaFold 3 will use the provided MSA for
     this RNA chain.
 
-### Protein Multiple Sequence Alignment
+### Protein multiple sequence alignment
 
 For protein chains, the situation is slightly more complicated due to paired and
 unpaired MSA (see [MSA Pairing](#msa-pairing) below for more details).
@@ -498,7 +504,7 @@ When setting your own MSA, you have to make sure that:
     removed), all sequences have exactly the same length as the query (they form
     an exact rectangular matrix).
 
-### MSA Pairing
+### MSA pairing
 
 MSA pairing matters only when folding multiple chains (multimers), since we need
 to find a way to concatenate MSAs for the individual chains along the sequence
@@ -565,7 +571,7 @@ DD-P----
 DD-PMIN-
 ```
 
-## Structural Templates
+## Structural templates
 
 Structural templates can be specified only for protein chains:
 
@@ -671,7 +677,7 @@ Or you can simply fully omit the `templates` field thus setting it implicitly to
 }
 ```
 
-### MSA via ColabFold/MMseqs2 Server
+### MSA via ColabFold/MMseqs2 server
 
 If you do not have the genetic databases installed locally, you can use the
 public [ColabFold](https://colabfold.mmseqs.com/) MMseqs2 server to generate
@@ -754,7 +760,7 @@ is within the same entity and is a typical example when defining a glycan.
 All bonds are implicitly assumed to be covalent bonds. Other bond types are not
 supported.
 
-### Defining Glycans
+### Defining glycans
 
 Glycans are bound to a protein residue, and they are typically formed of
 multiple chemical components. To define a glycan, define a new ligand with all
@@ -765,7 +771,7 @@ its individual chemical components.
 For example, to define the following glycan composed of 4 components (CMP1,
 CMP2, CMP3, CMP4) bound to an asparagine in a protein chain A:
 
-```
+```text
  ⋮
 ALA            CMP4
  |              |
@@ -836,7 +842,7 @@ modeling non-canonical amino acids or nucleotides in the context of polymer
 chains. By contrast, external covalent ligands should generally be modeled as
 ligand entities plus `bondedAtomPairs`.
 
-### Conformer Generation
+### Conformer generation
 
 The data pipeline attempts to generate a conformer for ligands using RDKit. The
 `Mol` used to generate the conformer is constructed either from the information
@@ -854,7 +860,7 @@ Note that sometimes conformer generation failures can be resolved by
 increasinging the number of RDKit conformer iterations using the
 `--conformer_max_iterations=...` flag.
 
-### User-provided CCD Format
+### User-provided CCD format
 
 The user-provided CCD must be passed either:
 
@@ -880,7 +886,7 @@ Below is an example user-provided CCD redefining component X7F, which serves to
 illustrate the required sections. For readability purposes, newlines have not
 been replaced by `\n`.
 
-```
+```text
 data_MY-X7F
 #
 _chem_comp.id MY-X7F
@@ -1013,7 +1019,7 @@ The following fields are used to generate input for the model:
 *   `_chem_comp_bond.atom_id_2`: The ID of the second of the two atoms that
     define the bond.
 
-## Full Example
+## Full example
 
 An example illustrating all the aspects of the input format is provided below.
 Note that AlphaFold 3 won't run this input out of the box as it abbreviates

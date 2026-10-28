@@ -1,6 +1,11 @@
 # Performance
 
-## Running the Pipeline in Stages
+How to split, size and tune AlphaFold 3 runs. The timings and memory limits on
+this page are DeepMind's, measured for AlphaFold 3 itself; the other models
+this fork runs (`--model=...`) have their own trunk sizes, so treat them as a
+guide only.
+
+## Running the pipeline in stages
 
 The `run_alphafold.py` script can be executed in stages to optimise resource
 utilisation. This can be useful for:
@@ -16,7 +21,7 @@ utilisation. This can be useful for:
     JSONs. By doing this, the MSA and template search need to be run just 4
     times (once for each chain), instead of 12 times.
 
-### Data Pipeline Only
+### Data pipeline only
 
 Launch `run_alphafold.py` with `--run_inference=false` to generate Multiple
 Sequence Alignments (MSAs) and templates, without running featurisation and
@@ -60,14 +65,14 @@ This approach has been discussed in multiple GitHub issues, such as:
 https://github.com/google-deepmind/alphafold3/issues/171 (which links to other
 similar issues).
 
-### Featurisation and Model Inference Only
+### Featurisation and model inference only
 
 Launch `run_alphafold.py` with `--run_data_pipeline=false` to skip the data
 pipeline and run only featurisation and model inference. This stage requires the
 input JSON file to contain pre-computed MSAs and templates (or they must be
 explicitly set to empty if you want to run MSA and template free).
 
-## Data Pipeline
+## Data pipeline
 
 The runtime of the data pipeline (i.e. genetic sequence search and template
 search) can vary significantly depending on the size of the input and the number
@@ -123,7 +128,7 @@ Save the sharded databases on a fast SSD or in a RAM-backed filesystem, then
 launch AlphaFold with the sharded paths instead of normal paths and set the
 Z-values.
 
-For instance with each database sharded into 16 shards:
+For instance, searching at most 16 shards of each database in parallel:
 
 ```bash
 python run_alphafold.py \
@@ -140,7 +145,7 @@ python run_alphafold.py \
     --rfam_database_path="rfam_14_9_clust_seq_id_90_cov_80_rep_seq.fasta@16" \
     --rfam_z_value=138.115553 \
     --rna_central_database_path="rnacentral_active_seq_id_90_cov_80_linclust.fasta@64" \
-    --rna_central_z_value=13271.415730
+    --rna_central_z_value=13271.415730 \
     --jackhmmer_n_cpu=2 \
     --jackhmmer_max_parallel_shards=16 \
     --nhmmer_n_cpu=2 \
@@ -161,7 +166,7 @@ You should aim for consistent shard sizes across all databases (so e.g. if
 database A is split into 16 shards and is 3× smaller than database B, database B
 should be split into 3 × 16 = 48 shards).
 
-## Model Inference
+## Model inference
 
 Table 8 in the Supplementary Information of the
 [AlphaFold 3 paper](https://nature.com/articles/s41586-024-07487-w) provides
@@ -183,7 +188,7 @@ Num Tokens | 1 A100 80 GB (GPU secs) | 16 A100 40 GB (GPU secs) | Improvement
 4096       | 1434                    | 3648                     | 2.5×
 5120       | 2547                    | 5552                     | 2.2×
 
-## Accelerator Hardware Requirements
+## Accelerator hardware requirements
 
 We officially support the following configurations, and have extensively tested
 them for numerical accuracy and throughput efficiency:
@@ -202,7 +207,7 @@ Num Tokens | 1 A100 80 GB (seconds) | 1 H100 80 GB (seconds)
 4096       | 1434                   | 774
 5120       | 2547                   | 1416
 
-### Other Hardware Configurations
+### Other hardware configurations
 
 #### NVIDIA A100 (40 GB)
 
@@ -256,7 +261,7 @@ There are known numerical issues with CUDA Capability 7.x devices. To work
 around the issue, set the environment variable `XLA_FLAGS` to include
 `--xla_disable_hlo_passes=custom-kernel-fusion-rewriter`.
 
-## Compilation Buckets
+## Compilation buckets
 
 To avoid excessive re-compilation of the model, AlphaFold 3 implements
 compilation buckets: ranges of input sizes using a single compilation of the
@@ -280,7 +285,7 @@ the default bucket sizes configured in `run_alphafold.py` will trigger three
 separate model compilations, one for each unique token size. If instead you pass
 in the following flag to `run_alphafold.py`
 
-```
+```text
 --buckets 256,512,768,1024,1280,1536,2048,2560,3072,3584,4096,4608,5120,5376
 ```
 
@@ -291,9 +296,9 @@ sufficient to achieve the desired compilation behaviour. The provided example
 with multiple buckets illustrates a more general solution suitable for diverse
 input sizes.
 
-## Additional Flags
+## Additional flags
 
-### Compilation Time Workaround with XLA Flags
+### Compilation time workaround with XLA flags
 
 To work around a known XLA issue causing the compilation time to greatly
 increase, the following environment variable must be set (it is set by default
@@ -307,14 +312,17 @@ ENV XLA_FLAGS="--xla_gpu_enable_triton_gemm=false"
 
 For all CUDA Capability 7.x GPUs (e.g. V100) the environment variable
 `XLA_FLAGS` must be changed to include
-`--xla_disable_hlo_passes=custom-kernel-fusion-rewriter`. Disabling the Tritron
+`--xla_disable_hlo_passes=custom-kernel-fusion-rewriter`. Disabling the Triton
 GEMM kernels is not necessary as they are not supported for such GPUs.
+On these GPUs `--flash_attention_implementation` must be `xla` or `volta`; the
+default, `auto`, picks `volta` when Milot Mirdita's `colabfold_legacy_kernels` and
+`colabfold_kernels` are importable and `xla` otherwise.
 
 ```sh
 ENV XLA_FLAGS="--xla_disable_hlo_passes=custom-kernel-fusion-rewriter"
 ```
 
-### GPU Memory
+### GPU memory
 
 The following environment variables (set by default in the `Dockerfile`) enable
 folding a single input of size up to 5,120 tokens on a single A100 (80 GB) or a
@@ -325,7 +333,7 @@ ENV XLA_PYTHON_CLIENT_PREALLOCATE=true
 ENV XLA_CLIENT_MEM_FRACTION=0.95
 ```
 
-#### Unified Memory
+#### Unified memory
 
 If you would like to run AlphaFold 3 on inputs larger than 5,120 tokens, or on a
 GPU with less memory (an A100 with 40 GB of memory, for instance), we recommend
@@ -344,18 +352,21 @@ ENV TF_FORCE_UNIFIED_MEMORY=true
 ENV XLA_CLIENT_MEM_FRACTION=3.2
 ```
 
-### JAX Persistent Compilation Cache
+### JAX persistent compilation cache
 
 You may also want to make use of the JAX persistent compilation cache, to avoid
-unnecessary recompilation of the model between runs. You can enable the
-compilation cache with the `--jax_compilation_cache_dir <YOUR_DIRECTORY>` flag
-in `run_alphafold.py`.
+unnecessary recompilation of the model between runs. In this fork it is on by
+default: `run_alphafold.py --cache_dir=<YOUR_DIRECTORY>` (default
+`/tmp/alphafold_cache`) keeps the JAX compilation cache in its `jax/`
+subdirectory, so point it at a persistent directory to keep it across machine
+restarts.
 
 More detailed instructions are available in the
 [JAX documentation](https://jax.readthedocs.io/en/latest/persistent_compilation_cache.html#persistent-compilation-cache),
 and more specifically the instructions for use on
 [Google Cloud](https://jax.readthedocs.io/en/latest/persistent_compilation_cache.html#persistent-compilation-cache).
 In particular, note that if you would like to make use of a non-local
-filesystem, such as Google Cloud Storage, you will need to install
-[`etils`](https://github.com/google/etils) (this is not included by default in
-the AlphaFold 3 Docker container).
+filesystem, such as Google Cloud Storage, you will need
+[`etils`](https://github.com/google/etils) (a dependency of this package) and,
+for Google Cloud Storage, the `gcsfs` extra (see
+[installation](installation.md#optional-enable-google-cloud-storage-path-support)).

@@ -12,6 +12,7 @@ Every model this fork runs is checked against its **own vendor's stock code**, n
 - [Vendor conventions the port reproduces](#vendor-conventions-the-port-reproduces)
 - [BioEmu2](#bioemu2)
 - [HelixFold3](#helixfold3)
+- [Mol-1](#mol-1)
 - [AlphaFold 2](#alphafold-2)
 - [Module-level gates (L0 to L7)](#module-level-gates-l0-to-l7)
 - [Fold accuracy](#fold-accuracy)
@@ -90,6 +91,7 @@ The vendor versions are the ones installed for the harness. All runs used float3
 | `esmfold2_lm600m` | Synthyra FastPLMs | 20/20, 3 N/A | — | PARITY, 0.000 Å |
 | `esmfold2_lm300m` | Synthyra FastPLMs | 20/20, 3 N/A | — | PARITY, 0.000 Å |
 | `bioemu2` | BioEmu2 @7846769 | 20/20, 3 N/A | PASS | PARITY, 0.000 Å ([modes](#bioemu2)) |
+| `mol1` | Mol-1 @bfc01fa (torch 2.12) | 24/24, 1 N/A, at its own 20 recycles, no floor grading | PASS | CLOSE, 0.066 Å; 8/8 ([see](#mol-1)) |
 | `helixfold3` | PaddleHelix @8e3991a (paddle 3.1) | 20/20, 4 N/A, graded [against its own spread](#helixfold3); one multi_ligand row at the edge | — | PARITY, 0.000 Å; 8/8 within its own spread ([see](#helixfold3)) |
 | `af2_ptm`, `af2_multimer` | DeepMind alphafold (AF2) | [18 gates, all green](#alphafold-2) | | |
 
@@ -115,6 +117,7 @@ The trajectory distance is the maximum per-atom distance between the final coord
 | `esmfold2_lm600m` | 11 | 0.000 Å | 0.0000 Å | 0.000° | PARITY |
 | `esmfold2_lm300m` | 11 | 0.000 Å | 0.0000 Å | 0.000° | PARITY |
 | `bioemu2` | 200 | 0.000 Å | 0.0000 Å | 0.000° | PARITY |
+| `mol1` | 200 | 0.066 Å | 0.0050 Å | 0.254° | CLOSE |
 
 **protenix1 is the one LOOSE row.** Its difference is almost entirely a 0.9° rigid rotation of the whole structure; after superposition the remaining difference is 0.0066 Å. To tell model sensitivity from a port bug, the harness nudges the vendor's *own* trunk outputs by 1e-5 (`TRAJ_FLOOR=trunk`):
 
@@ -267,6 +270,30 @@ Not ported, and not reachable from stock's own entry points either:
 
 - `ContactPotential` and `TemplateReferencePotential`: no `prepare()` fills their tables.
 - Context-parallel sampling.
+
+## Mol-1
+
+Molence Bio's Mol-1 forks Protenix at upstream bd54a05, which is v2.0.0's model code, so it reuses the Protenix-v2 port. Its trunk is split in two:
+
+- 8 "PairMixer" blocks (pairformer blocks with no triangle attention) at a pair width of 448;
+- 40 ordinary blocks at 320, between two bias-free width adapters.
+
+Its runner (`dev/oracles/mol1_upstream_runner.py`) drives stock `mol` in `~/venv_mol1` at Mol-1's own inference defaults: TF32 off, no MC dropout, and 20 recycles. LayerNorm and the triangle kernels run in plain PyTorch, as for protenix.
+
+- **At one trunk pass**, all 24 runnable cases pass: 190 rows PARITY, 2 CLOSE (the denoise step on `rna_mod` and `dna_mod`, 2e-3).
+- **At stock settings** (20 recycles, stock's per-pass MSA rows replayed), all 24 pass again: 186 rows PARITY, 6 CLOSE (1-2e-3). Unlike HelixFold3, Mol-1's recycling does not amplify float-level differences, so no row needed grading against its own spread.
+- **`long_chain`** needs smaller stock attention chunks to fit a 22 GB card (`MOL1_CHUNK=64`, memory only).
+- **Full trajectory, 8 cases.** `ion`, `heterodimer` and `ligand_ccd` are PARITY (≤0.003 Å). `dna`, `protein`, `rna` and `msa` are CLOSE (0.013-0.066 Å). `ptm` reads 0.084 Å, FLOOR: nudged by 1e-4 at its own trunk, stock moves itself by up to 7.9 Å on that input.
+- **bf16** (`--bf16-graded all`, 4 cases) passes: our bf16 error averages 0.30× stock's own on the trunk pair, 0.34× on PAE and 0.55× on the denoise step.
+  - Stock computes its row-chunked diffusion-conditioning cache in bf16, where Protenix computes it in fp32.
+  - Measured with the chunking on and off, that changes stock's own bf16 error by less than its case-to-case spread, in both directions. The port does not imitate it.
+
+Two output conventions follow stock rather than AlphaFold 3:
+
+- **The summary confidences.** pTM and ipTM average each framed token's row over all tokens (pTM) or over the other chains' tokens (ipTM), then take the maximum. A monomer's ipTM is 0. The ranking score is `0.8 ipTM + 0.2 pTM - 100 has_clash`, with the clash test over polymer chains only. This is `sample_confidence.py`, unchanged from Protenix, so all of `PROTENIX_FAMILY` now uses it. It equals stock's functions on identical logits to 6e-8.
+- **Each chain's C-terminal O and OXT are rebuilt** in the written structure, as `fix_cterminal_carboxyl_oxygens` does after stock's confidences. Ours is identical to stock's on the same coordinates.
+
+N/A: `cyclic` (no cyclic input).
 
 ## AlphaFold 2
 

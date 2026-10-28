@@ -1,11 +1,18 @@
-# How to Contribute
+# How to contribute
+
+:ledger: **Note: This fork.** The text below is Google DeepMind's contribution
+policy for [AlphaFold 3](https://github.com/google-deepmind/alphafold3), kept
+as it was. This fork,
+[sokrypton/alphafold3](https://github.com/sokrypton/alphafold3), takes pull
+requests on GitHub directly (its issue tracker is off). Fixes to AlphaFold 3
+itself are best sent upstream to DeepMind as well.
 
 We welcome small patches related to bug fixes and documentation, but we do not
 plan to make any major changes to this repository.
 
-## Before You Begin
+## Before you begin
 
-### Sign Our Contributor License Agreement
+### Sign our Contributor License Agreement
 
 Contributions to this project must be accompanied by a
 [Contributor License Agreement](https://cla.developers.google.com/about) (CLA).
@@ -19,12 +26,12 @@ was for a different project), you probably don't need to do it again.
 Visit <https://cla.developers.google.com/> to see your current agreements or to
 sign a new one.
 
-### Review Our Community Guidelines
+### Review our community guidelines
 
 This project follows
 [Google's Open Source Community Guidelines](https://opensource.google/conduct/).
 
-## Contribution Process
+## Contribution process
 
 We won't accept pull requests directly, but if you send one, we will review it.
 If we send a fix based on your pull request, we will make sure to credit you in

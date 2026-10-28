@@ -1,6 +1,10 @@
-# AlphaFold 3 Output
+# AlphaFold 3 output
 
-## Output Directory Structure
+This page describes what `run_alphafold.py` writes. Every `--model` in this fork
+writes the same files through the same writer; where a model differs (ranking
+score, confidence fields, embedding widths, extra files) it is noted below.
+
+## Output directory structure
 
 For every input job, AlphaFold 3 writes all its outputs in a directory called by
 the sanitized version of the job name. E.g. for job name "My first fold (TEST)",
@@ -20,16 +24,19 @@ The following structure is used within the output directory:
     `seed-<seed value>_sample-<sample number>`. Each of these directories
     contains a confidence JSON, summary confidence JSON, and the mmCIF with the
     predicted structure.
-*   Distogram for each seed: `seed-<seed value>_distogram/distogram.npz`. The
+*   Distogram for each seed:
+    `seed-<seed value>_distogram/<job_name>_seed-<seed value>_distogram.npz`. The
     Numpy zip file contains a single key: `distogram`. The distogram can be
     large, its shape is `(num_tokens, num_tokens, 64)` and dtype `np.float16`
     (almost 3 GiB for a 5,000-token input). Only saved if AlphaFold 3 is run
     with `--save_distogram=true`.
-*   Embeddings for each seed: `seed-<seed value>_embeddings/embeddings.npz`. The
-    Numpy zip file contains 2 keys: `single_embeddings` and `pair_embeddings`.
-    The embeddings can be large, their shapes are `(num_tokens, 384)` for
-    `single_embeddings`, and `(num_tokens, num_tokens, 128)` for
-    `pair_embeddings`. Their dtype is `np.float16` (almost 6 GiB for a
+*   Embeddings for each seed:
+    `seed-<seed value>_embeddings/<job_name>_seed-<seed value>_embeddings.npz`.
+    The Numpy zip file contains 2 keys: `single_embeddings` and
+    `pair_embeddings`. The embeddings can be large, their shapes are
+    `(num_tokens, 384)` for `single_embeddings`, and
+    `(num_tokens, num_tokens, 128)` for `pair_embeddings` (AlphaFold 3's widths;
+    other models write their own trunk widths). Their dtype is `np.float16` (almost 6 GiB for a
     5,000-token input). Only saved if AlphaFold 3 is run with
     `--save_embeddings=true`.
 *   Top-ranking prediction mmCIF: `<job_name>_model.cif`. This file contains the
@@ -41,14 +48,27 @@ The following structure is used within the output directory:
     `<job_name>_summary_confidences.json`.
 *   Job input JSON file with the MSA and template data added by the data
     pipeline: `<job_name>_data.json`.
-*   Ranking scores for all predictions: `ranking_scores.csv`. The prediction
-    with highest ranking is the one included in the root directory.
-*   Output terms of use: `TERMS_OF_USE.md`.
+*   Ranking scores for all predictions: `<job_name>_ranking_scores.csv`, with
+    columns `seed`, `sample` and `ranking_score`, plus a `model` column when
+    the samples come from different parameter sets (AlphaFold 2 with
+    `--af2_num_models` above 1). The prediction with highest ranking is the one
+    included in the root directory.
+*   Output terms of use: `TERMS_OF_USE.md`. Its text follows the weights that
+    made the prediction: AlphaFold 3's output terms for `--model=alphafold3`,
+    the model's own licence for the others.
+*   With `--use_msa_server`: the MSAs fetched from the server, in
+    `msas/<chain_id>_unpaired.a3m` and `msas/<chain_id>_paired.a3m`.
+*   With `--model=bioemu2`: a physicality report per sample,
+    `<job_name>_seed-<seed value>_sample-<sample number>_physicality.json`, and
+    a summary of all samples, `<job_name>_physicality.json`.
+
+With `--compress_large_output_files=true`, the mmCIF and full confidences JSON
+files are written zstandard-compressed, with a `.zst` suffix.
 
 Below is an example AlphaFold 3 output directory listing for a job called "Hello
 Fold", that has been ran with 1 seed and 5 samples:
 
-```txt
+```text
 hello_fold/
 ├── seed-1234_distogram                        # Only if --save_distogram=true.
 │   └── hello_fold_seed-1234_distogram.npz     # Only if --save_distogram=true.
@@ -82,7 +102,7 @@ hello_fold/
 └── hello_fold_summary_confidences.json
 ```
 
-## Confidence Metrics
+## Confidence metrics
 
 Similar to AlphaFold 2 and AlphaFold-Multimer, AlphaFold 3 outputs include
 confidence metrics. The main metrics are:
@@ -131,7 +151,7 @@ confidences available in the outputs which are specific to each chain or
 chain-pair, as opposed to the full complex. See below for more details on all
 the confidence metrics that are returned.
 
-## Multi-Seed and Multi-Sample Results
+## Multi-seed and multi-sample results
 
 By default, the model samples five predictions per seed. The top-ranked
 prediction across all samples and seeds is available at the top-level of the
@@ -149,7 +169,7 @@ by a metric specific to that chain or chain-pair, as opposed to the full
 complex. In that case, use the per chain or per chain-pair confidence metrics
 described below for ranking.
 
-## Metrics in Confidences JSON
+## Metrics in confidences JSON
 
 For each predicted sample we provide two JSON files. One contains summary
 metrics – summaries for either the whole structure, per chain or per chain-pair
@@ -172,7 +192,12 @@ Summary outputs:
 *   `ranking_score`: A scalar in the range \[-100, 1.5\] that can be used for
     ranking predictions, it incorporates `ptm`, `iptm`, `fraction_disordered`
     and `has_clash` into a single number with the following equation: 0.8 × ipTM
-    \+ 0.2 × pTM \+ 0.5 × disorder − 100 × has_clash.
+    \+ 0.2 × pTM \+ 0.5 × disorder − 100 × has_clash. Some models in this
+    fork rank as their own code does: the Protenix family (`protenix1`,
+    `protenix2`, `mol1`) drops the disorder term (0.8 × ipTM + 0.2 × pTM − 100
+    × has_clash), `helixfold3` uses 0.8 × ipTM + 0.2 × pTM − 1 × has_clash, and
+    both count clashes between polymer chains only. A model with no confidence
+    head (`bioemu2`) writes its confidence fields and `ranking_score` as NaN.
 *   `chain_pair_pae_min`: A \[num_chains, num_chains\] array. Element (i, j) of
     the array contains the lowest PAE value across rows restricted to chain i
     and columns restricted to chain j. This has been found to correlate with
@@ -208,6 +233,8 @@ Full array outputs:
     [paper](https://www.nature.com/articles/s41586-024-07487-w) for details.
 *   `token_chain_ids`: A \[num_tokens\] array indicating the chain ids
     corresponding to each token in the prediction.
+*   `token_res_ids`: A \[num_tokens\] array indicating the residue ids
+    corresponding to each token in the prediction.
 *   `atom_chain_ids`: A \[num_atoms\] array indicating the chain ids
     corresponding to each atom in the prediction.
 
@@ -219,7 +246,7 @@ each seed. The file is in the
 and can be loaded using `numpy.load` as a dictionary-like object with two
 arrays:
 
-*   `single_embeddings`: A \`[num\_tokens, 384\] array containing the embeddings
+*   `single_embeddings`: A \[num\_tokens, 384\] array containing the embeddings
     for each token.
 *   `pair_embeddings`: A \[num\_tokens, num\_tokens, 128\] array containing the
     pairwise embeddings between all tokens.
@@ -243,6 +270,6 @@ multiple seeds and using this chiral aware ranking, chiral error rates were
 greatly reduced.
 
 We provide the method `compare_chirality` in
-[`model/scoring/chirality.py`](https://github.com/google-deepmind/alphafold3/blob/main/src/alphafold3/model/scoring/chirality.py)
+[`model/scoring/chirality.py`](../src/alphafold3/model/scoring/chirality.py)
 to replicate these chiral checks. Chirality is checked against CCD structures if
 available, otherwise users can supply custom RDKit Mol objects for comparison.

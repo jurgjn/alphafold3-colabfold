@@ -1,4 +1,4 @@
-# Model Parameters
+# Model parameters
 
 AlphaFold 3 layer names, shapes, and dtypes are documented in the table below.
 This can be used for example to generate random parameters for AlphaFold 3
@@ -6,6 +6,11 @@ performance optimisation on new accelerators without having to obtain the
 official parameters. It is important to not generate zero-only parameters for
 performance optimisations as accelerators often have shortcuts for zero-only
 arguments (e.g. `0 * tensor` can be optimised to a no-op).
+
+The schema is that of DeepMind's AlphaFold 3 parameters (`--model=alphafold3`).
+The other models this fork runs have their own widths and extra scopes; see
+[converters/README.md](../converters/README.md) for how their weights are
+mapped.
 
 Producing random parameters could be done similarly to the following snippet:
 
@@ -28,9 +33,9 @@ with zstandard.open('random_weights.bin.zst', 'wb') as compressed:
     compressed.write(params.encode_record(*scope_name, arr))
 ```
 
-## Parameters Schema
+## Parameters schema
 
-```
+```text
 name=__meta__:__identifier__                                                                                                                                                             dtype=uint8     shape=(64,)
 name=diffuser/~/diffusion_head/diffusion_atom_features_layer_norm:scale                                                                                                                  dtype=float32   shape=(128,)
 name=diffuser/~/diffusion_head/diffusion_atom_features_to_position_update:weights                                                                                                        dtype=float32   shape=(128, 3)

@@ -1,8 +1,12 @@
 # The ported models: what each one needed
 
-`OF3_AF3_PORTING_NOTES.md` records the first port, OpenFold3, in full detail.
-This is the companion for the rest: what kind of change each model needed, and
-how much of it is forced.
+What kind of change each ported model needed on AlphaFold 3's graph, how much of
+it is forced by the checkpoints, and which input conventions each family has to
+be fed. It is for anyone adding a model or debugging one. The model list, how to
+run them and the weights are in the [README](../README.md#the-models-this-fork-runs);
+per-model parity against stock vendor code is in [PARITY.md](../PARITY.md).
+[of3_af3_porting_notes.md](of3_af3_porting_notes.md) records the first port,
+OpenFold3, in full detail.
 
 ## How much is forced
 
@@ -10,7 +14,9 @@ A branch that creates or omits a parameter cannot be replaced by AlphaFold 3's
 behaviour — the converted weights simply stop loading. A branch that only changes
 arithmetic could be, at some cost in accuracy. Deriving each model's parameter
 tree twice with identical config shapes, flipping only `global_config.model`,
-separates the two:
+separates the two. Measured for the first seven ports; the later ones
+(`openbind0`, `protenix1`, `mol1`, `helixfold3`, the `esmfold2` family,
+`bioemu2`) have not been counted this way.
 
 | `--model` | parameters | forced by its branches | AF3 parameters it does not have |
 |---|---|---|---|
@@ -76,19 +82,25 @@ declares which, and `model/pipeline/model_features.py` applies them. Every one i
 silent when it is wrong — nothing errors, the fold is merely worse — so
 `--featurise_off=NAME` exists to measure what each one buys.
 
+`_FEATURISE` is the authoritative list and now holds about sixty knobs, most of
+them added by the stock-vendor parity sweeps (MSA construction, leaving atoms,
+templates; see [PARITY.md](../PARITY.md#vendor-conventions-the-port-reproduces)).
+The table below covers the original conventions, the ones whose effect on a fold
+was measured; the model column is the current one.
+
 | convention | models | what it is |
 |---|---|---|
-| `padded_keys` | opendde, protenix2 | zero-pad the 128-key atom window; AF3 slides an out-of-range window back in bounds |
+| `padded_keys` | boltz2, opendde, protenix1, protenix2, mol1, helixfold3, rosettafold3 | zero-pad the 128-key atom window; AF3 slides an out-of-range window back in bounds |
 | `circular_keys` | chai1 | take that window modulo the atom count instead |
-| `drop_atoms` | chai1 | chai numbers its atoms without the C-terminal OXT |
-| `std_conformers` | chai1 | chai's own standard-residue conformers. **OFF by default and not published** -- see below |
+| `drop_atoms` | chai1, boltz2, rosettafold3, openfold3, openbind0, intellifold2, the esmfold2 family | the model never sees the terminal OXT (and, for most, the 5' OP3) |
+| `std_conformers` | chai1 | chai's own standard-residue conformers (`constants/chai1_conformers.py`), on by default -- see below |
 | `zero_msa_without_alignment` | chai1 | with no MSA, chai feeds an all-gap one, not a depth-1 self-MSA |
 | `esm` | chai1 | ESM2 token embeddings, most of chai's token stream |
 | `chirals` | rosettafold3 | chirality features |
 | `atomized_element_names` | rosettafold3 | atomised atoms carry their ELEMENT symbol |
 | `restype_alignment` | rosettafold3 | rf3's own restype ordering on atomised tokens |
-| `atomized_unknown_restype` | rosettafold3 | an atomised polymer token is UNKNOWN, not its parent residue type |
-| `atomized_backbone_bonds` | rosettafold3 | restore the peptide bond at each atomised residue's two junctions |
+| `atomized_unknown_restype` | rosettafold3, chai1, openfold3, openbind0, the esmfold2 family | an atomised polymer token is UNKNOWN, not its parent residue type |
+| `atomized_backbone_bonds` | rosettafold3, opendde, the Protenix family, openfold3, openbind0, the esmfold2 family | restore the peptide bond at each atomised residue's two junctions |
 | `modified_as_one_token` | boltz2 | a modified residue is ONE token, UNK restype, `is_modified` set — all three together |
 
 These are weight conventions: applying one model's to another is not a feature,
@@ -145,8 +157,10 @@ shares:
 
 * **`--cyclic`** wraps the relative-position encoding, so a chain has no N- or
   C-terminus. AlphaFold 3's input JSON cannot express this; the encoding is
-  shared by the trunk and the diffusion head of every model here, so all of them
-  honour it. A chain left out is byte-identical to before.
+  shared by the trunk and the diffusion head of every model on the AF3 graph, so
+  all of them honour it (boltz2 also adds its trained cyclic term, below).
+  BioEmu2 refuses it and AlphaFold 2 does not read it. A chain left out is
+  byte-identical to before.
 * **The decoded CCD** (`alphafold3.constants.decoded_ccd`). The dictionary stores
   every primed nucleic-acid atom name mmCIF-quoted (`"O5'"`), and five characters
   do not fit AlphaFold 3's four-character atom-name field, so DNA and RNA fail to
@@ -213,31 +227,26 @@ nothing and merely spreads its softmax thinner. The fix is right because it is
 what both natives do, not because it buys accuracy -- do not go looking for a
 regression it explains.
 
-A third gap found by the same audit is **still open**: boltz-2 adds a learned
+A third gap found by the same audit is **also fixed**: boltz-2 adds a learned
 cyclic term to the SINGLE track (`s = s + self.cyclic_conditioning_init(cyclic)`,
-`trunkv2.py:204`, weight absmax 0.45), and our cyclic support is only the
-relative-position wrap in `create_relative_encoding`. So a boltz2 fold of a cyclic
-peptide is missing part of boltz's cyclic conditioning. Closing it needs a forward
-branch and the per-token cyclic scalar plumbed to the input embedder, not just a
-converter line.
+`trunkv2.py:204`, weight absmax 0.45), where our cyclic support had been only the
+relative-position wrap. `model.py` now adds it as `boltz2_cyclic_conditioning`
+from the per-token `cyclic_period` (clamped to 0/1, so it vanishes on every
+non-cyclic input), and the boltz2 parity sweep includes a `cyclic` case.
 
 
-## Why chai-1's conformers are not shipped
+## chai-1's own conformers
 
-`std_conformers.npz` is 22 KB, so this is not about size. It is derived from
-chai's own RDKit cache (`conformers_v1.apkl`) rather than from anything we
-converted, and chai-1's weights licence is one we have **not** established -- the
-registry says so, and `output_terms()` prints it. Redistributing chai's data
-alongside our blob is a claim we have not earned, and the cost of not doing it is
-0.08 A (above).
+chai-1 builds every standard residue from its own RDKit conformer cache
+(`conformers_v1.apkl`) rather than CCD ideal coordinates. Those coordinates now
+ship in the package as `constants/chai1_conformers.py` (from chai-lab, Apache-2.0,
+the same licence as its weights) and `std_conformers` is on by default for chai1;
+`AF3_NO_CHAI_CONFORMERS=1` or `--featurise_off=std_conformers` falls back to the
+CCD ideal conformer the other models use. Ligands take the CCD either way, as
+they do in chai. The measured difference is the `std_conformers` row above:
+pLDDT and pTM move, the structure by 0.08 A.
 
-So the default is the CCD ideal conformer every other model in this family uses.
-The mechanism is intact: `featurise_chai1(std_conformers=True)` with the file
-beside the weights restores chai's, and the oracles that exist to REPRODUCE
-native chai pass it, because reproducing native is exactly the case where you
-want chai's own inputs.
-
-It is an explicit flag rather than "use the file if it happens to be present" on
+It is a declared knob rather than "use the file if it happens to be present" on
 purpose. Sniffing the filesystem would make a fold depend on which machine ran
 it, which is the silent, environment-dependent divergence this codebase has paid
 for more than once.

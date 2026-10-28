@@ -1,9 +1,16 @@
-# How to Contribute
+# How to contribute
+
+:ledger: **Note: This fork.** The text below is Google DeepMind's contribution
+policy for [AlphaFold 3](https://github.com/google-deepmind/alphafold3), kept
+as it was. This fork,
+[sokrypton/alphafold3](https://github.com/sokrypton/alphafold3), takes pull
+requests on GitHub directly (its issue tracker is off). Fixes to AlphaFold 3
+itself are best sent upstream to DeepMind as well.
 
 We welcome small patches related to bug fixes and documentation, but we do not
 plan to make any major changes to this repository.
 
-## AI Generated Code
+## AI-generated code
 
 We welcome the use of AI tools for the generation of code, documentation and/or
 Pull Request (PR) description as long as:

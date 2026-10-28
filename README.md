@@ -33,16 +33,21 @@ https://storage.googleapis.com/alphafold3/af3.bin.zst. Use is subject to these
 
 ## The models this fork runs
 
-**17 model types**, and one `--model` flag decides which forward branches,
-config shapes, sampler constants and input conventions are used. The same input
-JSON drives all of them.
+This fork, published on PyPI as `alphafold3-colabfold`, runs **19 models**:
+17 on AlphaFold 3's graph (`model_config.MODELS`) and two AlphaFold 2 models.
+One `--model` flag decides which forward branches, config shapes, sampler
+constants and input conventions are used, and the same input JSON drives all of
+them. The registry is `src/alphafold3/model/model_registry.py`.
 
-Two ENGINES live here. Everything in the first four groups rides the shared
-AlphaFold 3 graph — a pair+single trunk into a diffusion sampler — so adding one
-is a weight remap plus a branch. AlphaFold 2 shares neither end (MSA row/column
-attention, and an IPA head over backbone frames) and runs as a sibling network
-under `alphafold3.af2`, reached through the same CLI and the same output writer.
-Check `model_registry.get(name).engine` rather than testing the name.
+Two ENGINES live here. Everything except AlphaFold 2 rides the shared AlphaFold 3
+graph — a pair+single trunk into a diffusion sampler — so adding one is a weight
+remap plus a branch; BioEmu2 is the partial exception, sharing only the sampler
+and output path. AlphaFold 2 shares neither end (MSA row/column attention, and
+an IPA head over backbone frames) and runs as a sibling network under
+`alphafold3.af2`, reached through the same CLI and the same output writer.
+Check `model_registry.get(name).engine` (`af3` or `af2`) rather than testing the
+name. What each port needed, and the input conventions each family requires, are
+in [docs/ported_models.md](docs/ported_models.md).
 
 ### AlphaFold 3 lineage
 
@@ -51,13 +56,13 @@ Check `model_registry.get(name).engine` rather than testing the name.
 | `alphafold3` | AlphaFold 3 (Google DeepMind) | request from DeepMind |
 | `openfold3` | [OpenFold3 preview-2](https://github.com/aqlaboratory/openfold3) (AlQuraishi Lab) | Apache 2.0 |
 | `openbind0` | [OpenFold3 v0.5.0 "OpenBind"](https://github.com/aqlaboratory/openfold-3/releases/tag/v0.5.0) | Apache 2.0 |
-| `intellifold2` | [IntelliFold-v2](https://huggingface.co/intelligenAI/intellifold) (IntelligenAI) | see upstream |
+| `intellifold2` | [IntelliFold-v2](https://huggingface.co/intelligenAI/intellifold) (IntelligenAI) | Apache 2.0 |
 
 ### Protenix family
 
 Protenix publishes nine model types that differ only in counts and widths;
-`derive_dims` + `PROTENIX_FAMILY` make each one close to a one-liner. Two are
-wired up. The others (`protenix05`, `protenix1_20250630`, `protenix_mini`,
+`derive_dims` + `PROTENIX_FAMILY` make each one close to a one-liner. Two of
+ByteDance's are wired up, plus Mol-1, a fork. The others (`protenix05`, `protenix1_20250630`, `protenix_mini`,
 `protenix_tiny`) were dropped on 2026-09-08 to keep parity work focused; re-adding
 one is a `sources.py` entry, a converter alias and a `MODELS` line.
 
@@ -79,8 +84,8 @@ Protenix's 10.
 | `--model` | model | weights |
 |---|---|---|
 | `boltz2` | [Boltz-2](https://github.com/jwohlwend/boltz) | MIT |
-| `opendde` | [OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) (Aureka Research) | see upstream |
-| `rosettafold3` | [RoseTTAFold3](https://files.ipd.uw.edu/pub/rf3/) (RosettaCommons) | see upstream |
+| `opendde` | [OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) (Aureka Research) | Apache 2.0 |
+| `rosettafold3` | [RoseTTAFold3](https://github.com/RosettaCommons/foundry) (RosettaCommons) | BSD 3-Clause |
 | `chai1` | [chai-1](https://github.com/chaidiscovery/chai-lab) (Chai Discovery) | Apache 2.0 |
 | `helixfold3` | [HelixFold3](https://github.com/PaddlePaddle/PaddleHelix/tree/dev/apps/protein_folding/helixfold3) (Baidu PaddleHelix, 2025-07-14 weights) | **non-commercial** (NC-SA) |
 
@@ -101,7 +106,7 @@ Pair-only trunk conditioned on an ESM-C language model.
 | `esmfold2_lm300m` | […-base300M-step1500k](https://huggingface.co/biohub/ESMFold2-Experimental-Fast-base300M-step1500k) — **ESM-C 300M** | MIT |
 
 All but the last two condition on ESM-C 6B; those use the 600M and 300M towers
-and cost 0.5 GB and 0.3 GB against 5.1. Upstream ships the "Experimental" line
+and cost 0.5 GB and 0.3 GB against 5.5. Upstream ships the "Experimental" line
 for paper reproducibility rather than research use — its own card says to prefer
 plain `esmfold2`. The language-model input is built outside the fold by
 `alphafold3.model.esm` (tower, published int8 at 5.5 GB) plus a per-model shim
@@ -166,7 +171,9 @@ Where it differs from the BioEmu2 CLI:
 | `af2_multimer` | AlphaFold 2 multimer v3 (`params_model_*_multimer_v3.npz`) | CC BY 4.0 |
 
 DeepMind's own AlphaFold 2 parameters, read from `--model_dir` as
-`params/params_model_*.npz` — nothing is converted or republished. Monomer and
+`params_model_*.npz` (directly or under `params/`); if the directory holds none,
+they are downloaded there from DeepMind's own release
+(`weights.AF2_PARAMS_URL`). Nothing is converted or republished. Monomer and
 multimer run on ONE graph: a monomer checkpoint is converted onto the multimer
 network at load. **Protein only** — a fold input carrying a ligand, a nucleotide
 or an inter-chain bond raises rather than silently folding the protein subset.
@@ -189,7 +196,7 @@ the AF3 lineage, so read its numbers in
 
 ## Parity
 
-Each model is checked against **its own vendor's stock code**: both sides run their shipped entry points on the same input with the same random draws. Every model matches its vendor on every input that vendor can take, across 23 input types. The comparison covers the trunk, a denoise step, the confidence heads, padded inputs and the full diffusion trajectory. AlphaFold 3 is compared against DeepMind's own repository, and AlphaFold 2 passes 18 module gates against DeepMind's original code.
+Each model is checked against **its own vendor's stock code**: both sides run their shipped entry points on the same input with the same random draws. Every model matches its vendor on every input that vendor can take, across 23 input types (HelixFold3 is graded against its own run-to-run spread and has one row at the edge of it; see PARITY.md). The comparison covers the trunk, a denoise step, the confidence heads, padded inputs and the full diffusion trajectory. AlphaFold 3 is compared against DeepMind's own repository, and AlphaFold 2 passes 18 module gates against DeepMind's original code.
 
 | `--model` | stock reference | input types | full trajectory, final coordinates |
 |---|---|---|---|
@@ -204,6 +211,9 @@ Each model is checked against **its own vendor's stock code**: both sides run th
 | `esmfold2` / `esmfold2_fast` | esm 3.4.1 | 23/23 | exact |
 | `esmfold2_lm600m` / `lm300m` | Synthyra FastPLMs | 20/20 (no MSA input) | exact |
 | `bioemu2` | BioEmu2 (7846769) | 20/20 (no template input) | 0.000 Å |
+| `mol1` | Mol-1 (bfc01fa) | 24/24 (no cyclic input) | 0.066 Å |
+| `helixfold3` | PaddleHelix (8e3991a) | 20/20 against its own spread; one row at the edge | 0.000 Å |
+| `af2_ptm` / `af2_multimer` | DeepMind alphafold | 18 module gates | — |
 
 \* protenix1's final structure comes out rotated by 0.9° as a whole. Stock protenix1 rotates itself by 0.38° when its own trunk outputs are nudged by 1e-5, so this is the model's sensitivity, not a port difference.
 
@@ -235,9 +245,10 @@ is what you want for weights you converted or staged yourself. AlphaFold 3's own
 parameters are the exception: they are not ours to redistribute, so `--model
 alphafold3` needs `--model_dir` pointing at your own copy.
 
-**Smaller downloads.** `--weights_precision int8` fetches the same weights stored
-as 8-bit, expanded back when the model loads. This is a storage format, not a
-compute one — inference is unchanged. Measured cost on rosettafold3: within
+**Download precision.** `--weights_precision` picks which published form to
+fetch, and **int8 is the default**: the same weights stored as 8-bit, expanded
+back when the model loads. This is a storage format, not a compute one —
+inference is unchanged. `fp32` is the exact bytes the converters wrote. Measured cost on rosettafold3: within
 sampling noise on protein, ligand, RNA and a D/L peptide, with stereochemistry
 unchanged; on 6MRR the int8 blobs fold at float32's accuracy (boltz2 0.557 vs
 0.558, opendde 1.194 vs 1.197, openfold3 1.642 vs 1.639 CA-RMSD).
@@ -249,25 +260,32 @@ scheme (before 2026-09-18) still load. `fp16` is the same idea at half precision
 
 | `--model` | fp32 | fp16 | int8 |
 |---|---|---|---|
-| `chai1` | 1.20 GB | 0.60 GB | 0.31 GB |
+| `chai1` | 1.20 GB | 0.59 GB | 0.31 GB |
 | `protenix1` | 0.99 GB | 0.47 GB | 0.23 GB |
 | `protenix2` | 1.33 GB | 0.61 GB | 0.29 GB |
-| `rosettafold3` | 1.36 GB | 0.65 GB | 0.35 GB |
+| `rosettafold3` | 1.36 GB | 0.68 GB | 0.35 GB |
 | `openfold3` | 1.37 GB | 0.68 GB | 0.35 GB |
-| `openbind0` | 1.31 GB | 0.68 GB | 0.35 GB |
+| `openbind0` | 1.37 GB | 0.68 GB | 0.35 GB |
 | `intellifold2` | 1.77 GB | 1.37 GB | 0.80 GB |
 | `boltz2` | 1.88 GB | 0.94 GB | 0.49 GB |
 | `opendde` | 2.47 GB | 0.94 GB | 0.54 GB |
 | `esmfold2` | 0.87 GB | 0.43 GB | 0.23 GB |
+| `esmfold2_fast` | 0.70 GB | 0.35 GB | 0.18 GB |
+| `esmfold2_lm600m` | 0.66 GB | 0.33 GB | 0.17 GB |
+| `esmfold2_lm300m` | 0.66 GB | 0.33 GB | 0.17 GB |
 | `bioemu2` | 1.90 GB | 0.95 GB | 0.49 GB |
 | `helixfold3` | 1.37 GB | 0.68 GB | 0.36 GB |
+| `mol1` | 2.15 GB | 0.73 GB | 0.50 GB |
 
 HelixFold3's trunk is chaotic under recycling (stock's own trunk moves visibly under a 1e-6 nudge, see
 PARITY.md), so a storage rounding can carry a sample to a different nearby structure: on one test protein
 one of two samples landed 1.6 A (fp16) / 2.5 A (int8) CA RMSD from fp32's and the other 0.1 A, against
 0.3 A between fp32's own two samples, at the same ranking score. Use `fp32` where that matters.
 
-Each precision caches to its own directory (`<model>-int8/`), so asking for one
+The ESMFold2 rows exclude the ESM-C tower, which is fetched separately (below).
+
+Each precision caches to its own directory (`<model>-int8/`, `<model>-fp16/`;
+fp32 uses the bare `<model>/`), so asking for one
 never silently gets you the other, and switching back to a form you already have
 is instant.
 
@@ -275,8 +293,9 @@ is instant.
 
 The repo is grouped by family and served over plain HTTPS, so nothing more than
 `wget` is needed — useful for pre-staging a shared filesystem or an air-gapped
-machine. A model's folder is its family, not its own name: the Protenix
-releases share `protenix/`, the eight ESMFold2 releases share `esmfold2/`,
+machine. A model's folder is its family, not its own name
+(`model_registry.WEIGHTS_FOLDERS`): the Protenix releases share `protenix/`
+(Mol-1 has its own `mol1/`), the four ESMFold2 models share `esmfold2/`,
 openbind0 sits with `openfold3/`, and the ESM2 and ESM-C towers are under `lm/`.
 The four Protenix model types this fork dropped on 2026-09-08 (`protenix05`,
 `protenix1_20250630`, `protenix_mini`, `protenix_tiny`) are still published
@@ -341,7 +360,7 @@ python run_alphafold.py --model=chai1         --use_esm_embeddings ...
 python run_alphafold.py --model=esmfold2_fast --use_esm_embeddings ...
 ```
 
-The tower runs in-process and is downloaded on demand (2.4 GB for ESM2, 5.1 GB
+The tower runs in-process and is downloaded on demand (2.5 GB for ESM2, 5.5 GB
 for ESM-C 6B), which is why it is opt-in rather than the default. Running one of
 these models without the flag warns, because the result is a different model
 rather than a slightly worse one.
@@ -354,16 +373,17 @@ states themselves rather than a fold.
 `--cyclic=A,B` (or `--cyclic=all`) makes those chains' relative-position
 encoding wrap, so they have no N- or C-terminus. This is not an AlphaFold 3
 feature (the input JSON has no way to say it), but the encoding is shared, so
-**every model here honours it**, except BioEmu2, which has no cyclic input
-and refuses it. Only Boltz-2 was trained with it, so for the others it is an
+**every model on the AF3 graph honours it**, except BioEmu2, which has no
+cyclic input and refuses it; AlphaFold 2 does not read it. Only Boltz-2 was trained with it, so for the others it is an
 extrapolation; stock IntelliFold accepts the flag and ignores it. A chain left out is byte-identical to before.
 
 ### Licences and porting notes
 
 The terms of use written beside a prediction follow the weights that made it,
 not AlphaFold 3's. See [converters/README.md](converters/README.md) for what
-each conversion involves and [OF3_AF3_PORTING_NOTES.md](OF3_AF3_PORTING_NOTES.md)
-for the conventions that differ between these codebases and why.
+each conversion involves and [docs/of3_af3_porting_notes.md](docs/of3_af3_porting_notes.md)
+for the conventions that differ between these codebases and why, and
+[docs/ported_models.md](docs/ported_models.md) for what each later port needed.
 
 ## Installation and Running Your First Prediction
 
@@ -394,7 +414,7 @@ following input JSON file named `fold_input.json`:
 
 You can then run AlphaFold 3 using the following command:
 
-```
+```bash
 docker run -it \
     --volume $HOME/af_input:/root/af_input \
     --volume $HOME/af_output:/root/af_output \
@@ -428,7 +448,9 @@ See the [output documentation](docs/output.md).
 
 ## Performance
 
-See the [performance documentation](docs/performance.md).
+See the [performance documentation](docs/performance.md). Runtime and peak
+memory of the ported models by sequence length are in
+[docs/benchmarks/README.md](docs/benchmarks/README.md).
 
 ## Known Issues
 
@@ -516,7 +538,7 @@ Beyond them, three whose code this borrows from directly:
     built on this same Haiku graph. Two things here come straight from it. One is
     the padded-key attention mask, which protenix2 and opendde were missing. The
     other is the discipline of asserting that **every** checkpoint tensor is
-    consumed exactly once — `dev/audit_coverage.py` is that check (dev-only, out of tree), and it
+    consumed exactly once — `dev/audit_coverage.py` is that check (dev-only, not in the package), and it
     found four dropped distogram biases, three LayerNorm offsets and a
     single-conditioner bias that eight ports' worth of correlation gates had all
     scored as passing. Independent agreement on the rest of the Protenix config

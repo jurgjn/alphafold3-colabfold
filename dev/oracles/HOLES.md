@@ -1,3 +1,11 @@
+# Parity holes: investigation log
+
+> **This is a dated log, not current documentation.** It records how module-level
+> parity gaps were found and closed (entries dated 2026-09-06 to 2026-09-30).
+> Statements below were true when written; some have since been superseded.
+> Current status is in [PARITY.md](../../PARITY.md); how the harnesses run is in
+> [README.md](README.md).
+
 # What is left for 100% parity
 
 TWO categories, and the second was invisible until `parity_audit.py` existed:

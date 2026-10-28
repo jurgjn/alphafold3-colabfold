@@ -1,4 +1,4 @@
-# Known Issues
+# Known issues
 
 ## Numerical performance for CUDA Capability 7.x GPUs
 
@@ -53,7 +53,7 @@ value – you would have to modify the code to do it. We added support for
 searching against sharded databases in AlphaFold 3 in
 https://github.com/google-deepmind/alphafold3/commit/805adc3863841d83d631ccd18136ad58ce3ecb34
 and the way to run AlphaFold 3 with sharded databases is documented in
-https://github.com/google-deepmind/alphafold3/blob/main/docs/performance.md#sharded-genetic-databases.
+[performance.md](performance.md#sharded-genetic-databases).
 It can provide 10–30× speedup (potentially even more, depending on hardware) of
 the genetic search.
 

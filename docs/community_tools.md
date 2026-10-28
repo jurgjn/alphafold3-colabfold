@@ -1,4 +1,4 @@
-# Community Tools
+# Community tools
 
 ## JAAG: a JSON input file Assembler for AlphaFold 3 (with Glycan Integration)
 
