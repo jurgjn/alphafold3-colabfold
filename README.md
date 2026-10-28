@@ -282,6 +282,11 @@ PARITY.md), so a storage rounding can carry a sample to a different nearby struc
 one of two samples landed 1.6 A (fp16) / 2.5 A (int8) CA RMSD from fp32's and the other 0.1 A, against
 0.3 A between fp32's own two samples, at the same ranking score. Use `fp32` where that matters.
 
+Mol-1 is not chaotic under recycling, but on an input with several distinct conformations a rounding can
+still tip a sample into a neighbouring one. On 7r6r (a protein-DNA complex whose stock samples span 2-11 A
+CA RMSD of each other), three of five samples stayed within 0.2-0.6 A of fp32's and two moved 1.5-3.6 A
+(fp16 and int8 alike), with pTM, ipTM and ranking score unchanged.
+
 The ESMFold2 rows exclude the ESM-C tower, which is fetched separately (below).
 
 Each precision caches to its own directory (`<model>-int8/`, `<model>-fp16/`;
