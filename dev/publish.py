@@ -60,8 +60,8 @@ _FOLDERS = {
     # fails closed, so an omission here is not "publishes to the default", it is
     # "cannot publish at all". rosettafold3 was missing and that is exactly what
     # it did -- refused, mid-run, after the six protenix uploads had gone up.
-    **{m: m for m in ('alphafold3', 'boltz2', 'chai1', 'intellifold2',
-                      'opendde', 'rosettafold3')},
+    **{m: m for m in ('alphafold3', 'bioemu2', 'boltz2', 'chai1', 'helixfold3',
+                      'intellifold2', 'mol1', 'opendde', 'rosettafold3')},
     **{m: 'lm' for m in ('esmc', 'esmc_300m', 'esmc_600m', 'esm2')},
 }
 
