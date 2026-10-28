@@ -54,6 +54,15 @@ class Batch:
   lm_pair: features.xnp_ndarray | None = None
   # chai-1 only: (num_tokens, num_tokens) 0/1, its TokenBondRestraint -- one entry per declared bond, left -> right
   declared_bonds: features.xnp_ndarray | None = None
+  # boltz2 only, and only when the input carries pocket/contact constraints: (num_tokens, num_tokens) int32 class
+  # (UNSPECIFIED 0, UNSELECTED 1, POCKET>BINDER 2, BINDER>POCKET 3, CONTACT 4; -1 on padding) and the distance in
+  # Angstrom. None leaves boltz's unconstrained all-UNSPECIFIED term (model_features._boltz2_constraints).
+  contact_conditioning: features.xnp_ndarray | None = None
+  contact_threshold: features.xnp_ndarray | None = None
+  # chai1 only, likewise: (num_tokens, num_tokens) distances in Angstrom, -1 where none -- its TokenDistanceRestraint
+  # (contact, [token1, token2] only) and TokenPairPocketRestraint ([pocket residue, every binder token])
+  token_distance_restraint: features.xnp_ndarray | None = None
+  token_pair_pocket_restraint: features.xnp_ndarray | None = None
 
   @property
   def num_res(self) -> int:
@@ -83,6 +92,10 @@ class Batch:
         chirals=features.Chirals.from_data_dict(batch),
         lm_pair=batch.get('lm_pair'),
         declared_bonds=batch.get('declared_bonds'),
+        contact_conditioning=batch.get('contact_conditioning'),
+        contact_threshold=batch.get('contact_threshold'),
+        token_distance_restraint=batch.get('token_distance_restraint'),
+        token_pair_pocket_restraint=batch.get('token_pair_pocket_restraint'),
     )
 
   def as_data_dict(self) -> features.BatchDict:
@@ -104,6 +117,12 @@ class Batch:
       output['lm_pair'] = self.lm_pair
     if self.declared_bonds is not None:
       output['declared_bonds'] = self.declared_bonds
+    if self.contact_conditioning is not None:
+      output['contact_conditioning'] = self.contact_conditioning
+      output['contact_threshold'] = self.contact_threshold
+    if self.token_distance_restraint is not None:
+      output['token_distance_restraint'] = self.token_distance_restraint
+      output['token_pair_pocket_restraint'] = self.token_pair_pocket_restraint
     return output
 
 

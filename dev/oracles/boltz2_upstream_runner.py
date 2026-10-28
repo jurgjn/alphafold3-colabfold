@@ -106,6 +106,21 @@ def _yaml_from_af3(j, msa_dir):
   if j.get('bondedAtomPairs'):
     y['constraints'] = [{'bond': {'atom1': list(a), 'atom2': list(b)}}
                         for a, b in j['bondedAtomPairs']]
+  if j.get('constraints'):
+    # ours [chain, res] / [chain, res, atom] -> boltz's [chain, res] for a polymer, [chain, atom] for a ligand
+    ligands = {i for entry in j['sequences'] for kind, e in entry.items() if kind == 'ligand'
+               for i in (e['id'] if isinstance(e['id'], list) else [e['id']])}
+    tok = lambda t: [t[0], t[2]] if t[0] in ligands else [t[0], t[1]]
+    for c in j['constraints']:
+      (kind, e), = c.items()
+      if kind == 'pocket':
+        d = {'binder': e['binder'], 'contacts': [tok(t) for t in e['contacts']]}
+      else:
+        d = {'token1': tok(e['token1']), 'token2': tok(e['token2'])}
+      d['max_distance'] = e['maxDistance']
+      if e.get('force'):
+        d['force'] = True
+      y.setdefault('constraints', []).append({kind: d})
   return yaml.safe_dump(y, sort_keys=False)
 
 

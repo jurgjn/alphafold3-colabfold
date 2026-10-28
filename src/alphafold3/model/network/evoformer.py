@@ -208,6 +208,37 @@ def token_bond_type_matrix(batch, symmetrize: bool = False) -> jnp.ndarray:
   return type_matrix
 
 
+def chai1_restraints(batch):
+  """chai-1's (TokenDistanceRestraint, TokenPairPocketRestraint) distances, -1 where none, or None when the input
+  carries no constraints."""
+  if batch is None or getattr(batch, 'token_distance_restraint', None) is None:
+    return None
+  return batch.token_distance_restraint, batch.token_pair_pocket_restraint
+
+
+def chai1_restraint_feature(contact, pocket):
+  """chai's TOKEN_PAIR columns 149:163 for its two restraints, MINUS their no-restraint value, so it adds nothing
+  where a pair has none (that value is folded into the pair-init bias). Each is chai's RBF (feature_embedding.pt):
+  exp(-min(((r - d) / sigma)^2, 16)) over 6 radii, zeroed where it clamps, times (1 - mask), then the mask column
+  (d == -1). Contact radii 6..30 A, pocket 6..20 A; sigma is their spacing."""
+  def rbf(d, lo, hi):
+    d = d.astype(jnp.float32)[..., None]
+    x = jnp.minimum(jnp.square((jnp.linspace(lo, hi, 6, dtype=jnp.float32) - d) / ((hi - lo) / 5)), 16.0)
+    m = (d == -1.0).astype(jnp.float32)
+    return jnp.concatenate([jnp.where(x == 16.0, 0.0, jnp.exp(-x)) * (1 - m), m - 1], -1)
+  return jnp.concatenate([rbf(contact, 6.0, 30.0), rbf(pocket, 6.0, 20.0)], -1)
+
+
+def boltz2_contact_inputs(batch, n):
+  """(one-hot class, threshold) for boltz2_contact_conditioning: the batch's pocket/contact features when the input
+  carries constraints, else boltz's unconstrained input -- UNSPECIFIED on every pair. A padding class of -1 one-hots
+  to zeros, as boltz pads its one-hot."""
+  cc = getattr(batch, 'contact_conditioning', None) if batch is not None else None
+  if cc is None:
+    return jax.nn.one_hot(jnp.zeros((n, n), jnp.int32), 5), jnp.zeros((n, n), jnp.float32)
+  return jax.nn.one_hot(cc, 5), batch.contact_threshold.astype(jnp.float32)
+
+
 def boltz2_contact_conditioning(contact, threshold, num_channels, dtype):
   """Boltz-2's ContactConditioning. Shared with the confidence head.
 
@@ -536,10 +567,8 @@ class Evoformer(hk.Module):
       # Omitting them left a constant offset on z for every input (a protein tolerates
       # it; measured 0.969 -> 0.974 pair corr on a lone ligand).
       #
-      # contact_conditioning still runs on a placeholder, exactly as the confidence
-      # head's copy does: our featuriser has no distance-restraint field, so this is
-      # what boltz produces for an unconstrained input -- a coverage limit, not a
-      # silent divergence.
+      # contact_conditioning reads the input's pocket/contact constraints
+      # (model_features._boltz2_constraints); with none it is boltz's all-UNSPECIFIED term.
       c = self.config.pair_channel
       dtype = pair_activations.dtype
       n = pair_activations.shape[0]
@@ -562,8 +591,7 @@ class Evoformer(hk.Module):
               7,
           ).astype(dtype))
       pair_activations += boltz2_contact_conditioning(
-          jax.nn.one_hot(jnp.zeros((n, n), jnp.int32), 5),
-          jnp.zeros((n, n), jnp.float32), c, dtype)
+          *boltz2_contact_inputs(batch, n), c, dtype)
     return pair_activations
 
   @hk.transparent
@@ -1014,6 +1042,11 @@ class Evoformer(hk.Module):
           # the trunk half of chai's bond projection, through token_pair_proj_in_trunk (converters.chai1)
           pair_activations += hm.Linear(self.config.pair_channel, use_bias=False, name='chai1_bond_trunk')(
               batch.declared_bonds[..., None].astype(pair_activations.dtype))
+        restraints = chai1_restraints(batch)
+        if restraints is not None:
+          # the trunk half of the restraint columns, through token_pair_proj_in_trunk (converters.chai1)
+          pair_activations += hm.Linear(self.config.pair_channel, use_bias=False, name='chai1_restraint_trunk')(
+              chai1_restraint_feature(*restraints).astype(pair_activations.dtype))
         pair_init = pair_activations
         _esm_tap('chai_z_init', pair_init)
         pair_activations = _add_prev(pair_activations, pair_init)

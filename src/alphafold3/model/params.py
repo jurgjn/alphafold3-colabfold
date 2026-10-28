@@ -337,6 +337,14 @@ def get_model_haiku_params(model_dir: epath.PathLike) -> hk.Params:
                     'input, not the trunk. Delete the blob to fetch the current one once it is published.', model_dir)
     params['diffuser/evoformer/chai1_bond_trunk'] = {'weights': jnp.zeros(
         (1, params['diffuser/chai1_structure_token_pair']['weights'].shape[1]), jnp.float32)}
+  if ('diffuser/chai1_structure_token_pair' in params
+      and 'diffuser/evoformer/chai1_restraint_trunk' not in params):
+    # and its restraint trunk rows: a pocket/contact constraint reaches the diffusion's pair input but not the trunk
+    logging.warning('%s: chai1 weights without chai1_restraint_trunk; pocket/contact constraints reach only the '
+                    'diffusion\'s pair input, not the trunk. Delete the blob to fetch the current one once it is '
+                    'published.', model_dir)
+    params['diffuser/evoformer/chai1_restraint_trunk'] = {'weights': jnp.zeros(
+        (14, params['diffuser/chai1_structure_token_pair']['weights'].shape[1]), jnp.float32)}
   if 'diffuser/boltz2_res_type_encoding' in params and 'boltz2_dn_res_type' not in params.get('diffuser', {}):
     # a boltz2 blob from before Boltz's DN rows: a DNA unknown reads Boltz's RNA N, as it always did
     logging.warning('%s: boltz2 weights without boltz2_dn_*; a DNA N or modified DNA residue reads Boltz\'s RNA '

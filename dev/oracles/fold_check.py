@@ -42,7 +42,7 @@ def build_batch(model_name, seq, model_dir=None, templates=None):
 
 
 def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
-                chains=None, bonded_atom_pairs=None, buckets=None, cyclic=None):
+                chains=None, bonded_atom_pairs=None, buckets=None, cyclic=None, constraints=()):
   """-> (batch, cfg, model_dir). Everything the harnesses need, done once.
 
   `chains` replaces the single protein chain built from `seq`, so the same
@@ -68,7 +68,7 @@ def _fold_setup(model_name, seq, model_dir=None, templates=None, seed=0,
           id='A', sequence=seq, ptms=[], unpaired_msa='', paired_msa='',
           templates=templates or [])],
       rng_seeds=[seed],
-      bonded_atom_pairs=bonded_atom_pairs)
+      bonded_atom_pairs=bonded_atom_pairs, constraints=constraints)
   # the input-time conventions (UNK atoms, MSA caps, atomised residues, leaving-atom modes), as run_alphafold.py
   fold_input = model_features.prepare_input(fold_input, spec)
   ccd = decoded_ccd.get_ccd()

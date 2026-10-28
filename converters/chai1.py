@@ -1070,6 +1070,10 @@ def map_pair_init(sds, params):
     params['diffuser/chai1_structure_bond'] = {'weights': np.ascontiguousarray(wb[half:].T).astype(np.float32)}
     # its trunk half enters before token_pair_proj_in_trunk, so it folds through Wp like the other pair columns
     params['diffuser/evoformer/chai1_bond_trunk'] = {'weights': np.ascontiguousarray((Wp @ wb[:half]).T).astype(np.float32)}
+  # the two restraints' columns (contact 149:156, pocket 156:163) through Wp, for an input with pocket/contact
+  # constraints (evoformer.chai1_restraint_feature); without, only their mask columns reach the bias above
+  params['diffuser/evoformer/chai1_restraint_trunk'] = {'weights': np.ascontiguousarray(
+      (Wp @ P[:, PAIR_COLS['TokenDistanceRestraint'][0]:PAIR_COLS['TokenPairPocketRestraint'][1]]).T).astype(np.float32)}
 
 
 def chain_entity_rows(sds):

@@ -295,6 +295,30 @@ Two output conventions follow stock rather than AlphaFold 3:
 
 N/A: `cyclic` (no cyclic input).
 
+## Pocket and contact conditioning
+
+The fold input's `constraints` (docs/input.md) reach the three models trained to read them. Each is graded against its stock vendor, fed the same constraints in its own format: Boltz YAML `pocket`/`contact`, chai's restraints CSV, BioEmu2's `Contact`.
+
+There are four harness cases:
+
+- `pocket`: a pocket of five residues for the SMILES ligand.
+- `pocket_contact`: the same pocket on ATP, plus a contact to its atom PG.
+- `contact_ligand`: that contact alone.
+- `contact`: two residue contacts across the heterodimer.
+
+| model | cases | result |
+|---|---|---|
+| `boltz2` | all four | PARITY on every row (s_inputs, trunk, distogram, PAE, PDE, denoise, pLDDT), at most 7e-5 |
+| `chai1` | `pocket`, `contact` (it takes no CCD ligand and no atom endpoint) | PARITY on every row, at most 2e-5, with `CHAI_FP32=1` |
+| `bioemu2` | `contact`, `contact_ligand` (it was trained on contacts only) | all 42 stock feature arrays equal; every model row PARITY |
+
+**Negative control.** `OURS_NO_CONSTRAINTS=1` drops the constraints on our side only, so stock is conditioned and ours is not. Every constraint case must then FAIL, which shows that stock reads the constraints and that ours matches only because it reads them too.
+
+- boltz2: the trunk pair falls to corr 0.97-0.98 (max|d|/rms 6-8) on all three cases run.
+- chai1: the trunk pair falls to corr 0.96-0.98 (max|d|/rms 3-7), and pLDDT to 0.89 on `contact`.
+
+**chai1 needs a new blob.** Its restraint columns enter the trunk through `token_pair_proj_in_trunk`, which the converter now folds into `chai1_restraint_trunk`. A blob from before this change loads with that key zeroed and logs a warning: the constraints then reach only the diffusion's pair input. On unconstrained inputs the new blob is unchanged (`ligand_smiles` and `heterodimer` PARITY).
+
 ## AlphaFold 2
 
 None of the AF3 module levels apply to AF2, a sibling network with no converter, so AF2 is graded separately. **L5af2 is 18 gates, all green.**

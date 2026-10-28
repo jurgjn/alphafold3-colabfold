@@ -2092,6 +2092,16 @@ def _bioemu2_features(batch, fold_input, cyclic=None):
   ccd = chemical_components.Ccd(user_ccd=fold_input.user_ccd)
   contacts = (bf.load_contacts(os.environ['BIOEMU2_CONTACTS'])
               if os.environ.get('BIOEMU2_CONTACTS') else None)
+  if fold_input.constraints:
+    from alphafold3.common import folding_input as fi
+    _check_constraints(fold_input, 'bioemu2', pocket=False)
+    if contacts:
+      raise ValueError('bioemu2: contacts given both as the input\'s constraints and BIOEMU2_CONTACTS; use one')
+    contacts = []
+    for c in fold_input.constraints:
+      if not 4.0 <= c.max_distance <= 20.0:
+        raise ValueError(f'bioemu2: maxDistance {c.max_distance} is outside [4, 20] A, the range it was trained on')
+      contacts.append(tuple((*t[:2], t[2] if len(t) == 3 else None) for t in (c.token1, c.token2)) + (c.max_distance,))
   preset = os.environ.get('BIOEMU2_SAMPLER', 'edm')
   if preset not in ('edm', 'edm_gd', 'edm_fk', 'edm_fkc'):
     raise ValueError(f'BIOEMU2_SAMPLER={preset!r}: want edm, edm_gd, edm_fk or edm_fkc')
@@ -2174,6 +2184,7 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
   does; lm_pair is a finished one.
   """
   knobs = spec.featurise
+  check_constraints_supported(fold_input, spec)
   if knobs.get('bioemu2_features'):
     return _bioemu2_features(batch, fold_input, cyclic)
   if cyclic:
@@ -2210,6 +2221,10 @@ def apply(batch, spec, *, refeaturise=None, model_dir=None, esm=None,
     _declared_polymer_bonds(batch, fold_input, rule=knobs['declared_polymer_bonds'])
   if knobs.get('declared_bond_feature'):
     _declared_bond_feature(batch, fold_input)
+  if knobs.get('constraints') == 'boltz2' and fold_input is not None and fold_input.constraints:
+    _boltz2_constraints(batch, fold_input)
+  if knobs.get('constraints') == 'chai1' and fold_input is not None and fold_input.constraints:
+    _chai1_constraints(batch, fold_input)
   if knobs.get('atomized_unknown_restype'):
     from alphafold3.model.pipeline import chiral_features
     # before restype_alignment, which reads `aatype` to rewrite profile and msa.
@@ -3074,6 +3089,146 @@ def _declared_bond_feature(batch, fold_input):
       if ta is not None and tb is not None:
         out[ta, tb] = 1.0
   batch['declared_bonds'] = out
+  return batch
+
+
+def check_constraints_supported(fold_input, spec):
+  """Raise if the input carries pocket/contact `constraints` and `spec`'s model was not trained to read them. Called
+  from apply() and, because callers skip apply() for a model with no featurisation knobs, by run_alphafold too."""
+  if fold_input is None or not getattr(fold_input, 'constraints', ()):
+    return
+  knobs = spec.featurise or {}
+  if not (knobs.get('constraints') or knobs.get('bioemu2_features')):
+    raise ValueError(
+        f'{spec.name} was not trained with pocket or contact conditioning and cannot honour the input\'s '
+        '`constraints`; boltz2 and chai1 take pocket and contact constraints, bioemu2 contacts only')
+  _check_constraints(fold_input, spec.name, pocket=knobs.get('constraints') in ('boltz2', 'chai1'))
+
+
+def _check_constraints(fold_input, model, pocket=True, force=False):
+  """Refuse what `model` cannot honour rather than drop it: a pocket where only contacts are trained, and `force`
+  (boltz's inference-time steering potential, not implemented here)."""
+  from alphafold3.common import folding_input as fi
+  for k, c in enumerate(fold_input.constraints):
+    if not pocket and isinstance(c, fi.PocketConstraint):
+      raise ValueError(f'constraints[{k}]: {model} was trained with contact conditioning only, not pockets')
+    if c.force and not force:
+      raise ValueError(f'constraints[{k}]: force (steering the sampler toward the constraint) is not implemented '
+                       f'for {model}; drop it to condition the network only')
+
+
+def _constraint_tokens(batch, fold_input):
+  """Per token, in batch order: (chain_id, res_id, atom names), read off the token-atom layout after every
+  featurisation rewrite, plus the set of ligand chain ids. Padding tokens have chain_id ''."""
+  from alphafold3.common import folding_input as fi
+  layout = batch.get('token_atoms_layout')
+  layout = layout.item() if getattr(layout, 'ndim', None) == 0 else layout
+  ref_mask = np.asarray(batch['ref_mask']).astype(bool)
+  num = ref_mask.shape[0]
+  tokens = [('', 0, set()) for _ in range(num)]
+  for t in range(num):
+    live = np.nonzero(ref_mask[t])[0]
+    if live.size:
+      s = live[0]
+      tokens[t] = (str(layout.chain_id[t, s]), int(layout.res_id[t, s]),
+                   {str(layout.atom_name[t, a]) for a in live})
+  ligand = {c.id for c in fold_input.chains if isinstance(c, fi.Ligand)}
+  return tokens, ligand
+
+
+def _boltz_token_matches(tokens, ligand, spec, where):
+  """Token indices a constraint endpoint names, as boltz's token_spec_to_ids resolves it: a polymer residue by
+  (chain, residue) -- every token of it --, a ligand atom by (chain, atom name) -- its one atom token."""
+  chain, res = spec[0], spec[1]
+  atom = spec[2] if len(spec) == 3 else None
+  if chain in ligand:
+    if atom is None:
+      raise ValueError(f'{where} {list(spec)}: a ligand token is named by its atom, [chain, res_id, atom_name]')
+    hit = [t for t, (c, r, names) in enumerate(tokens) if c == chain and r == res and atom in names]
+  else:
+    if atom is not None:
+      raise ValueError(f'{where} {list(spec)}: boltz2 conditions polymer residues, [chain, res_id], not atoms')
+    hit = [t for t, (c, r, _) in enumerate(tokens) if c == chain and r == res]
+  if not hit:
+    raise ValueError(f'{where} {list(spec)} names no token of the input')
+  return hit
+
+
+def _boltz2_constraints(batch, fold_input):
+  """boltz-2's contact_conditioning and contact_threshold (featurizerv2.py process_token_features, inference
+  branch): every pair UNSELECTED; a pocket marks [binder, pocket] BINDER>POCKET and [pocket, binder] POCKET>BINDER
+  at its distance, for every token of each pocket residue; then a contact marks CONTACT both ways between the FIRST
+  token each end names. Later writes win. All UNSELECTED becomes all UNSPECIFIED, padding -1 (a zero one-hot)."""
+  from alphafold3.common import folding_input as fi
+  from alphafold3.model.pipeline import bioemu2_features as bf
+  _check_constraints(fold_input, 'boltz2')
+  tokens, ligand = _constraint_tokens(batch, fold_input)
+  num = len(tokens)
+  cls = np.full((num, num), bf.CONTACT_CLASSES['UNSELECTED'], np.int32)
+  thr = np.zeros((num, num), np.float32)
+  pockets = [(k, c) for k, c in enumerate(fold_input.constraints) if isinstance(c, fi.PocketConstraint)]
+  contacts = [(k, c) for k, c in enumerate(fold_input.constraints) if isinstance(c, fi.ContactConstraint)]
+  for k, c in pockets:
+    binder = np.array([tok[0] == c.binder for tok in tokens])
+    for spec in c.contacts:
+      for t in _boltz_token_matches(tokens, ligand, spec, f'constraints[{k}] pocket'):
+        cls[binder, t] = bf.CONTACT_CLASSES['BINDER>POCKET']
+        cls[t, binder] = bf.CONTACT_CLASSES['POCKET>BINDER']
+        thr[binder, t] = thr[t, binder] = c.max_distance
+  for k, c in contacts:
+    i = _boltz_token_matches(tokens, ligand, c.token1, f'constraints[{k}] token1')[0]
+    j = _boltz_token_matches(tokens, ligand, c.token2, f'constraints[{k}] token2')[0]
+    cls[i, j] = cls[j, i] = bf.CONTACT_CLASSES['CONTACT']
+    thr[i, j] = thr[j, i] = c.max_distance
+  if np.all(cls == bf.CONTACT_CLASSES['UNSELECTED']):
+    cls[:] = bf.CONTACT_CLASSES['UNSPECIFIED']
+  pad = np.array([not tok[0] for tok in tokens])
+  cls[pad, :] = cls[:, pad] = -1
+  thr[pad, :] = thr[:, pad] = 0
+  batch['contact_conditioning'] = cls
+  batch['contact_threshold'] = thr
+  return batch
+
+
+def _chai1_constraints(batch, fold_input):
+  """chai-1's TokenDistanceRestraint and TokenPairPocketRestraint (generators/token_dist_restraint.py,
+  token_pair_pocket_restraint.py; restraint_context.load_manual_restraints_for_chai1): distances, -1 where none. A
+  contact sets [token1, token2] only -- not symmetric --, a pocket [pocket residue, every token of the binder chain].
+  Each end must be a standard protein residue of exactly one token (chai names it by its one-letter code and
+  asserts the match); a ligand can only be a pocket's binder. Where chai-lab logs the failure and drops EVERY
+  restraint, this raises."""
+  from alphafold3.common import folding_input as fi
+  from alphafold3.constants import residue_names
+  _check_constraints(fold_input, 'chai1')
+  tokens, _ = _constraint_tokens(batch, fold_input)
+  seq = {c.id: c.sequence for c in fold_input.chains if isinstance(c, fi.ProteinChain)}
+
+  def residue(spec, where):
+    if len(spec) == 3:
+      raise ValueError(f'{where} {list(spec)}: chai1 conditions residues, [chain, res_id], not atoms')
+    chain, res = spec
+    if chain not in seq:
+      raise ValueError(f'{where} {list(spec)}: chai1 restrains protein residues only (a ligand only as a binder)')
+    if seq[chain][res - 1] not in residue_names.PROTEIN_TYPES_ONE_LETTER + ('X',):
+      raise ValueError(f'{where} {list(spec)}: chai1 restrains standard residues only')
+    hit = [t for t, (c, r, _) in enumerate(tokens) if c == chain and r == res]
+    if len(hit) != 1:
+      raise ValueError(f'{where} {list(spec)}: chai1 wants a residue of exactly one token, found {len(hit)}')
+    return hit[0]
+
+  num = len(tokens)
+  contact = np.full((num, num), -1.0, np.float32)
+  pocket = np.full((num, num), -1.0, np.float32)
+  for k, c in enumerate(fold_input.constraints):
+    if isinstance(c, fi.ContactConstraint):
+      contact[residue(c.token1, f'constraints[{k}] token1'), residue(c.token2, f'constraints[{k}] token2')] = (
+          c.max_distance)
+    else:
+      binder = np.array([tok[0] == c.binder for tok in tokens])
+      for spec in c.contacts:
+        pocket[residue(spec, f'constraints[{k}] pocket'), binder] = c.max_distance
+  batch['token_distance_restraint'] = contact
+  batch['token_pair_pocket_restraint'] = pocket
   return batch
 
 

@@ -592,8 +592,9 @@ class Chai1StructurePair(hk.Module):
 
   The 163 inputs are chai's own columns (its generators, alphabetical): docking 0:6 (class 5: no
   constraint), relative chain 6:12, relative entity 12:15, residue separation 15:82, token separation
-  82:149, the two restraints' masked columns 155 and 162. A one-hot that wide is never built: each pair
-  adds the rows its classes select. The bond projection's structure half reads chai's declared-covalent-
+  82:149, the contact and pocket restraints 149:156 and 156:163 -- their mask columns 155 and 162 alone without
+  constraints, chai's -1 sentinel; their RBF encodings (evoformer.chai1_restraint_feature) with. A one-hot that
+  wide is never built: each pair adds the rows its classes select. The bond projection's structure half reads chai's declared-covalent-
   bond feature, which nothing here builds -- zero for every input without one, as chai-lab's is.
 
   Relative entity and chain read the raw ids, which is chai's dense ranking for every purpose here: entity
@@ -604,7 +605,7 @@ class Chai1StructurePair(hk.Module):
     super().__init__(name=name)
     self.num_channels = num_channels
 
-  def __call__(self, tf):
+  def __call__(self, tf, restraints=None):
     w = hk.get_parameter('weights', [163, self.num_channels], jnp.float32, init=jnp.zeros)
     b = hk.get_parameter('bias', [self.num_channels], jnp.float32, init=jnp.zeros)
     ri = tf.residue_index.astype(jnp.int32)
@@ -616,48 +617,11 @@ class Chai1StructurePair(hk.Module):
     rel_e = ent[:, None] - ent[None]
     rchain = jnp.where(rel_e != 0, 5, jnp.clip(sym[:, None] - sym[None] + 2, 0, 4))
     rent = jnp.clip(rel_e + 1, 0, 2)
-    return ((b + w[5] + w[155] + w[162])[None, None] + w[6 + rchain] + w[12 + rent]
-            + w[15 + rss] + w[82 + rts])
-
-
-class Chai1StructurePair(hk.Module):
-  """chai-1's STRUCTURE token-pair features, the pair input of its diffusion module.
-
-  chai-lab chunks its 512-wide TOKEN_PAIR input projection (and its bond projection) in two: the first halves
-  build the trunk's z_init, the second halves `token_pair_structure_input_feats`, which its diffusion module
-  conditions on beside z_trunk (chai1.py, run_folding_on_context). This repository's converter kept only the
-  trunk halves and fed the diffusion the trunk's z_init instead -- relRMS 9.2 apart on 6MRR, measured on
-  chai-lab's own tensors. The published chai1 blobs carry the second halves now, under this module's name
-  (huggingface.co/sokrypton/af3-any-model 28141c7).
-
-  The 163 inputs are chai's own columns (its generators, alphabetical): docking 0:6 (class 5: no
-  constraint), relative chain 6:12, relative entity 12:15, residue separation 15:82, token separation
-  82:149, the two restraints' masked columns 155 and 162. A one-hot that wide is never built: each pair
-  adds the rows its classes select. The bond projection's structure half reads chai's declared-covalent-
-  bond feature, which nothing here builds -- zero for every input without one, as chai-lab's is.
-
-  Relative entity and chain read the raw ids, which is chai's dense ranking for every purpose here: entity
-  enters only through same/greater/less (clipped to +-1), and sym ids within one entity are consecutive.
-  """
-
-  def __init__(self, num_channels, name='chai1_structure_token_pair'):
-    super().__init__(name=name)
-    self.num_channels = num_channels
-
-  def __call__(self, tf):
-    w = hk.get_parameter('weights', [163, self.num_channels], jnp.float32, init=jnp.zeros)
-    b = hk.get_parameter('bias', [self.num_channels], jnp.float32, init=jnp.zeros)
-    ri = tf.residue_index.astype(jnp.int32)
-    ti = tf.token_index.astype(jnp.int32)
-    asym, ent, sym = (x.astype(jnp.int32) for x in (tf.asym_id, tf.entity_id, tf.sym_id))
-    same_chain = asym[:, None] == asym[None]
-    rss = jnp.where(same_chain, jnp.clip(ri[:, None] - ri[None] + 33, 0, 65), 66)
-    rts = jnp.where(same_chain & (ri[:, None] == ri[None]), jnp.clip(ti[:, None] - ti[None] + 32, 0, 65), 66)
-    rel_e = ent[:, None] - ent[None]
-    rchain = jnp.where(rel_e != 0, 5, jnp.clip(sym[:, None] - sym[None] + 2, 0, 4))
-    rent = jnp.clip(rel_e + 1, 0, 2)
-    return ((b + w[5] + w[155] + w[162])[None, None] + w[6 + rchain] + w[12 + rent]
-            + w[15 + rss] + w[82 + rts])
+    out = ((b + w[5] + w[155] + w[162])[None, None] + w[6 + rchain] + w[12 + rent]
+           + w[15 + rss] + w[82 + rts])
+    if restraints is not None:
+      out += evoformer_network.chai1_restraint_feature(*restraints) @ w[149:163]
+    return out
 
 
 class Model(hk.Module):
@@ -1317,7 +1281,8 @@ class Model(hk.Module):
     if self.global_config.model == 'chai1':
       # chai's diffusion conditions on [z_trunk | its STRUCTURE token-pair features], not on the trunk's
       # z_init -- see Chai1StructurePair
-      embeddings['pair_init'] = Chai1StructurePair(self.config.evoformer.pair_channel)(batch.token_features)
+      embeddings['pair_init'] = Chai1StructurePair(self.config.evoformer.pair_channel)(
+          batch.token_features, evoformer_network.chai1_restraints(batch))
       if batch.declared_bonds is not None:
         # the structure half of chai's bond projection (bond_loss_input_proj rows 256:512)
         from alphafold3.model.components import haiku_modules as hm

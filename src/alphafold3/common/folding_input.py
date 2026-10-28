@@ -41,6 +41,80 @@ import rdkit.Chem as rd_chem
 import zstandard as zstd
 
 BondAtomId: TypeAlias = tuple[str, int, str]
+# A constraint endpoint: (chain_id, res_id) for a residue, (chain_id, res_id, atom_name) for one atom. 1-based res_id,
+# written in the JSON as ["A", 12] or ["L", 1, "C3"], as bondedAtomPairs writes atoms.
+ConstraintToken: TypeAlias = tuple[str, int] | tuple[str, int, str]
+
+
+def _constraint_token(raw, where):
+  if (not isinstance(raw, (list, tuple)) or len(raw) not in (2, 3) or not isinstance(raw[0], str)
+      or not isinstance(raw[1], int) or isinstance(raw[1], bool) or (len(raw) == 3 and not isinstance(raw[2], str))):
+    raise ValueError(f'{where}: a constraint token is [chain_id, res_id] or [chain_id, res_id, atom_name], got {raw!r}')
+  if raw[1] < 1:
+    raise ValueError(f'{where}: res_id is 1-based, got {raw!r}')
+  return tuple(raw)
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class PocketConstraint:
+  """The binder chain is to sit within max_distance (Angstrom) of every listed pocket residue.
+
+  Honoured by the models trained with pocket conditioning (boltz2, chai1); a model that is not refuses the input.
+  """
+  binder: str
+  contacts: tuple[ConstraintToken, ...]
+  max_distance: float
+  force: bool = False
+
+  def to_dict(self):
+    return {'pocket': {'binder': self.binder, 'contacts': [list(t) for t in self.contacts],
+                       'maxDistance': self.max_distance, **({'force': True} if self.force else {})}}
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class ContactConstraint:
+  """Two tokens (a residue, or one atom) are to lie within max_distance (Angstrom) of each other.
+
+  Honoured by the models trained with contact conditioning (boltz2, chai1, bioemu2); others refuse the input.
+  """
+  token1: ConstraintToken
+  token2: ConstraintToken
+  max_distance: float
+  force: bool = False
+
+  def to_dict(self):
+    return {'contact': {'token1': list(self.token1), 'token2': list(self.token2),
+                        'maxDistance': self.max_distance, **({'force': True} if self.force else {})}}
+
+
+def _parse_constraint(raw, i):
+  where = f'constraints[{i}]'
+  if not isinstance(raw, dict) or len(raw) != 1 or next(iter(raw)) not in ('pocket', 'contact'):
+    raise ValueError(f'{where}: expected {{"pocket": {{...}}}} or {{"contact": {{...}}}}, got {raw!r}')
+  kind, body = next(iter(raw.items()))
+  allowed = {'pocket': {'binder', 'contacts', 'maxDistance', 'force'},
+             'contact': {'token1', 'token2', 'maxDistance', 'force'}}[kind]
+  _validate_keys(body.keys(), allowed)
+  if 'maxDistance' not in body:
+    raise ValueError(f'{where}: {kind} needs maxDistance (Angstrom)')
+  d = body['maxDistance']
+  if isinstance(d, bool) or not isinstance(d, (int, float)) or not d > 0:
+    raise ValueError(f'{where}: maxDistance must be a positive number of Angstrom, got {d!r}')
+  force = body.get('force', False)
+  if not isinstance(force, bool):
+    raise ValueError(f'{where}: force must be true or false, got {force!r}')
+  if kind == 'pocket':
+    if not isinstance(body.get('binder'), str):
+      raise ValueError(f'{where}: pocket needs a binder chain id')
+    contacts = body.get('contacts') or []
+    if not contacts:
+      raise ValueError(f'{where}: pocket needs at least one contact residue')
+    return PocketConstraint(binder=body['binder'], max_distance=float(d), force=force,
+                            contacts=tuple(_constraint_token(t, where) for t in contacts))
+  if 'token1' not in body or 'token2' not in body:
+    raise ValueError(f'{where}: contact needs token1 and token2')
+  return ContactConstraint(token1=_constraint_token(body['token1'], where),
+                           token2=_constraint_token(body['token2'], where), max_distance=float(d), force=force)
 
 JSON_DIALECT: Final[str] = 'alphafold3'
 JSON_VERSIONS: Final[tuple[int, ...]] = (1, 2, 3, 4)
@@ -989,6 +1063,9 @@ class Input:
       present in the default CCD and thus define arbitrary new ligands. This is
       more expressive than SMILES since it allows to name all atoms within the
       ligand which in turn makes it possible to define bonds using those atoms.
+    constraints: Pocket and contact constraints (this fork; JSON `constraints`).
+      Only models trained with pocket/contact conditioning honour them, and a
+      model that is not refuses an input that carries any.
   """
 
   name: str
@@ -996,6 +1073,7 @@ class Input:
   rng_seeds: Sequence[int]
   bonded_atom_pairs: Sequence[tuple[BondAtomId, BondAtomId]] | None = None
   user_ccd: str | None = None
+  constraints: Sequence[PocketConstraint | ContactConstraint] = ()
 
   def __post_init__(self):
     if not self.rng_seeds:
@@ -1025,6 +1103,24 @@ class Input:
       object.__setattr__(
           self, 'bonded_atom_pairs', tuple(self.bonded_atom_pairs)
       )
+
+    object.__setattr__(self, 'constraints', tuple(self.constraints))
+    lengths = {c.id: (len(c.sequence) if hasattr(c, 'sequence') else None) for c in self.chains}
+
+    def _check(tok, what):
+      if tok[0] not in lengths:
+        raise ValueError(f'{what}: no chain {tok[0]!r} in the input')
+      n = lengths[tok[0]]
+      if n is not None and tok[1] > n:
+        raise ValueError(f'{what}: residue {tok[1]} is beyond chain {tok[0]!r} ({n} residues)')
+    for k, c in enumerate(self.constraints):
+      if isinstance(c, PocketConstraint):
+        _check((c.binder, 1), f'constraints[{k}] binder')
+        for t in c.contacts:
+          _check(t, f'constraints[{k}] pocket residue')
+      else:
+        _check(c.token1, f'constraints[{k}] token1')
+        _check(c.token2, f'constraints[{k}] token2')
 
     if self.user_ccd is not None:
       for component_name, component_cif in cif_dict.parse_multi_data_cif(
@@ -1161,6 +1257,7 @@ class Input:
             'bondedAtomPairs',
             'userCCD',
             'userCCDPath',
+            'constraints',
         },
     )
 
@@ -1292,6 +1389,7 @@ class Input:
         rng_seeds=[int(seed) for seed in raw_json['modelSeeds']],
         bonded_atom_pairs=bonded_atom_pairs,
         user_ccd=user_ccd,
+        constraints=tuple(_parse_constraint(c, i) for i, c in enumerate(raw_json.get('constraints') or [])),
     )
 
   @classmethod
@@ -1502,6 +1600,8 @@ class Input:
             'modelSeeds': self.rng_seeds,
             'bondedAtomPairs': self.bonded_atom_pairs,
             'userCCD': self.user_ccd,
+            # written only when present, so an input without them serialises as before
+            **({'constraints': [c.to_dict() for c in self.constraints]} if self.constraints else {}),
         },
         indent=2,
     )

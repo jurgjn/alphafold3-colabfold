@@ -1702,6 +1702,9 @@ def main(_):
   # template-trained 1 and 2 rather than 1-5). Fold inputs are JSON specs, so
   # this holds specs, not features.
   fold_inputs = list(fold_inputs)
+  # before any weights load: a model that cannot honour pocket/contact constraints refuses them up front
+  for fold_input in fold_inputs:
+    model_features.check_constraints_supported(fold_input, model_registry.get(_MODEL.value))
 
   if _OUTPUT_DIR.value is None:
     raise ValueError('Output directory must be specified with --output_dir.')

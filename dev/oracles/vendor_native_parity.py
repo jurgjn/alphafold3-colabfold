@@ -231,6 +231,8 @@ _SHIPPED_BUCKETS = [32, 64, 128, 256, 384, 512, 768, 1024, 1280, 1536, 2048, 256
 # IntelliFold-2 parses the flag into cyclic_period, but its
 # RelativePositionEncoding never reads it: stock, cyclic is a no-op there.
 CYCLIC_VENDORS = ('boltz2',)
+# the constraint kinds each vendor was trained to read (the input's `constraints`; model_features)
+CONSTRAINT_VENDORS = {'boltz2': {'pocket', 'contact'}, 'chai1': {'pocket', 'contact'}, 'bioemu2': {'contact'}}
 _CYCLIC_IGNORED = {'intellifold2': 'its RelativePositionEncoding ignores cyclic_period'}
 
 
@@ -264,6 +266,8 @@ def featurise_ours(model, j, recycles, bf16):
   batch, cfg, model_dir = fold_check._fold_setup(
       model, None, model_dir=os.environ.get('MODEL_DIR'), chains=list(fi.chains),
       bonded_atom_pairs=fi.bonded_atom_pairs, seed=1, cyclic=cyclic,
+      # OURS_NO_CONSTRAINTS=1: the negative control -- the vendor conditioned, ours not; a constraint case must FAIL
+      constraints=() if os.environ.get('OURS_NO_CONSTRAINTS') else fi.constraints,
       # OURS_BUCKET=256: pad ours to the vendor's token bucket (chai always runs
       # at one), a probe for padding leaking into the vendor's outputs
       **({'buckets': _SHIPPED_BUCKETS if os.environ['OURS_BUCKET'] == 'shipped'
@@ -1226,6 +1230,19 @@ def main(argv):
                                                 'unpairedMsa': '>q\n%s\n' % prot, 'pairedMsa': '', 'templates': []}},
                                    {'rna': {'id': 'D', 'sequence': 'GCGGAUUUAGCUCAG', 'modifications': [],
                                             'unpairedMsa': ''}}]}
+  # pocket/contact conditioning (the input's `constraints`): harness cases, read only by the vendors trained on them
+  # (CONSTRAINT_VENDORS). A pocket for the SMILES ligand (chai takes no CCD ligand); a pocket on ATP plus a contact
+  # to one of its atoms (boltz2's ligand-atom token); residue contacts across a heterodimer.
+  pocket = [{'pocket': {'binder': 'B', 'contacts': [['A', 9], ['A', 12], ['A', 13], ['A', 16], ['A', 30]],
+                        'maxDistance': 6.0}}]
+  allc['pocket'] = dict(allc['ligand_smiles'], name='pocket', constraints=pocket)
+  allc['pocket_contact'] = dict(allc['ligand_ccd'], name='pocket_contact', constraints=pocket + [
+      {'contact': {'token1': ['A', 41], 'token2': ['B', 1, 'PG'], 'maxDistance': 8.0}}])
+  allc['contact_ligand'] = dict(allc['ligand_ccd'], name='contact_ligand', constraints=[
+      {'contact': {'token1': ['A', 41], 'token2': ['B', 1, 'PG'], 'maxDistance': 8.0}}])
+  allc['contact'] = dict(allc['heterodimer'], name='contact', constraints=[
+      {'contact': {'token1': ['A', 10], 'token2': ['B', 44], 'maxDistance': 8.0}},
+      {'contact': {'token1': ['A', 30], 'token2': ['B', 8], 'maxDistance': 12.0}}])
   # a case may also be a fold-input JSON file, named by its path
   for n in names or ():
     if n.endswith('.json') and n not in allc:
@@ -1237,6 +1254,9 @@ def main(argv):
     try:
       if _cyclic_chains(allc[n]) and model not in CYCLIC_VENDORS:
         raise VendorNA(_CYCLIC_IGNORED.get(model, '%s takes no cyclic polymer input' % model))
+      kinds = {k for c in allc[n].get('constraints') or () for k in c}
+      if kinds - CONSTRAINT_VENDORS.get(model, set()):
+        raise VendorNA('%s was not trained with %s conditioning' % (model, '/'.join(sorted(kinds))))
       rows = (trajectory_case(model, n, allc[n], rec) if trajectory
               else run_case(model, n, allc[n], rec, bf16, graded=graded))
     except VendorNA as e:   # the vendor cannot take this input: N/A, not FAIL

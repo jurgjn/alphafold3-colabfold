@@ -133,6 +133,7 @@ The top-level structure of the input JSON is:
     {"ligand": {...}}
   ],
   "bondedAtomPairs": [...],  # Optional.
+  "constraints": [...],  # Optional; this fork, and only the models trained on them.
   "userCCD": "...",  # Optional, mutually exclusive with userCCDPath.
   "userCCDPath": "...",  # Optional, mutually exclusive with userCCD.
   "dialect": "alphafold3",  # Required.
@@ -153,6 +154,9 @@ The fields specify the following:
 *   `bondedAtomPairs: list[Bond]`: An optional list of covalently bonded atoms.
     These can link atoms within an entity, or across two entities. See more
     below.
+*   `constraints: list[Pocket | Contact]`: Optional pocket and contact
+    constraints, read only by the models trained to condition on them. See
+    [Pocket and contact constraints](#pocket-and-contact-constraints) below.
 *   `userCCD: str`: An optional string with user-provided chemical components
     dictionary. This is an expert mode for providing custom molecules when
     SMILES is not sufficient. This should also be used when you have a custom
@@ -786,6 +790,62 @@ You will need to specify:
 1.  Protein chain A.
 2.  Ligand chain B with the 4 components.
 3.  Bonds ASN-CMP1, CMP1-CMP2, CMP2-CMP3, CMP2-CMP4.
+
+## Pocket and contact constraints
+
+This fork adds a top-level `constraints` list. It conditions the network on
+where things should be, and it is honoured only by the models that were trained
+with pocket or contact conditioning:
+
+| Model | `pocket` | `contact` |
+|---|---|---|
+| `boltz2` | yes | yes |
+| `chai1` | yes | yes |
+| `bioemu2` | no | yes |
+
+Every other model refuses an input that carries constraints, rather than
+silently folding without them.
+
+```json
+"constraints": [
+  {"pocket": {"binder": "L", "contacts": [["A", 40], ["A", 44]], "maxDistance": 6.0}},
+  {"contact": {"token1": ["A", 12], "token2": ["L", 1, "C3"], "maxDistance": 8.0}}
+]
+```
+
+*   **`pocket`**: the `binder` chain should sit within `maxDistance` Å of each
+    listed pocket residue.
+*   **`contact`**: `token1` and `token2` should lie within `maxDistance` Å of
+    each other.
+
+Each endpoint is written as follows:
+
+*   **A polymer residue** is `[chain_id, res_id]`, with a 1-based residue index,
+    as in `bondedAtomPairs`.
+*   **One atom of a ligand** is `[chain_id, res_id, atom_name]`.
+
+Each model reads these as its own vendor does, and refuses anything its vendor
+would ignore or drop:
+
+*   **boltz2:**
+    *   A pocket marks every token of each listed residue against the whole
+        binder.
+    *   A ligand endpoint must name an atom.
+    *   Polymer endpoints are residues only, never atoms.
+*   **chai1:**
+    *   Contact and pocket residues must be standard protein residues of one
+        token each.
+    *   A ligand can only be a pocket's `binder`. Chai takes ligands as SMILES
+        only, so only a SMILES ligand matches its stock behaviour.
+    *   A contact is directed (`token1` → `token2`), as chai's own feature is.
+*   **bioemu2:**
+    *   Contacts only, with `maxDistance` within 4–20 Å, the range it was
+        trained on.
+    *   This replaces the older `BIOEMU2_CONTACTS` file; use one or the other,
+        not both.
+
+`"force": true`, Boltz's inference-time steering toward a constraint, is not
+implemented yet and is refused.
 
 ## User-provided CCD
 

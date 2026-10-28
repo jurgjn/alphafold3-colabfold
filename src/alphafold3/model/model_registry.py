@@ -703,7 +703,8 @@ _FEATURISE = {
     # atom axis of every chain after the first. Same knob esmfold2 and chai-1
     # already use.
     # declared_polymer_bonds: boltz's `bond` constraint between two tokens is a token bond, polymer-polymer included
-    'boltz2': dict(modified_as_one_token=True, padded_keys=True, declared_polymer_bonds=True,
+    # constraints: pocket/contact conditioning from the input's `constraints` (model_features._boltz2_constraints)
+    'boltz2': dict(modified_as_one_token=True, padded_keys=True, declared_polymer_bonds=True, constraints='boltz2',
                    templates=TEMPLATE_POLICIES['boltz2'],
                    **({} if os.environ.get('AF3_NO_BOLTZ2_DROP_OXT')
                       else dict(drop_atoms=('OXT', 'OP3', 'O3P'))),
@@ -958,7 +959,7 @@ _FEATURISE = {
     # reads X there too (_resolve_esm).
     # atomized_unknown_restype='chai': a modified nucleotide's atomised tokens are chai's DX/RX (our N), not the parent
     # chai_msa: its uint8 profile and single-sequence context for chains without an alignment (model_features._chai_msa)
-    'chai1': dict(circular_keys=True, drop_atoms=('OXT', 'OP3'),
+    'chai1': dict(circular_keys=True, drop_atoms=('OXT', 'OP3'), constraints='chai1',
                   zero_msa_without_alignment=True, esm=True, full_msa=True,
                   atomized_unknown_restype='chai', chai_msa=True,
                   templates=TEMPLATE_POLICIES['chai1'],

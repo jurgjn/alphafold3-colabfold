@@ -110,6 +110,19 @@ def _case_inputs(j, d):
     restraints.append(dict(restraint_id='bond%d' % k, chainA=a[0], res_idxA=ref(a), chainB=b[0], res_idxB=ref(b),
                            connection_type='covalent', confidence=1.0, min_distance_angstrom=0.0,
                            max_distance_angstrom=0.0, comment='bondedAtomPairs'))
+  # pocket/contact constraints: chai names a residue by one-letter code + 1-based index; a pocket's chainA is the
+  # binder (chain level), chainB the pocket residue (restraints.PairwiseInteraction)
+  seqs = {i: e['sequence'] for entry in j['sequences'] for kind, e in entry.items() if kind == 'protein'
+          for i in (e['id'] if isinstance(e['id'], list) else [e['id']])}
+  res = lambda t: '%s%d' % (seqs[t[0]][t[1] - 1], t[1])
+  for k, c in enumerate(j.get('constraints') or ()):
+    (kind, e), = c.items()
+    rows = ([(e['token1'][0], res(e['token1']), e['token2'][0], res(e['token2']))] if kind == 'contact' else
+            [(e['binder'], '', t[0], res(t)) for t in e['contacts']])
+    for m, (ca, ra, cb, rb) in enumerate(rows):
+      restraints.append(dict(restraint_id='%s%d_%d' % (kind, k, m), chainA=ca, res_idxA=ra, chainB=cb, res_idxB=rb,
+                             connection_type=kind, confidence=1.0, min_distance_angstrom=0.0,
+                             max_distance_angstrom=e['maxDistance'], comment='constraints'))
   fasta = os.path.join(d, 'input.fasta')
   with open(fasta, 'w') as f:
     f.write('\n'.join(lines) + '\n')

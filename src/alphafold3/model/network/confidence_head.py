@@ -168,7 +168,7 @@ class ConfidenceHead(hk.Module):
     return intra * same_chain + inter * (1 - same_chain)
 
   def _boltz2_reembed(self, pair_act, single_act, target_feat, positions, pair_mask,
-                      token_features, bond_matrix, bond_type_matrix):
+                      token_features, bond_matrix, bond_type_matrix, batch=None):
     """Boltz-2 rebuilds s and z from scratch before its confidence pairformer.
 
     AF3 adds a couple of projections to the trunk's z; boltz LayerNorms the trunk
@@ -179,9 +179,8 @@ class ConfidenceHead(hk.Module):
     aggregate residual had repeatedly mis-attributed it to whichever term was being
     tested at the time.
 
-    contact_conditioning runs on a placeholder rather than a real feature, because our
-    featuriser has no distance-restraint field. That is exactly what boltz produces for
-    an unconstrained input, so it is a coverage limit, not a silent divergence.
+    contact_conditioning reads the same pocket/contact features as the trunk's (its own
+    weights, confidence_module.contact_conditioning).
     """
     c = pair_act.shape[-1]
     dtype = pair_act.dtype
@@ -219,8 +218,7 @@ class ConfidenceHead(hk.Module):
     z += hm.Linear(c, name='token_bonds_type_embed')(
         jax.nn.one_hot(bond_type_matrix, 7).astype(dtype))
     z += self._boltz2_contact_conditioning(
-        jax.nn.one_hot(jnp.zeros((n, n), jnp.int32), 5),
-        jnp.zeros((n, n), jnp.float32), c, dtype)
+        *evoformer.boltz2_contact_inputs(batch, n), c, dtype)
 
     # Orientation is load-bearing and the opposite of what the names suggest: boltz adds
     # s_to_z(s)[:, :, None] -- broadcast along j, so indexed by i -- which is our
@@ -478,7 +476,7 @@ class ConfidenceHead(hk.Module):
             token_atoms_to_pseudo_beta, dense_atom_positions, layout_axes=(-3, -2))
         pair_act, single_act = self._boltz2_reembed(
             pair_act, single_act, target_feat, positions, pair_mask,
-            token_features, bond_matrix, bond_type_matrix)
+            token_features, bond_matrix, bond_type_matrix, batch=batch)
       else:
         pair_act += self._embed_features(
             dense_atom_positions,

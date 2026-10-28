@@ -265,5 +265,99 @@ class ChaiRowOrderTest(absltest.TestCase):
       np.testing.assert_array_equal(v[order], np.sort(v))
 
 
+def _constraint_input(constraints):
+  import json
+  from alphafold3.common import folding_input
+  return folding_input.Input.from_json(json.dumps({
+      'dialect': 'alphafold3', 'version': 4, 'name': 't', 'modelSeeds': [1], 'constraints': constraints,
+      'sequences': [{'protein': {'id': 'A', 'sequence': 'MKVLA'}},
+                    {'ligand': {'id': 'L', 'ccdCodes': ['ATP']}}]}))
+
+
+def _constraint_batch():
+  """Tokens A1..A5 (A3 two tokens, as a modified residue might be), then three ligand atom tokens, then padding."""
+  import types
+  rows = [('A', 1, ['N', 'CA']), ('A', 2, ['CA']), ('A', 3, ['CA']), ('A', 3, ['SG']), ('A', 4, ['CA']),
+          ('A', 5, ['CA']), ('L', 1, ['PG']), ('L', 1, ['O1G']), ('L', 1, ['PB']), ('', 0, [])]
+  num, width = len(rows), 2
+  chain, res, name = (np.full((num, width), '', object), np.zeros((num, width), int),
+                      np.full((num, width), '', object))
+  mask = np.zeros((num, width), bool)
+  for t, (c, r, names) in enumerate(rows):
+    for a, n in enumerate(names):
+      chain[t, a], res[t, a], name[t, a], mask[t, a] = c, r, n, True
+  return {'ref_mask': mask, 'token_atoms_layout': types.SimpleNamespace(chain_id=chain, res_id=res, atom_name=name)}
+
+
+class ConstraintTest(absltest.TestCase):
+
+  def test_boltz2_pocket_then_contact(self):
+    # featurizerv2.py inference branch: UNSELECTED everywhere; pocket marks every token of a pocket residue against
+    # the whole binder both ways; a contact marks only the FIRST token of each end and overwrites the pocket
+    fi = _constraint_input([
+        {'pocket': {'binder': 'L', 'contacts': [['A', 3]], 'maxDistance': 6.0}},
+        {'contact': {'token1': ['A', 3], 'token2': ['L', 1, 'PB'], 'maxDistance': 9.0}}])
+    b = model_features._boltz2_constraints(_constraint_batch(), fi)
+    cls, thr = b['contact_conditioning'], b['contact_threshold']
+    np.testing.assert_array_equal(cls[2, 6:9], [2, 2, 4])     # A3's first token: PG, O1G pocket; PB the contact
+    np.testing.assert_array_equal(cls[3, 6:9], [2, 2, 2])     # A3's second token: pocket only
+    np.testing.assert_array_equal(cls[6:9, 3], [3, 3, 3])     # binder -> pocket
+    self.assertEqual(cls[8, 2], 4)
+    self.assertEqual(thr[2, 8], 9.0)
+    self.assertEqual(thr[3, 6], 6.0)
+    self.assertEqual(cls[0, 1], 1)                            # untouched pairs UNSELECTED
+    self.assertTrue((cls[9] == -1).all() and (cls[:, 9] == -1).all())
+
+  def test_boltz2_names(self):
+    with self.assertRaisesRegex(ValueError, 'named by its atom'):
+      model_features._boltz2_constraints(_constraint_batch(), _constraint_input(
+          [{'contact': {'token1': ['A', 1], 'token2': ['L', 1], 'maxDistance': 8.0}}]))
+    with self.assertRaisesRegex(ValueError, 'names no token'):
+      model_features._boltz2_constraints(_constraint_batch(), _constraint_input(
+          [{'contact': {'token1': ['A', 1], 'token2': ['L', 1, 'C8'], 'maxDistance': 8.0}}]))
+
+  def test_chai1_directed_contact_and_pocket(self):
+    # token_dist_restraint.py: [token1, token2] only; token_pair_pocket_restraint.py: [pocket residue, every binder
+    # token]; -1 everywhere else
+    fi = _constraint_input([
+        {'contact': {'token1': ['A', 1], 'token2': ['A', 5], 'maxDistance': 8.0}},
+        {'pocket': {'binder': 'L', 'contacts': [['A', 2]], 'maxDistance': 6.0}}])
+    b = model_features._chai1_constraints(_constraint_batch(), fi)
+    contact, pocket = b['token_distance_restraint'], b['token_pair_pocket_restraint']
+    self.assertEqual(contact[0, 5], 8.0)
+    self.assertEqual(contact[5, 0], -1.0)
+    self.assertEqual((contact != -1).sum(), 1)
+    np.testing.assert_array_equal(pocket[1, 6:9], [6.0] * 3)
+    self.assertEqual((pocket != -1).sum(), 3)
+
+  def test_chai1_refuses_what_chai_lab_would_drop(self):
+    for spec, msg in ((['A', 3], 'exactly one token'), (['L', 1, 'PG'], 'not atoms'), (['A', 1, 'CA'], 'not atoms')):
+      with self.assertRaisesRegex(ValueError, msg):
+        model_features._chai1_constraints(_constraint_batch(), _constraint_input(
+            [{'contact': {'token1': ['A', 2], 'token2': spec, 'maxDistance': 8.0}}]))
+    with self.assertRaisesRegex(ValueError, 'protein residues only'):
+      model_features._chai1_constraints(_constraint_batch(), _constraint_input(
+          [{'contact': {'token1': ['A', 2], 'token2': ['L', 1], 'maxDistance': 8.0}}]))
+
+  def test_untrained_models_refuse(self):
+    pocket = _constraint_input([{'pocket': {'binder': 'L', 'contacts': [['A', 3]], 'maxDistance': 6.0}}])
+    contact = _constraint_input([{'contact': {'token1': ['A', 1], 'token2': ['A', 5], 'maxDistance': 8.0}}])
+    for name in ('alphafold3', 'protenix2', 'openfold3', 'mol1'):
+      with self.assertRaisesRegex(ValueError, 'not trained'):
+        model_features.check_constraints_supported(contact, model_registry.get(name))
+    model_features.check_constraints_supported(pocket, model_registry.get('boltz2'))
+    model_features.check_constraints_supported(contact, model_registry.get('bioemu2'))
+    with self.assertRaisesRegex(ValueError, 'contact conditioning only'):
+      model_features.check_constraints_supported(pocket, model_registry.get('bioemu2'))
+
+  def test_json_round_trip(self):
+    from alphafold3.common import folding_input
+    fi = _constraint_input([{'pocket': {'binder': 'L', 'contacts': [['A', 3]], 'maxDistance': 6.0}},
+                            {'contact': {'token1': ['A', 1], 'token2': ['L', 1, 'PG'], 'maxDistance': 8}}])
+    self.assertEqual(folding_input.Input.from_json(fi.to_json()).constraints, fi.constraints)
+    with self.assertRaisesRegex(ValueError, 'beyond chain'):
+      _constraint_input([{'contact': {'token1': ['A', 6], 'token2': ['A', 1], 'maxDistance': 8.0}}])
+
+
 if __name__ == '__main__':
   absltest.main()

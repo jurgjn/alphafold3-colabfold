@@ -150,6 +150,12 @@ def featurise(model, case_json, out_dir):
     from bioemu2.data_interface.structure_hierarchy import Contact
     with open(os.environ['BIOEMU2_CONTACTS']) as fh:
       contacts = [Contact(**c) for c in json.load(fh)]
+  elif j.get('constraints'):
+    # the fold input's contacts ([chain, res] / [chain, res, atom]) as BioEmu2's Contact
+    from bioemu2.data_interface.structure_hierarchy import Contact
+    tok = lambda t: {'asym_id': t[0], 'res_id': t[1], **({'atom_name': t[2]} if len(t) == 3 else {})}
+    contacts = [Contact(token1=tok(e['token1']), token2=tok(e['token2']), max_distance=e['maxDistance'])
+                for c in j['constraints'] for kind, e in c.items() if kind == 'contact']
   st = prepare_structure(system, msa=msa, mode=mode, contacts=contacts)
   batch = batch_collate([st])
   torch.save(batch, os.path.join(out_dir, 'batch.pt'))
