@@ -19,6 +19,7 @@ Settings, each Mol-1's own inference default unless an env var says otherwise:
     OUTSIDE the autocast-disable the unchunked one has, so under bf16 it
     computes in bf16 where Protenix computes fp32. MOL1_COND_ROW_CHUNK=0 runs
     the unchunked (fp32) path; in fp32 runs the two are the same.
+  MOL1_CHUNK=N sets infer_setting.chunk_size (attention rows per chunk; memory only).
 Kernels are an implementation choice, not the model: torch LayerNorm and torch
 triangle kernels, as for protenix.
 """
@@ -82,6 +83,9 @@ def _configs(json_path, dump_dir, dtype):
   c = parse_configs(configs=base, arg_str=args, fill_required_with_null=True)
   if os.environ.get('MOL1_COND_ROW_CHUNK') == '0':
     c.infer_setting.diffusion_conditioning_row_chunk_size = None
+  if os.environ.get('MOL1_CHUNK'):
+    # attention chunk rows: memory only (the 1024 default does not fit long_chain on a 22 GB card)
+    c.infer_setting.chunk_size = int(os.environ['MOL1_CHUNK'])
   tdir = PX._template_dir(dump_dir)
   if os.path.isdir(tdir):
     import shutil
